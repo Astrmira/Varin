@@ -86,10 +86,6 @@ export function ThreadDraftConversation({ api, draftKey, handoff }: { api: Threa
     const bot = conversationBot.bot;
     patch(current => ({
       ...(!current.model && bot.model ? { model: bot.model } : {}),
-      ...(!current.sourceDisabled && !current.sourceSelection && !current.workspacePath && !current.firstSend ? { sourceSelection: {
-        resourceOwner: { kind: 'local' as const }, path: bot.homeDir, mode: 'live_root' as const,
-        contentMode: 'saved-files' as const, captureScopes: [],
-      } } : {}),
       ...(current.harnessId !== null ? { harnessId: null } : {}),
     }));
   }, [draft.botId, conversationBot.bot, patch]);

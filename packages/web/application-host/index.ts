@@ -113,7 +113,7 @@ import { createFollowupEventOwner } from './lib/kernel/followup-event-owner.js';
 import { createLiveSourceOwner } from './lib/kernel/live-source.js';
 import { createNativeWorkspaceOwner, type NativeWorkspaceOwner } from './lib/kernel/native-workspaces.js';
 import { registerNativeWorkspaceRoutes } from './lib/workspace/native-workspace-routes.js';
-import { listWorkLocations, createConversationWorkLocation } from './lib/kernel/default-work-location.js';
+import { listWorkLocations, createBotWorkingDirectoryResolver, createConversationWorkLocation } from './lib/kernel/default-work-location.js';
 import { registeredModelSettingsScope } from './lib/models/project-settings-scope.js';
 import { createThreadSourcePreparer, createThreadSourceAdmission, createThreadSourceDirectory, parseSourceResourceOwner } from './lib/kernel/thread-sources.js';
 import { createManagedSourceConsumers } from './lib/kernel/managed-source-consumers.js';
@@ -1146,6 +1146,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     pathModule: path,
     workspace: workspaceConfig,
   });
+  const botWorkingDirectory = createBotWorkingDirectoryResolver(workspaceConfig, workspaceRootGuard);
   const configuredDirtyBarrierTimeout = process.env.VARIN_DIRTY_BARRIER_TIMEOUT_MS?.trim() ?? '';
   const dirtyBarrierTimeoutMs = /^\d+$/.test(configuredDirtyBarrierTimeout)
     ? Number(configuredDirtyBarrierTimeout)
@@ -2517,11 +2518,10 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   const prepareProjectSource = createChildProjectSourcePreparer({ projects: async () => sanitizeProjects((await readSettingsFromDisk()).projects) ?? [],
     inspectBackend:(projectId,signal)=>nativeWorkspaces.inspectBackend(projectId,signal),sources: sourceDirectory, prepare: prepareThreadSource });
-  threads.bindBotWorkProfile(async (botId, _signal, preference) => {
+  threads.bindBotWorkModel(async (botId, _signal, preference) => {
     const bot = await botService.get(botId);
     if (!bot || !await botService.canExecute(botId)) return null;
-    const model = preference ?? await botAgentModel(bot);
-    return model ? { homeDir: bot.homeDir, model } : null;
+    return preference ?? botAgentModel(bot);
   });
   threads.bindConversationWorkModel(async (identity, signal) => {
     const defaults = await agentRuntime.organizationCreationDefaults(identity.threadId, signal);
@@ -2545,7 +2545,12 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   threads.bindCreationDefaults((identity, signal) => agentRuntime.organizationCreationDefaults(identity.threadId, signal));
   threads.bindOrganizationCreation((identity, placement) => conversationOrganization.creationDefaults(currentRequestPrincipal() ?? null, identity.threadId, placement));
   threads.bindDefaultDeviceSource(createConversationWorkLocation({ agentRuntime, sourceDirectory, servicePath: workspaceConfig.root,
-    prepare: (input, signal) => threads.prepareSource(input, signal), getBot: id => botService.get(id),
+    prepare: (input, signal) => threads.prepareSource(input, signal),
+    botWorkingDirectory: async id => {
+      const bot = await botService.get(id);
+      if (!bot) throw new Error('The original Bot workspace is unavailable');
+      return botWorkingDirectory(bot.homeDir);
+    },
     readWorkspaceSettings: async () => { const saved = await readSettingsFromDisk(); return { ...saved, projects: sanitizeProjects(saved.projects) ?? [] }; },
   }));
   const threadSourceFiles = createThreadSourceFiles({ kernel: kernelClient, documents: documentsAuthority,
@@ -2766,7 +2771,12 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   void contextService.recover().catch(() => console.error('[Thread] Saved context job discovery requires attention'));
   const calendarOwner = new CalendarOwner({ runtime: agentRuntime,
     projects: scheduledScopes,
-    prepare: (work, projectPath, signal) => threads.prepareCalendarWork(work, projectPath, signal),
+    prepare: async (work, projectPath, signal) => {
+      const target = work.definition.target;
+      const directory = isBotScopeId(work.definition.project_id) && target.kind === 'new_work' && target.source.kind === 'project'
+        ? await botWorkingDirectory(projectPath) : projectPath;
+      return threads.prepareCalendarWork(work, directory, signal);
+    },
     onChanged: () => { for (const client of uiVarinEventClients) { try { writeSseEvent(client, { type: 'varin:scheduled-task-changed', properties: {} }); } catch { uiVarinEventClients.delete(client); } } },
     onError: error => console.warn('[Calendar] preparation or asset synchronization requires attention:', calendarErrorCode(error)),
   });

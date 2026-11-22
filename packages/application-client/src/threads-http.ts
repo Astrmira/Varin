@@ -10,7 +10,7 @@ export class ThreadRequestError extends Error {
       : code === 'thread-conflict' ? 'The conversation state changed while this request was in progress (409).'
       : code === 'model-images-unsupported' ? 'The selected model does not accept images. Choose an image-capable model or remove the images.'
       : code === 'http-body-too-large' ? 'The message exceeds this server’s request size limit. Reduce its attachments or adjust the server limit.'
-      : (code === 'workspace_backend_unavailable' || code.startsWith('resource-')) && detail ? detail : threadSourceFailureMessage(code) ?? `Thread request failed (${status})`);
+      : (code === 'workspace_backend_unavailable' || code === 'path-escape' || code.startsWith('resource-')) && detail ? detail : threadSourceFailureMessage(code) ?? `Thread request failed (${status})`);
     this.name = 'ThreadRequestError';
   }
 }

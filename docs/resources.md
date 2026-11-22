@@ -25,7 +25,7 @@ Key owners: [Documents](../packages/web/application-host/lib/documents/DOCUMENTA
 ## Source Selection & Multi-Location Execution
 
 - **User Files panel** (`/api/resource-files`): Uses explicit `(resourceOwner, workspaceId, root)`. Text editing routes through `DocumentsAPI` (forwarding to remote Hosts when configured, never hijacking the global active workspace).
-- **Live execution sources**: Ordinary Varin/lead/shared tasks get device filesystem access on their resource Host (project dir sets relative cwd; absolute paths follow OS account access unless Host deployment lockdown is enabled). Default start location comes from saved Host preference → Bot home dir / user home dir.
+- **Live execution sources.** The working directory sets the starting point for relative paths and commands. Absolute paths follow OS account access unless Host deployment lockdown is enabled. An existing conversation keeps its selected source. A new Bot conversation honors its assigned project or location, otherwise it starts in the Bot home directory. If that directory lies outside the deployment boundary, it starts at the Host workspace root. Other new conversations use the saved Host location or the Host workspace root.
 - **Work locations**: Live native Runs use `work_locations({ query })` to find bookmarks/projects/paths, pass `location` per call on `file_*` / `process_spawn`, switch future default via `work_location_switch`, and copy/move across devices via `work_location_transfer` (moves verify target write before conditional source delete).
 - **Source modes**:
   - `LiveRoot`: Admitted physical directory (saved files; no OS isolation against external writers).

@@ -203,17 +203,17 @@ export class ThreadAdapter {
     return this.sourceFiles.files(identity, source, options, signal, sourceRunId);
   }
   private sourceDirectory?: SourceDirectory;
-  private botWorkProfile?: (botId: string, signal: AbortSignal | undefined, preference?: ThreadModel) => Promise<{ homeDir: string; model: ThreadModel } | null>;
+  private botWorkModel?: (botId: string, signal: AbortSignal | undefined, preference?: ThreadModel) => Promise<ThreadModel | null>;
   private conversationWorkModel?: (identity: ThreadIdentity, signal: AbortSignal) => Promise<ThreadModel | null>;
   private readonly coldWorkPreparations = new Set<string>();
-  bindBotWorkProfile(resolve: NonNullable<ThreadAdapter['botWorkProfile']>): void { this.botWorkProfile = resolve; }
+  bindBotWorkModel(resolve: NonNullable<ThreadAdapter['botWorkModel']>): void { this.botWorkModel = resolve; }
   bindConversationWorkModel(resolve: NonNullable<ThreadAdapter['conversationWorkModel']>): void { this.conversationWorkModel = resolve; }
   /** Prepare the existing durable ingress; the process that requested work does not own this launch. */
   private botInactivityMinutes: () => Promise<number> = async () => 20;
   bindBotInactivityMinutes(read: () => Promise<number>): void { this.botInactivityMinutes = read; }
   async recoverBotWork(signal: AbortSignal): Promise<void> {
     const prepareContext = this.prepareContext;
-    if (!prepareContext || (!this.botWorkProfile && !this.conversationWorkModel)) return;
+    if (!prepareContext || (!this.botWorkModel && !this.conversationWorkModel)) return;
     for (const work of await this.runtime.pendingBotWork(signal, await this.botInactivityMinutes())) {
       if (this.coldWorkPreparations.has(work.inputId)) continue;
       this.coldWorkPreparations.add(work.inputId);
@@ -224,14 +224,11 @@ export class ThreadAdapter {
           await this.runtime.holdColdWork({ inputId: work.inputId, revision: work.revision, reason }, signal);
         };
         let botThread: Awaited<ReturnType<ThreadAdapter['requireIdentity']>> | undefined;
-        let bot: { homeDir: string; model: ThreadModel } | null | undefined;
         let model: Awaited<ReturnType<ThreadModelAuthority['resolveModel']>> | undefined;
         try {
-          if (work.botId) {
-            botThread = await this.requireIdentity(identity, signal);
-            bot = await this.botWorkProfile?.(work.botId, signal, botThread.model_preference);
-          }
-          const selection = work.botId ? bot?.model : await this.conversationWorkModel?.(identity, signal);
+          if (work.botId) botThread = await this.requireIdentity(identity, signal);
+          const selection = work.botId ? await this.botWorkModel?.(work.botId, signal, botThread?.model_preference)
+            : await this.conversationWorkModel?.(identity, signal);
           if (selection) model = await waitForModelBinding(this.models.resolveModel(selection), model => model.credentialOwner.release(), signal);
         } catch (error) {
           if (!signal.aborted) await hold('model_unavailable');
@@ -247,13 +244,9 @@ export class ThreadAdapter {
             if (workspace) {
               if (!await this.runtime.principalCanUseHostResources?.(thread.principal_id)) throw new Error('Host source access is unavailable');
               source = await this.workspaceSource(workspace, signal);
-            } else if (bot) {
-              const location = await this.resolveSource(identity, { resourceOwner: { kind: 'local' }, path: bot.homeDir }, signal);
-              source = (await this.prepareSource({ ...identity, key: work.inputId, resourceOwner: location.resourceOwner,
-                workspaceId: location.workspaceId, mode: 'live_root', content: { mode: 'saved-files' }, captureScopes: [] }, signal)).source;
             } else {
               const canUseHostSources = await this.runtime.principalCanUseHostResources?.(thread.principal_id) ?? true;
-              if (canUseHostSources) source = await this.defaultDeviceSource?.(identity) ?? null;
+              if (canUseHostSources) source = await this.defaultDeviceSource?.(identity, thread, signal) ?? null;
             }
             if (source) await this.admitSource(source, identity, undefined, signal);
             initialContext = work.botId
@@ -303,8 +296,8 @@ export class ThreadAdapter {
   bindCreationDefaults(read: NonNullable<ThreadAdapter['creationDefaults']>): void { this.creationDefaults = read; }
   private organizationCreation?: (identity: ThreadIdentity, placement: import('@varin/application-client').ConversationOrganizationPlacement) => Promise<import('@varin/application-client').ConversationCreationDefaults | null>;
   bindOrganizationCreation(prepare: NonNullable<ThreadAdapter['organizationCreation']>): void { this.organizationCreation = prepare; }
-  private defaultDeviceSource?: (identity: ThreadIdentity) => Promise<ThreadSource | null>;
-  bindDefaultDeviceSource(prepare: (identity: ThreadIdentity) => Promise<ThreadSource | null>): void { this.defaultDeviceSource = prepare; }
+  private defaultDeviceSource?: (identity: ThreadIdentity, thread: ThreadSnapshot['thread'], signal?: AbortSignal) => Promise<ThreadSource | null>;
+  bindDefaultDeviceSource(prepare: NonNullable<ThreadAdapter['defaultDeviceSource']>): void { this.defaultDeviceSource = prepare; }
   private fileResolver?: import('./thread-file-target.js').ThreadFileTargetResolver;
   private codeExchangeReader?: import('./thread-code-exchange.js').ThreadCodeExchangeReader;
   private exchangeQueue?: ReturnType<typeof import('./code-exchange-queue.js').createCodeExchangeQueue>;
@@ -1202,7 +1195,7 @@ export class ThreadAdapter {
         // Existing branch source wins; a fresh source-less conversation uses its creation default.
         const workspace = thread.branches.find(b => b.branch_id === input.branchId)?.workspace_default;
         const candidateSource = input.source !== undefined ? input.source
-          : workspace ? await this.workspaceSource(workspace) : await this.defaultDeviceSource?.(input) ?? null;
+          : workspace ? await this.workspaceSource(workspace) : await this.defaultDeviceSource?.(input, thread) ?? null;
         const command: InputSubmitParams = { key: input.key, threadId: input.threadId, branchId: input.branchId,
           ...(workspace ? { expectedWorkspaceRevision: workspace.revision } : {}),
           expectedHead: input.expectedHead, input: preparedInput, configuration: model.configuration,
@@ -1520,7 +1513,7 @@ export class ThreadAdapter {
       const run = await this.requireRun(input.runId, signal);
       if (run.cancel_requested || ['completed', 'failed', 'cancelled'].includes(run.state)) return;
       const model = input.model ? thread.model_preference ?? input.model
-        : (await this.botWorkProfile?.(thread.bot_id, signal, thread.model_preference))?.model;
+        : await this.botWorkModel?.(thread.bot_id, signal, thread.model_preference);
       if (!model) throw new Error('Bot model is unavailable. Select an available model in this conversation or in Bot settings.');
       const selected = await this.runtime.modelSelections(run.id, signal);
       if (botModelMatches(selected.desired?.configuration ?? run.configuration as ModelSessionConfiguration, model)) return;
@@ -1757,7 +1750,7 @@ export class ThreadAdapter {
           await waitWithSignal(admission, signal);
         }
         // live_root is validated by rebindLaunch's existing LiveSource owner.
-        if (this.botWorkProfile && run.thread_id.startsWith('thread:')) {
+        if (this.botWorkModel && run.thread_id.startsWith('thread:')) {
           await this.refreshBotModel({ ...identity, runId }, signal);
         }
         let owner: ExistingHostCredentialOwner | undefined;

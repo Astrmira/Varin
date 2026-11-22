@@ -10,6 +10,7 @@ import { parseThreadMaterials } from './thread-material-input.js';
 import { normalizeThreadSourcePreparation, parseSourceResourceOwner } from './thread-sources.js';
 import { parseContentReferenceInput, type ContentReferenceInput, threadSourceFailureMessage } from '@varin/application-client';
 import { sourceFailureCode } from './source-admission-error.js';
+import { WorkspaceDirectoryError } from '../documents/errors.js';
 import type { McpElicitationResponse, McpSamplingRequestAction, McpSamplingOutputAction } from '@varin/protocol';
 import type { OutputMediaHolder } from '@varin/protocol';
 import { parseComputerWorkRef, parseComputerExecutionRef } from '@varin/protocol';
@@ -311,6 +312,10 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
           const status = reason.failure.status === 'denied' ? 403 : reason.failure.status === 'stale' ? 409
             : reason.failure.status === 'missing' ? 404 : reason.failure.status === 'unavailable' ? 503 : 400;
           response.status(status).json({ code: reason.code, error: reason.message, ...(error instanceof ThreadPreAdmissionError ? { admission: 'not_started' } : {}) }); return;
+        }
+        if (reason instanceof WorkspaceDirectoryError) {
+          response.status(reason.statusCode).json({ code: reason.code === 'failed' ? 'resource-directory-unavailable' : reason.code,
+            error: reason.message, ...(error instanceof ThreadPreAdmissionError ? { admission: 'not_started' } : {}) }); return;
         }
         if (reason instanceof WorkspaceBackendUnavailableError) {
           response.status(503).json({ code: reason.code, error: reason.message, admission: 'not_started' }); return;

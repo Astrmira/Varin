@@ -71,7 +71,7 @@ it.each([false, true])('Bot continuation resolves its current model before touch
   f.runtime.thread.mockImplementation(async () => ({ thread_id: identity.threadId, bot_id: 'bot', parent_thread_id: null,
     ...(override ? { model_preference: preference } : {}),
     observer_project_ids: [], branches: [{ branch_id: identity.branchId, active_run_id: f.run.id, head: null, latest_run: f.run }] }));
-  f.adapter.bindBotWorkProfile(async (_id, _signal, saved) => ({ homeDir: '/bot', model: saved ?? profile }));
+  f.adapter.bindBotWorkModel(async (_id, _signal, saved) => saved ?? profile);
   f.models.resolveModel.mockResolvedValue({ configuration, credentialOwner: owner });
   let desired: RunModelSelection | null = null;
   f.runtime.modelSelections.mockImplementation(async () => ({ desired, active: null, exchange_closed: true }));
