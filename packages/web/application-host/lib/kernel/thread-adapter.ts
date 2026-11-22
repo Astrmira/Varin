@@ -513,8 +513,14 @@ export class ThreadAdapter {
     if (!this.prepareContext?.refresh) return;
     const selected = identities ?? (await this.runtime.threads()).filter(thread => thread.thread_id.startsWith('thread:'))
       .flatMap(thread => thread.branches.map(branch => ({ runtime: 'agent' as const, threadId: thread.thread_id, branchId: branch.branch_id })));
-    const results = await Promise.allSettled(selected.map(identity => this.refreshContext(identity)));
-    if (results.some(result => result.status === 'rejected')) throw new Error('Personalization refresh requires attention');
+    // Each refresh holds the branch checkpoint while the Host prepares its extension context.
+    // Release it before visiting another branch during a settings change.
+    let failed = false;
+    for (const identity of selected) {
+      try { await this.refreshContext(identity); }
+      catch { failed = true; }
+    }
+    if (failed) throw new Error('Personalization refresh requires attention');
   }
 
   async openProcessTerminal(input: ThreadIdentity & { operationId: string }) {

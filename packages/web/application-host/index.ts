@@ -1804,7 +1804,10 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     onError: (error) => console.error('[VarinMemory]', errorMessage(error)),
   });
   let personalizationRuntime: AgentRuntimeClient | undefined = undefined;
-  const agentPersonalization = createAgentPersonalization({ client: kernelClient, context: createPersonalizationContextResolver({ runtime: () => personalizationRuntime }), onChanged: () => { broadcastGlobalUiEvent?.({ type: 'varin:agent-personalization-changed', properties: {} }); void refreshThreadPersonalization().catch(() => console.error('[Thread] Personalization refresh requires attention')); } });
+  const agentPersonalization = createAgentPersonalization({ client: kernelClient, context: createPersonalizationContextResolver({ runtime: () => personalizationRuntime }), onChanged: () => {
+    broadcastGlobalUiEvent?.({ type: 'varin:agent-personalization-changed', properties: {} });
+    void threads.refreshPersonalization().catch(() => console.error('[Thread] Personalization refresh requires attention'));
+  } });
   // Bot background memory organizer reads durable session/run sources.
   // filters them with the memory-organization fast decision when bound, and
   // narrates proposals through the models.memoryOrganizer slot on the original
@@ -2754,9 +2757,8 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   collaborationOwner.current = collaboration;
   externalAgents.startChildren(createExternalSourceOwner({ managed:{coordinatorHostId:agentRuntime.coordinatorHostId,source:(owner,signal)=>agentRuntime.managedSource(owner,signal)}, kernel: kernelClient, storage: kernelStorageAdapter, prepareProjectSource,
     capture: { documents: documentsAuthority, prepareResources: threadResources.prepareSourceCapture, inspectInventory: (directory, signal) => inspectSourceInventory(directory, signal) } }));
+  // Input admission and recovered launches refresh their own branch before preparing a request.
   void collaboration.recover();
-  const refreshThreadPersonalization = () => threads.refreshPersonalization();
-  void refreshThreadPersonalization().catch(() => console.error('[Thread] Personalization refresh requires attention'));
   void contextService.recover().catch(() => console.error('[Thread] Saved context job discovery requires attention'));
   const calendarOwner = new CalendarOwner({ runtime: agentRuntime,
     projects: scheduledScopes,
