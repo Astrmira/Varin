@@ -861,7 +861,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = (props) => {
           </div>
         </div>
       ) : null}
-      {props.footer}
+      {props.footer && <div className="relative z-10">{props.footer}</div>}
       <div
         ref={endSpaceRef}
         aria-hidden="true"
@@ -1147,7 +1147,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = (props) => {
   return (
     <ToolTargetScope entries={props.entries} executions={props.toolExecutions}>
     <ChatToolDisclosureScope key={props.sessionId} sessionId={props.sessionId}><ChatContextMenu {...props} projection={projection} onRevealEntry={revealEntry}>
-    <div ref={surfaceRef} className="conversation-timeline-surface relative flex min-h-0 flex-1">
+    <div ref={surfaceRef} className="conversation-timeline-surface relative isolate flex min-h-0 flex-1">
       {promptNavigatorEnabled && props.navigation ? <ChatTurnNavigator ref={turnNavigatorRef} runs={props.navigation.runs}
         initialRunId={props.navigation.runs.at(-1)?.runId} readPreview={readRunPreview} onSelect={selectRun} /> : null}
       {promptNavigatorEnabled && props.navigation?.error && <button type="button" className="absolute left-2 top-2 z-20 text-muted-foreground"
@@ -1223,6 +1223,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = (props) => {
         data-conversation-timeline="true"
         tabIndex={0}
       />
+      {props.inlineViews}
       <AnimatePresence initial={false}>
         {timelineView.scrollMode === 'free-scrolling' ? (
           <motion.button

@@ -116,6 +116,7 @@ export interface ChatTimelineProps {
   };
   header?: React.ReactNode;
   footer?: React.ReactNode;
+  inlineViews?: React.ReactNode;
   compactionStatus?: 'requested' | 'running' | 'retrying' | 'ready' | 'applying' | 'failed';
   assistantWaiting?: ChatAssistantWaitingPresentation;
   activeRunId?: string;

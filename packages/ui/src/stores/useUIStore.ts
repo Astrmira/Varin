@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import type { SidebarSection } from '@/constants/sidebar';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
+import { clearUnsentComposers } from './utils/unsentComposerStorage';
 import type { RecentPointer } from '@/lib/motion/pointer';
 import { CONTEXT_SURFACES, getContextRailMode } from '@/lib/surfaces/registry';
 import { SEMANTIC_TYPOGRAPHY, getTypographyVariable, type SemanticTypographyKey } from '@/lib/typography';
@@ -2186,6 +2187,7 @@ export const useUIStore = create<UIStore>()(
         setSummaryLength: (value) => { set({ summaryLength: value }); },
         setMaxLastMessageLength: (value) => { set({ maxLastMessageLength: value }); },
         setPersistChatDraft: (value) => {
+          if (!value && get().persistChatDraft) clearUnsentComposers();
           set({ persistChatDraft: value });
         },
         setInputSpellcheckEnabled: (value) => {
