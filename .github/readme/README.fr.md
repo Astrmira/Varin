@@ -49,9 +49,7 @@ Créez plusieurs Bots, chacun avec ses propres instructions, modèle, niveau de 
 
 Ouvrez une discussion de groupe depuis la barre latérale des Bots pour les faire collaborer sur une même chronologie : mentionnez ou répondez à certains membres pour les solliciter, réglez l'écoute par membre pour les messages non adressés, partagez des fichiers, recherchez dans l'historique et planifiez les tâches du groupe avec les mêmes contrôles de calendrier et de suivi.
 
-<p align="center">
-  <img src="assets/varin-at-work.gif" alt="Varin lit, travaille avec ses coéquipiers et réagit à leur progression" width="600" />
-</p>
+https://github.com/user-attachments/assets/5b8fa63d-fc6b-4ad6-95bd-ffbb96ad458c
 
 [L'assistant](../../docs/bot.md) · [Apparences](../../docs/bot-appearances.md) · [Collaboration et reprise des tâches](../../docs/collaboration.md)
 
@@ -143,6 +141,10 @@ Les outils courants sont disponibles directement ; les autres se découvrent au 
 **Placez le travail au bon endroit.** Exécutez Varin localement, sur votre serveur, ou connectez-vous depuis un navigateur ou un téléphone. L'interface, le service Agent, les fichiers et l'appareil de contrôle peuvent résider sur des machines différentes, et une même conversation peut travailler sur plusieurs appareils connectés tout en rattachant liens de fichiers et restauration à la machine où chaque modification a eu lieu. [Déploiement](../../docs/ops/cloud-deployment.md) · [Ressources](../../docs/resources.md)
 
 **Un compagnon de bureau facultatif.** Il suit l'activité du Bot sélectionné. Téléchargez son apparence dans les Paramètres et choisissez de le réveiller ou de le mettre en veille.
+
+<p align="center">
+  <img src="assets/varin-at-work.gif" alt="Varin lit, travaille avec ses coéquipiers et réagit à leur progression" width="600" />
+</p>
 
 <a id="how-the-harness-works"></a>
 

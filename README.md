@@ -49,9 +49,7 @@ Create multiple Bots, each with its own instructions, model, thinking level, mem
 
 Start a group chat from the Bot sidebar to let several Bots work together on one timeline. Mention or reply to specific members to bring them in, use per-member listening for unaddressed posts, share files and search group history, and set up group schedules alongside direct conversations.
 
-<p align="center">
-  <img src=".github/readme/assets/varin-at-work.gif" alt="Varin reads, works with her team and responds as the work progresses" width="600" />
-</p>
+https://github.com/user-attachments/assets/5b8fa63d-fc6b-4ad6-95bd-ffbb96ad458c
 
 [About the assistant](docs/bot.md) · [Appearances](docs/bot-appearances.md) · [Collaboration and task reuse](docs/collaboration.md)
 
@@ -145,6 +143,10 @@ Common tools are available directly; other capabilities are discovered as needed
 **Place the work where it belongs.** Run locally, self-host on a server, or connect from a browser or phone. The interface, Agent service, file workspace and computer-use device can be on different machines, and a single conversation can work across connected devices while keeping file links and recovery tied to where each change happened. [Deployment](docs/ops/cloud-deployment.md) · [Resources](docs/resources.md)
 
 **Keep an optional companion nearby.** The desktop companion follows the selected Bot's activity. Download its artwork and wake or put it to sleep from Settings.
+
+<p align="center">
+  <img src=".github/readme/assets/varin-at-work.gif" alt="Varin reads, works with her team and responds as the work progresses" width="600" />
+</p>
 
 <a id="how-the-harness-works"></a>
 
