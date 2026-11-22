@@ -30,7 +30,7 @@ Key owners: [Documents](../packages/web/application-host/lib/documents/DOCUMENTA
 - **Source modes**:
   - `LiveRoot`: Admitted physical directory (saved files; no OS isolation against external writers).
   - `FixedBranch`: Immutable branch/revision; materializes an execution copy on first command (`workspace MCP` still requires explicit execution source).
-  - `Materialized`: Bound execution copy + immutable baseline.
+  - `Materialized`: A physical directory is captured as an immutable baseline. Isolated work uses a mounted branch when available, or a private run directory on Hosts without the filesystem backend. An explicitly selected native workspace keeps its original branch backend.
   - `NativeWorkspace`: Logical `(workspace, branch, subdir)` mounted per Host epoch via WinFsp / FUSE / FSKit / macFUSE (mount path is ephemeral, never persisted).
   - Source-free: Valid when no file/process capability is needed.
 

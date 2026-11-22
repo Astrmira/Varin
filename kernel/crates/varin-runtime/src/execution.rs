@@ -2150,6 +2150,7 @@ impl<
             recovered_decision = None;
         }
         let mut steps = input.completed_model_steps;
+        let mut tool_correction: Option<Arc<ConversationItem>> = None;
         let mut interrupted_generation = false;
         macro_rules! finish {
             ($label:lifetime,$next:expr,$waiting:expr,$failure:expr $(,$rollback:expr)?)=>{{
@@ -2722,6 +2723,7 @@ impl<
                         let prefix = request_history.iter().take_while(|item| item.provenance.is_system()).count();
                         request_history.splice(prefix..prefix,
                             binding_context.iter().cloned().chain(goal.as_ref().and_then(|g| g.item.clone()).map(Arc::new)));
+                        request_history.extend(tool_correction.iter().cloned());
                         request_history
                     };
                     let request_history = project_request(&history, Some(&mut history_projection_reuse));
@@ -2963,6 +2965,23 @@ impl<
                     let reason = match result {
                         Ok(reason) => reason,
                         Err(failure) => {
+                            // No tool from a rejected exchange was dispatched. Give the model the
+                            // real invocation contract in a fresh, normally prepared request.
+                            if failure.code == "tool_not_declared" && tool_correction.is_none() {
+                                if let Some(name) = failure.tool_name.as_ref().filter(|name|
+                                    snapshot.view.binding.tools.iter().any(|tool| &tool.name == *name)) {
+                                    let id = format!("{}:tool-correction", snapshot.view.request_id);
+                                    tool_correction = Some(Arc::new(ConversationItem {
+                                        resource_activation: None, id: id.clone(),
+                                        provenance: Provenance::EnvironmentFact { event_id: id },
+                                        content: Content::Text { text: format!(
+                                            "No tool in the previous response ran. {name} is available through tool_invoke, with name and arguments. Submit the intended calls again using the declared interfaces.") },
+                                        opaque: None,
+                                    }));
+                                    policy_state = previous_policy_state;
+                                    continue 'agent;
+                                }
+                            }
                             let decision = retry_policy.decide(&(&failure).into(), retries_used);
                             if decision.retry {
                                 self.persistence.observe_retry(&input.run_id, input.owner_generation, &snapshot.view.request_id, Some((retries_used + 1, decision.delay_ms)));
@@ -2986,6 +3005,7 @@ impl<
                     };
                     break (snapshot, items, calls, reason);
                     };
+                    tool_correction = None;
                     let committed: Vec<_> = items
                         .iter()
                         .map(|item| model_history_item(&snapshot.view.request_id, item))

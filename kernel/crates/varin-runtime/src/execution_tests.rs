@@ -267,6 +267,7 @@ struct Provider {
 enum Mode {
     ToolThenAnswer,
     RecoverToolThenAnswer,
+    CorrectUndeclared,
     CancelPrepared,
     PartialFailure,
 }
@@ -287,6 +288,18 @@ impl ModelProvider for Provider {
         let send = |emit: &mut dyn FnMut(ProviderEvent) -> Result<(), ExecutionError>, event| {
             emit(event).map_err(|e| ModelFailure::new(e.code, e.message))
         };
+        if matches!(self.mode, Mode::CorrectUndeclared) {
+            if call == 0 {
+                return Err(crate::tool_disclosure::model_tool_for(
+                    &request.view.binding.tools, request.view.binding.direct_tools.as_deref(), "read"
+                ).unwrap_err().into());
+            }
+            assert!(request.view.history.iter().any(|item| matches!(&item.content,
+                Content::Text { text } if text.contains("tool_invoke") && text.contains("read"))));
+            send(emit, ProviderEvent::ItemCompleted { item: ProviderItem { id: "answer".into(),
+                content: Content::Text { text: "corrected".into() }, opaque: None } })?;
+            return Ok(FinishReason::Stop);
+        }
         if matches!(self.mode, Mode::PartialFailure) {
             send(
                 emit,
@@ -594,6 +607,20 @@ fn interrupted_partial_tool_arguments_never_execute_and_remain_nonzero_unknown_u
     assert_eq!(step.state, crate::ModelStepState::Interrupted);
     assert_eq!(step.usage.unwrap()["measurement"], "missing");
     assert_eq!(db.lock().unwrap().history("main").unwrap().len(), 1);
+}
+
+#[test]
+fn undeclared_tool_feedback_continues_without_executing_rejected_calls() {
+    let fixture = Fixture::new();
+    let db = fixture.catalog();
+    let mut input = input(&db);
+    input.binding.tools.extend(crate::tool_disclosure::schemas());
+    input.binding.direct_tools = Some(vec!["tool_describe".into(), "tool_invoke".into()]);
+    let cancel = CancellationToken::default();
+    let engine = engine(db, Mode::CorrectUndeclared, cancel.clone(), ProgressSink::default());
+    assert_eq!(engine.run(input, cancel).unwrap().state, RunState::Completed);
+    assert_eq!(engine.provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(engine.tools.calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

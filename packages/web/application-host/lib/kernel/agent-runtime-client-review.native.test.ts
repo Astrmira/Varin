@@ -803,7 +803,7 @@ it('file write and edit preserve conflict receipts and round-trip through the re
   store.bindCheckpointRefresh(lifecycle.refresh);
   const service = createFileRecoveryService({ runtime: f.runtimeClient, kernel: f.host, storage, store, resolveFiles: async () => files,
     // This materialized worktree has no registered/open editor surface.
-    documents: { listWorkspaceRegistrations: async () => [],
+    documents: { listWorkspaceRegistrations: async () => [], invalidateRestoredFile: () => { throw new Error('Unexpected editor invalidation'); },
       beginDirtyStateBarrier: async () => { throw new Error('Unexpected editor barrier'); }, inspectDirtyBuffers: async () => [] } });
   const listed = await service({ conversation, action: 'list' });
   expect(listed.failures).toBeUndefined();

@@ -2727,6 +2727,9 @@ export const createDocumentAuthority = (options: DocumentAuthorityOptions) => {
     advanceEpoch: mutations.advanceEpoch,
     setMaintenance: mutations.setMaintenance,
     registerWriter: mutations.registerWriter,
+    invalidateRestoredFile: (resource: DocumentResource) => {
+      watcherController(resource.workspaceId)?.publishMutation({ kind: 'invalidated', resource, reason: 'entry-changed' });
+    },
     emitWatchOverflow: (workspaceId: string) => {
       const controller = watcherController(workspaceId);
       if (!controller) return false;
