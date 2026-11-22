@@ -1724,20 +1724,23 @@ export class DocumentRegistry {
     });
   }
 
+  private releaseDirtyBarrier(barrier: DirtyBarrierHold): void {
+    if (!barrier.active) return;
+    barrier.active = false;
+    barrier.release();
+    this.dirtyBarriers.delete(barrier.barrierId);
+    for (const move of this.deferredResourceMoves.splice(0)) this.handleWatchEvent(move, move.from.workspaceId);
+    for (const [key, identity] of this.deferredWatchReloads) {
+      if (this.isDirtyBarrierHeld(identity)) continue;
+      this.deferredWatchReloads.delete(key);
+      void this.open(identity, { reload: true }).catch(error => this.reportJournalFailure(error));
+    }
+  }
+
   private async handleDirtyStateBarrier(event: VarinDirtyStateBarrierEvent): Promise<void> {
     const existing = this.dirtyBarriers.get(event.barrierId);
     if (event.action === 'release') {
-      if (existing) {
-        existing.active = false;
-        existing.release();
-        this.dirtyBarriers.delete(event.barrierId);
-        for (const move of this.deferredResourceMoves.splice(0)) this.handleWatchEvent(move, move.from.workspaceId);
-        for (const [key, identity] of this.deferredWatchReloads) {
-          if (this.isDirtyBarrierHeld(identity)) continue;
-          this.deferredWatchReloads.delete(key);
-          void this.open(identity, { reload: true }).catch(error => this.reportJournalFailure(error));
-        }
-      }
+      if (existing) this.releaseDirtyBarrier(existing);
       return;
     }
     if (existing?.active) return;
@@ -1774,15 +1777,9 @@ export class DocumentRegistry {
         ownerId: this.dirtyOwnerId,
         workspaceId: event.workspaceId,
       });
-      if (!result?.acknowledged) {
-        barrier.active = false;
-        barrier.release();
-        this.dirtyBarriers.delete(event.barrierId);
-      }
+      if (!result?.acknowledged) this.releaseDirtyBarrier(barrier);
     } catch (error) {
-      barrier.active = false;
-      barrier.release();
-      this.dirtyBarriers.delete(event.barrierId);
+      this.releaseDirtyBarrier(barrier);
       this.reportJournalFailure(error);
     }
   }
