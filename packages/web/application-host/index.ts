@@ -292,6 +292,7 @@ import { getGitHubAuth, getGitHubAuthAccounts, isGhCliActive, isGhCliDisabled } 
 import { getGhCliToken } from './lib/github/gh-cli-credential.js';
 import { resolvePrimaryWorktreeRoot } from './lib/git/service.js';
 
+import { preparationLogReason } from './lib/kernel/preparation-failure.js';
 import { createKernelClient, KernelClientError, type KernelClient } from './lib/kernel/kernel-client.js';
 
 import { createStructureSource } from './lib/structure/source.js';
@@ -2072,8 +2073,8 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     if (selected?.identity !== identity) {
       releaseAgentMcpScope(input.runId);
       const ready = mcpCompositions.observe(scope, () => {
-        void agentRuntime.refreshMcp(input.runId).catch(() => {
-          console.error('[MCP] Tool composition preparation failed for Run:', input.runId);
+        void agentRuntime.refreshMcp(input.runId).catch(error => {
+          console.error('[MCP] Tool composition preparation failed for Run:', input.runId, preparationLogReason(error));
         });
       }, signal);
       selected = { identity, ready };
@@ -2456,9 +2457,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   releaseSourcePreparations=threads=>prepareThreadSource.releaseDeletedThreads(threads);
   const threads = new ThreadAdapter(agentRuntime,
     modelAuthority, createThreadSourceAdmission({ documents: documentsAuthority, liveSources, nativeWorkspaces, remote: managedSourceConsumers.threads,
-      withSourceRead: (input, consume) => kernelStorageAdapter.withResourceRead(input, consume), runtime: agentRuntime }), (runId, _error) => {
+      withSourceRead: (input, consume) => kernelStorageAdapter.withResourceRead(input, consume), runtime: agentRuntime }), (runId, error) => {
       // Durable launch remains inspectable/resumable. Never log credentials or provider responses.
-      console.error('[Thread] Launch preparation requires attention:', runId);
+      console.error('[Thread] Launch preparation requires attention:', runId, preparationLogReason(error));
     }, prepareThreadSource,
     threadContext, new PlanService(agentRuntime, getUserKnowledgeStore), createThreadSkillInputPreparer(threadResources), createThreadProcesses({ runtime: agentRuntime, kernel: kernelClient,
       terminal: () => terminalRuntime, resolveLiveSource: liveSources.validate,
