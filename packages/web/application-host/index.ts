@@ -2563,11 +2563,17 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   threads.bindFileResolver(userFileTarget);
   // User mutations share Documents' native gate and its lease context.
   const catalogFileSearch = createFsSearchRuntimeFactory({ compute: kernelCompute });
-  const resourceFiles = createResourceFilesOwner(documentsAuthority, kernelRecoveryFileResources, userFileTarget, async (selection, signal) => {
-    const registration = await documentsAuthority.admitWorkspaceRegistration(selection.workspaceId, signal);
-    const prepared = await nativeWorkspaces!.prepareSelection(selection, 'project-files', signal);
-    return { path: prepared.path, originalRoot: registration.canonicalPath };
-  }, { files: catalogFileSearch, content: workspaceContentSearch }, (bytes,format,signal)=>officeRenderer.convert(bytes,format,'pdf',signal));
+  const resourceFiles = createResourceFilesOwner(documentsAuthority, kernelRecoveryFileResources, {
+    restrictedRoot: workspaceConfig.lockdown ? workspaceConfig.root : null,
+    fileTarget: userFileTarget,
+    prepareProjectSelection: async (selection, signal) => {
+      const registration = await documentsAuthority.admitWorkspaceRegistration(selection.workspaceId, signal);
+      const prepared = await nativeWorkspaces!.prepareSelection(selection, 'project-files', signal);
+      return { path: prepared.path, originalRoot: registration.canonicalPath };
+    },
+    search: { files: catalogFileSearch, content: workspaceContentSearch },
+    renderOffice: (bytes, format, signal) => officeRenderer.convert(bytes, format, 'pdf', signal),
+  });
   registerResourceFileRoutes(app, { local: resourceFiles, remote: owner => managedRemoteTargets!.source(owner), runtime: agentRuntime, attachments: threadAttachments, requireAuth: uiAuthController.requireAuth });
   const transferResourceFiles = createResourceFileTransfer({ local: resourceFiles, remote: owner => managedRemoteTargets!.source(owner), runtime: agentRuntime });
   threads.bindMaterials(webRuntimeOwner.current.inputMaterials);
