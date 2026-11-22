@@ -575,6 +575,8 @@ interface UIStore {
   eventStreamHint: string | null;
   showReasoningTraces: boolean;
   showGenerationSpeed: boolean;
+  collapseCompletedWork: boolean;
+  setCollapseCompletedWork: (value: boolean) => void;
   setShowGenerationSpeed: (value: boolean) => void;
   sessionGoalEnabled: boolean;
   sessionGoalDefaultBudgetEnabled: boolean;
@@ -908,6 +910,8 @@ export const useUIStore = create<UIStore>()(
         eventStreamHint: null,
         showReasoningTraces: true,
         showGenerationSpeed: true,
+        collapseCompletedWork: true,
+        setCollapseCompletedWork: value => set({ collapseCompletedWork: value }),
         setShowGenerationSpeed: value => set({ showGenerationSpeed: value }),
         sessionGoalEnabled: true,
         sessionGoalDefaultBudgetEnabled: false,
@@ -2338,6 +2342,7 @@ export const useUIStore = create<UIStore>()(
           // Note: isSettingsDialogOpen intentionally NOT persisted
           showReasoningTraces: state.showReasoningTraces,
           showGenerationSpeed: state.showGenerationSpeed,
+          collapseCompletedWork: state.collapseCompletedWork,
           sessionGoalEnabled: state.sessionGoalEnabled,
           sessionGoalDefaultBudgetEnabled: state.sessionGoalDefaultBudgetEnabled,
           sessionGoalDefaultBudget: state.sessionGoalDefaultBudget,
