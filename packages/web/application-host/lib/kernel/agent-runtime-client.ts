@@ -1127,7 +1127,7 @@ export class AgentRuntimeClient {
   recoverySources(input: { threadId: string; branchId: string }, signal?: AbortSignal): Promise<Array<{ runId: string; source: import('./protocol.generated.js').LaunchSource }>> {
     return this.kernel.agentRuntimeRequest('runtime.branch.recovery.sources', { threadId: input.threadId, branchId: input.branchId }, signal);
   }
-  recoveryRange(input: import('./protocol.generated.js').NavigationSelectParams, signal?: AbortSignal): Promise<import('./protocol.generated.js').RecoveryRangeTurn[]> {
+  recoveryRange(input: import('./protocol.generated.js').RecoveryRangeParams, signal?: AbortSignal): Promise<import('./protocol.generated.js').RecoveryRangeTurn[]> {
     return this.kernel.agentRuntimeRequest('runtime.branch.recovery.range', input, signal);
   }
   recoveryRun(runId: string, signal?: AbortSignal): Promise<import('./protocol.generated.js').RecoveryRangeTurn[]> {

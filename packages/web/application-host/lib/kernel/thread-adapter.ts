@@ -1,3 +1,4 @@
+import { recoveryFailure } from '../recovery/errors.js';
 import { calendarPreparationError, type CalendarPreparationStage } from '../scheduled-tasks/preparation-error.js';
 import { prepareQuoteSelections } from './thread-quotes.js';
 import { parseContentReferenceInput, type ContentReferenceInput } from '@varin/application-client';
@@ -77,6 +78,13 @@ async function admitThreadInput<T>(method: string, submit: () => Promise<T>, rec
     }
     throw error;
   }
+}
+
+export function recoveryRangeSource(range: Awaited<ReturnType<AgentRuntimeClient['recoveryRange']>>) {
+  const selected = range.find(turn => turn.source?.resource_owner.kind === 'managed_host' && turn.source.mode !== 'fixed_branch')
+    ?? range.find(turn => turn.source && turn.source.mode !== 'fixed_branch') ?? range.find(turn => turn.source);
+  if (!selected?.source) return null;
+  return { resourceOwner: selected.source.resource_owner, workspaceId: selected.source.workspace_id, mode: selected.source.mode, runId: selected.anchor.runId };
 }
 
 /** Projection and admission only: Rust owns all conversation, queue and execution facts. */
@@ -347,6 +355,19 @@ export class ThreadAdapter {
     await this.requireIdentity(identity);
     if (!this.sourceDirectory) throw new Error('Source directory is unavailable');
     return this.sourceDirectory.resolve(request, signal);
+  }
+
+  private prepareRecoveryFiles?: (input: ThreadIdentity & { entryId: string }, selection: Awaited<ReturnType<ThreadAdapter['prepareNavigation']>>, signal?: AbortSignal) => Promise<import('@varin/extension-contract').WorkspaceCombinedRecoveryPrepareResult | null>;
+  bindRecoveryPlanner(planner: NonNullable<ThreadAdapter['prepareRecoveryFiles']>) { this.prepareRecoveryFiles = planner; }
+  async prepareRecovery(input: ThreadIdentity & { entryId: string }, signal?: AbortSignal) {
+    const selection = await this.prepareNavigation(input, signal);
+    try {
+      if (!this.prepareRecoveryFiles) throw new Error('File recovery is unavailable');
+      return { ...selection, fileRecovery: await this.prepareRecoveryFiles(input, selection, signal) };
+    } catch (error) {
+      signal?.throwIfAborted();
+      return { ...selection, fileRecovery: { status: 'failed' as const, failure: recoveryFailure(error) } };
+    }
   }
 
   private recoveryReader?: (identity: ThreadIdentity, signal?: AbortSignal) => Promise<NonNullable<ThreadSnapshot['recovery']>>;
@@ -890,21 +911,21 @@ export class ThreadAdapter {
   async recoverySource(input: ThreadIdentity & { entryId: string }, signal?: AbortSignal) {
     await this.requireIdentity(input);
     const range = await this.runtime.recoveryRange({ threadId: input.threadId, branchId: input.branchId, entryId: input.entryId }, signal);
-    const selected = range.find(turn => turn.source?.resource_owner.kind === 'managed_host' && turn.source.mode !== 'fixed_branch')
-      ?? range.find(turn => turn.source && turn.source.mode !== 'fixed_branch') ?? range.find(turn => turn.source);
-    if (!selected?.source) return null;
-    return { resourceOwner: selected.source.resource_owner, workspaceId: selected.source.workspace_id, mode: selected.source.mode, runId: selected.anchor.runId };
+    return recoveryRangeSource(range);
   }
-  async prepareNavigation(input: ThreadIdentity & { entryId: string }, signal?: AbortSignal) {
+  async prepareNavigation(input: ThreadIdentity & { entryId: string }, signal?: AbortSignal): ReturnType<import('@varin/application-client').ThreadsAPI['prepareNavigation']> {
     await this.requireIdentity(input);
     const selection = await this.runtime.prepareNavigation({ threadId: input.threadId, branchId: input.branchId, entryId: input.entryId }, signal);
-    const reference = await this.recoveryEntry(input, signal);
-    if (reference.source !== 'user') return selection;
+    const { editorEntry: reference, ...navigation } = selection;
+    if (!reference) return navigation;
     const selected = await this.runtime.historyItem(reference, signal);
     const attachments = (selected.content as { attachments?: import('@varin/protocol').StoredMedia[] }).attachments;
     const imageReferences = (selected.content as { imageReferences?: number[] }).imageReferences;
     const quoteContent = selected.content as ContentReferenceInput & { fileAttachments?: import('@varin/protocol').Attachment[]; attachmentImageReferences?: Record<string, number> };
-    const quoteSelection = { ...selection,
+    const textFields = selected.content as { userText?: unknown; text?: unknown } | null;
+    const editorText = typeof selected.content === 'string' ? selected.content : textFields?.userText ?? textFields?.text;
+    const quoteSelection = { ...navigation,
+      ...(typeof editorText === 'string' ? { editorText } : {}),
       ...(quoteContent.contentReferences === undefined ? {} : { editorContentReferences: quoteContent.contentReferences }),
       ...(quoteContent.contentReferenceOccurrences === undefined ? {} : { editorContentReferenceOccurrences: quoteContent.contentReferenceOccurrences }),
       ...(quoteContent.fileAttachments === undefined ? {} : { editorAttachments: quoteContent.fileAttachments }),

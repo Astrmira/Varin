@@ -607,6 +607,12 @@ pub struct ProviderItem {
 pub(crate) fn model_history_id(request_id: &str, item_id: &str) -> String {
     format!("model-item:{}:{}:{}", request_id.len(), request_id, item_id)
 }
+pub(crate) fn model_request_from_history_id(id: &str) -> Option<&str> {
+    let (length, rest) = id.strip_prefix("model-item:")?.split_once(':')?;
+    let end = length.parse::<usize>().ok()?;
+    rest.get(end..)?.strip_prefix(':')?;
+    rest.get(..end)
+}
 pub(crate) fn model_history_item(request_id: &str, item: &ProviderItem) -> ConversationItem {
     ConversationItem {
         resource_activation: None,
@@ -3482,54 +3488,83 @@ fn normalize_completion(
     }
 }
 
-pub(crate) fn validate_history_pairs(history: &[Arc<ConversationItem>]) -> Result<(), ExecutionError> {
-    let mut pending = BTreeSet::new();
-    let mut returning_results = false;
-    for item in history {
-        match &item.content {
-            Content::ToolCall { call } => {
-                if returning_results
-                    || !matches!(item.provenance, Provenance::Assistant)
-                    || !pending.insert(call.call_id.clone())
-                {
-                    return Err(ExecutionError::new(
-                        "invalid_history_pairing",
-                        "tool calls must form one assistant batch",
-                    ));
-                }
+/// Only the open tool batch crosses an immutable history boundary.
+#[derive(Default)]
+pub(crate) struct HistoryPairing {
+    pending: BTreeSet<String>,
+    returning_results: bool,
+}
+pub(crate) enum HistoryPart<'a> {
+    Call(&'a str),
+    Result(&'a str),
+    Assistant,
+    Other,
+    Invalid,
+}
+impl<'a> HistoryPart<'a> {
+    pub(crate) fn from_content<M>(content: &'a Content<M>, provenance: &Provenance) -> Self {
+        match content {
+            Content::ToolCall { call } if matches!(provenance, Provenance::Assistant) => {
+                Self::Call(&call.call_id)
             }
-            Content::ToolResult { result } => {
-                if !matches!(&item.provenance, Provenance::ToolData { call_id } if call_id == &result.call_id)
-                    || !pending.remove(&result.call_id)
-                {
+            Content::ToolResult { result } if matches!(provenance, Provenance::ToolData { call_id } if call_id == &result.call_id) => {
+                Self::Result(&result.call_id)
+            }
+            Content::ToolCall { .. } | Content::ToolResult { .. } => Self::Invalid,
+            _ if matches!(provenance, Provenance::Assistant) => Self::Assistant,
+            _ => Self::Other,
+        }
+    }
+}
+impl HistoryPairing {
+    pub(crate) fn observe(&mut self, part: HistoryPart<'_>) -> Result<(), ExecutionError> {
+        let message = match part {
+            HistoryPart::Call(id)
+                if self.returning_results || !self.pending.insert(id.to_owned()) =>
+            {
+                "tool calls must form one assistant batch"
+            }
+            HistoryPart::Result(id) => {
+                if !self.pending.remove(id) {
                     return Err(ExecutionError::new(
                         "invalid_history_pairing",
                         "tool result lacks a matching call and provenance",
                     ));
                 }
-                returning_results = !pending.is_empty();
+                self.returning_results = !self.pending.is_empty();
+                return Ok(());
             }
-            _ if !pending.is_empty()
-                && (returning_results || !matches!(item.provenance, Provenance::Assistant)) =>
-            {
-                return Err(ExecutionError::new(
-                    "invalid_history_pairing",
-                    "content interrupts an unclosed tool exchange",
-                ));
+            HistoryPart::Invalid => "tool item lacks matching provenance",
+            HistoryPart::Other if !self.pending.is_empty() => {
+                "content interrupts an unclosed tool exchange"
             }
-            _ => {}
+            HistoryPart::Assistant if self.returning_results => {
+                "content interrupts an unclosed tool exchange"
+            }
+            _ => return Ok(()),
+        };
+        Err(ExecutionError::new("invalid_history_pairing", message))
+    }
+    pub(crate) fn finish(&self) -> Result<(), ExecutionError> {
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(ExecutionError::new(
+                "invalid_history_pairing",
+                "history ends in an unclosed tool exchange",
+            ))
         }
     }
-    if pending.is_empty() {
-        Ok(())
-    } else {
-        Err(ExecutionError::new(
-            "invalid_history_pairing",
-            "history ends in an unclosed tool exchange",
-        ))
-    }
 }
-
+pub(crate) fn validate_history_pairs(
+    history: &[Arc<ConversationItem>],
+) -> Result<(), ExecutionError> {
+    let mut pairing = HistoryPairing::default();
+    for item in history {
+        pairing.observe(HistoryPart::from_content(&item.content, &item.provenance))?;
+    }
+    pairing.finish()
+}
 #[cfg(test)]
 #[path = "execution_tests.rs"]
 mod tests;

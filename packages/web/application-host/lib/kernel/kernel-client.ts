@@ -535,6 +535,10 @@ export class KernelScopedClient {
   recoveryOperationConflicts(params: KernelMethodParams["recovery.operation.conflicts"], signal?: AbortSignal): Promise<KernelRecoveryOperationConflictsResult> {
     return this.owner.recoveryOperationConflicts(params, this.grant, signal);
   }
+  recoveryBranchOperations(params: KernelMethodParams["recovery.operation.branch"], signal?: AbortSignal): Promise<unknown[]> {
+    return this.owner.recoveryBranchOperations(params, this.grant, signal);
+  }
+
   recoveryOperationList(params: KernelMethodParams["recovery.operation.list"], signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.owner.recoveryOperationList(params, this.grant, signal);
   }
@@ -1921,6 +1925,10 @@ export class KernelClient {
   async recoveryOperationConflicts(params: KernelMethodParams["recovery.operation.conflicts"], grant: KernelGrantHandle, signal?: AbortSignal): Promise<KernelRecoveryOperationConflictsResult> {
     return this.requestRaw<KernelRecoveryOperationConflictsResult>("recovery.operation.conflicts", params, { signal, grant });
   }
+  recoveryBranchOperations(params: KernelMethodParams["recovery.operation.branch"], grant: KernelGrantHandle, signal?: AbortSignal): Promise<unknown[]> {
+    return this.requestRaw<unknown[]>("recovery.operation.branch", params, { signal, grant });
+  }
+
   async recoveryOperationList(params: KernelMethodParams["recovery.operation.list"], grant: KernelGrantHandle, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.requestRaw<Record<string, unknown>>("recovery.operation.list", params, { signal, grant });
   }

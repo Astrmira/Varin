@@ -1692,7 +1692,7 @@ export interface NavigationSelection {
   expectedHeadId: string | null;
   targetHeadId: string | null;
   removedEntryIds: string[];
-  editorText?: string;
+  editorEntry?: HistoryReference;
 }
 
 export interface NavigationReceipt {

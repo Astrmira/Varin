@@ -620,3 +620,65 @@ fn isolated_external_source_authority_uses_the_original_derived_execution_identi
     assert!(open(&mut storage,"fixed-derived",&derived,"principal","thread:child:dispatch",false).is_err());
     drop(storage);fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn recovery_branch_summary_uses_the_original_branch_across_workspaces() {
+    let (mut storage, root) = fixture();
+    let query =
+        json!({"workspaceId":"recovery-coordinator:host","threadId":"thread","branchId":"main"});
+    assert!(invoke(&mut storage, "recovery.operation.branch", &query).is_err());
+    let coordinator = json!({"grantId":"coordinator","hostGeneration":"generation","owningWorkspace":"recovery-coordinator:host",
+        "executionWorkspace":"recovery-coordinator:host","capabilities":["recovery.maintenance"],"pathScopes":[]});
+    storage
+        .issue_grant(
+            &coordinator,
+            "host",
+            "generation",
+            &root.to_string_lossy(),
+            "epoch",
+        )
+        .unwrap();
+    for (id, workspace, branch) in [
+        ("a", "desk", "main"),
+        ("b", "server", "main"),
+        ("c", "desk", "elsewhere"),
+    ] {
+        let data = json!({"plan":{"conversation":{"kind":"thread","threadId":"thread","branchId":branch},"id":id,
+            "affectedPaths":["note"],"expectedLeafId":"after","targetLeafId":"before","entryId":"entry","revision":"v1"},
+            "fileState":"unchanged","conversationState":"unchanged","editorText":"private draft","appliedPaths":[],
+            "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"});
+        storage.conn.execute("INSERT INTO recovery_operations(operation_id,workspace_id,kind,state,thread_id,data_json,revision,created_at,updated_at)
+            VALUES(?1,?2,'combined','applying-files','thread',?3,1,'t','t')", rusqlite::params![id,workspace,data.to_string()]).unwrap();
+    }
+    storage.conn.execute("INSERT INTO recovery_operation_files(workspace_id,operation_id,ordinal,path,phase,revision,updated_at)
+        VALUES('desk','a',0,'note','target-observed',1,'t')", []).unwrap();
+    let (grant, params) = storage
+        .authorize(
+            Some("coordinator"),
+            "epoch",
+            "host",
+            "generation",
+            "recovery.operation.branch",
+            &query,
+        )
+        .unwrap();
+    let result = storage
+        .dispatch(
+            "recovery.operation.branch",
+            &params,
+            Some("coordinator"),
+            &grant,
+        )
+        .unwrap();
+    let rows = result.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], "a");
+    assert_eq!(rows[0]["appliedPathCount"], 1);
+    assert_eq!(rows[1]["workspaceId"], "server");
+    assert!(
+        rows.iter()
+            .all(|r| r.get("editorText").is_none() && r.get("failure").is_none())
+    );
+    drop(storage);
+    fs::remove_dir_all(root).unwrap();
+}

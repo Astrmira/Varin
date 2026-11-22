@@ -40,7 +40,7 @@ import { createSourceGitInventory } from './lib/kernel/source-git-inventory.js';
 import { createThreadNotificationRuntime } from './lib/notifications/thread-runtime.js';
 import { createContentMaintenance } from './lib/kernel/content-maintenance.js';
 import { createContextCompaction } from './lib/kernel/context-compaction.js';
-import { createThreadRecoveryNavigation, createThreadRecoveryFileResolver } from './lib/recovery/thread-navigation.js';
+import { ThreadRecoverySelection, createThreadRecoveryNavigation, createThreadRecoveryFileResolver } from './lib/recovery/thread-navigation.js';
 import { createCheckpointLifecycle } from './lib/recovery/checkpoint-lifecycle.js';
 import { createFileRecoveryService } from './lib/recovery/file-recovery-service.js';
 import { createManagedRecoveryCoordinator, type ManagedRecoveryPort } from './lib/recovery/managed-recovery-coordinator.js';
@@ -162,7 +162,7 @@ import { createIntegrationToolOwner, createIntegrationTargetOpener, createFileEf
 import { AgentRuntimeClient } from './lib/kernel/agent-runtime-client.js';
 import { createThreadProcesses } from './lib/kernel/thread-processes.js';
 import { createResearchRuntime, createResearchSourceAuthority, RESEARCH_CAPABILITY } from './lib/kernel/research-runtime.js';
-import { ThreadAdapter } from './lib/kernel/thread-adapter.js';
+import { recoveryRangeSource, ThreadAdapter } from './lib/kernel/thread-adapter.js';
 import { registerThreadExportRoutes } from './lib/kernel/thread-export-routes.js';
 import { createThreadRemember } from './lib/memory/thread-remember.js';
 import { registerThreadRememberRoutes } from './lib/memory/thread-remember-routes.js';
@@ -2700,19 +2700,23 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     storage: kernelStorageAdapter, store: kernelRecoveryStore, documents: documentsAuthority, sourceDirectory, resolveFiles: localRecoveryFileResolver });
   kernelRecoveryContentStore.bindTargetResources(async identity =>
     await targetRecovery.resolveFileResources(identity) ?? localRecoveryFileResolver(identity));
+  threads.bindRecoveryPlanner(async (input, selection, signal) => {
+    const branch = { threadId: input.threadId, branchId: input.branchId, entryId: input.entryId };
+    const range = await agentRuntime.recoveryRange({ ...branch, ...(selection.expectedHeadId ? { expectedHeadId: selection.expectedHeadId } : {}) }, signal);
+    const source = recoveryRangeSource(range);
+    if (!source || source.mode === 'fixed_branch') return null;
+    const review = { workspaceId: source.workspaceId, entryId: input.entryId,
+      conversation: { kind: 'thread' as const, threadId: input.threadId, branchId: input.branchId } };
+    return new ThreadRecoverySelection(review, () => threadRecoveryNavigation.prepareFiles(selection, range)).prepare(extensionRuntime, signal);
+  });
   threads.bindRecoveryReader(async (identity, signal) => {
     try {
-    const branch = { threadId: identity.threadId, branchId: identity.branchId };
-    const sources = await agentRuntime.recoveryWorkspaces(branch, signal);
-    const receipt = await agentRuntime.navigationReceipt(branch, signal);
-    const workspaces = [...new Set([recoveryCoordinatorWorkspace,
-      ...sources.filter(source => source.resource_owner.kind === 'local').map(source => source.workspace_id)])];
-    const operations = (await Promise.all(workspaces.map(async workspaceId => {
-      const result = await foundationalRecoveryEngine.listCombinedOperations(workspaceId, signal);
-      if (result.status !== 'ready') throw new Error('Recovery status unavailable');
-      return result.operations.map(({editorText: _text,editorImages: _images,...operation}) => operation).filter(operation => operation.conversation.kind === 'thread' && operation.conversation.threadId === identity.threadId && operation.conversation.branchId === identity.branchId);
-    }))).flat();
-    return { navigation: receipt && !operations.some(operation => operation.id === receipt.key) ? receipt : null, operations };
+      const branch = { threadId: identity.threadId, branchId: identity.branchId };
+      const [receipt, operations] = await Promise.all([
+        agentRuntime.navigationReceipt(branch, signal),
+        kernelRecoveryStore.branchOperations(recoveryCoordinatorWorkspace, branch, signal),
+      ]);
+      return { navigation: receipt && !operations.some(operation => operation.id === receipt.key) ? receipt : null, operations };
     } catch { signal?.throwIfAborted(); return {navigation:null,operations:[],unavailable:"Recovery status is unavailable; conversation history remains readable"}; }
   });
   threadRecoveryReady = true;

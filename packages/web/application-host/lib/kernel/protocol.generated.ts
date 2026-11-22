@@ -426,6 +426,7 @@ export type KernelMethod =
   | "recovery.operation.file.cas"
   | "recovery.operation.complete"
   | "recovery.operation.list"
+  | "recovery.operation.branch"
   | "recovery.operation.release"
   | "operation.get"
   | "operation.release"
@@ -3148,6 +3149,13 @@ export interface RecoveryRangeTurn {
   settled: boolean;
 }
 
+export interface RecoveryRangeParams {
+  threadId: string;
+  branchId: string;
+  entryId: string;
+  expectedHeadId?: string;
+}
+
 export interface NavigationSelectParams {
   threadId: string;
   branchId: string;
@@ -3174,7 +3182,7 @@ export interface NavigationSelection {
   expectedHeadId: string | null;
   targetHeadId: string | null;
   removedEntryIds: string[];
-  editorText?: string;
+  editorEntry?: HistoryReference;
 }
 
 export interface NavigationReceipt {
@@ -5945,8 +5953,15 @@ export interface KernelRecoveryOperationGetParams {
   workspaceId: string;
 }
 
+export interface KernelBranchRecoveryParams {
+  workspaceId: string;
+  threadId: string;
+  branchId: string;
+}
+
 export interface KernelRecoveryOperationListParams {
   workspaceId: string;
+  resumableOnly?: boolean;
   kind?: string;
   cursor?: number;
   pageSize?: number;
@@ -7766,7 +7781,7 @@ export type KernelMethodParams = {
   "runtime.followup.occurrence": FollowupOccurrenceGetParams;
   "runtime.followup.update": FollowupUpdateParams;
   "runtime.followup.control": FollowupControlParams;
-  "runtime.branch.recovery.range": NavigationSelectParams;
+  "runtime.branch.recovery.range": RecoveryRangeParams;
   "runtime.run.recovery": RunParams;
   "runtime.recovery.labels": RecoveryLabelsParams;
   "runtime.branch.navigation.prepare": NavigationSelectParams;
@@ -8002,6 +8017,7 @@ export type KernelMethodParams = {
   "recovery.operation.complete": KernelRecoveryOperationCompleteParams;
   "recovery.operation.conflicts": KernelRecoveryOperationConflictsParams;
   "recovery.operation.list": KernelRecoveryOperationListParams;
+  "recovery.operation.branch": KernelBranchRecoveryParams;
   "recovery.operation.release": KernelRecoveryOperationReleaseParams;
   "operation.get": KernelOperationGetParams;
   "operation.release": KernelOperationReleaseParams;
@@ -9658,7 +9674,7 @@ export type KernelRequest =
       kind: "request";
       id: string;
       method: "runtime.branch.recovery.range";
-      params: NavigationSelectParams;
+      params: RecoveryRangeParams;
       epoch?: string;
       grantId?: string;
     }
@@ -11774,6 +11790,15 @@ export type KernelRequest =
       id: string;
       method: "recovery.operation.list";
       params: KernelRecoveryOperationListParams;
+      epoch?: string;
+      grantId?: string;
+    }
+  | {
+      v: typeof KERNEL_PROTOCOL_VERSION;
+      kind: "request";
+      id: string;
+      method: "recovery.operation.branch";
+      params: KernelBranchRecoveryParams;
       epoch?: string;
       grantId?: string;
     }

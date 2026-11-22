@@ -319,6 +319,9 @@ impl Storage {
                     storage.recovery_operation_complete(authorized_params, grant_id.unwrap_or(""))
                 })
             }
+            "recovery.operation.branch" => {
+                storage.recovery_branch_operations(authorized_params, grant_id.unwrap_or(""))
+            }
             "recovery.operation.list" => {
                 storage.recovery_operation_list(authorized_params, grant_id.unwrap_or(""))
             }

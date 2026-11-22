@@ -198,7 +198,7 @@ export function createThreadsHttpAPI(): ThreadsAPI {
     listModels: () => post('models', {}),
     selectModel: input => post('model/select',input),
     create: (key, options) => post('create', { key, ...options }), fork: input => post('fork', input), submit: input => post('submit', withClientTime(input)), enqueue: input => post('enqueue', withClientTime(input)),
-    prepareNavigation: input => post('navigation/prepare', input),
+    prepareNavigation: ({ withFiles, ...input }) => post(withFiles ? 'navigation/prepare-files' : 'navigation/prepare', input),
     recoverySource: input => post('recovery/source', input),
     navigate: input => post('navigate', input),
     navigationReceipt: input => post('navigation/receipt', input),

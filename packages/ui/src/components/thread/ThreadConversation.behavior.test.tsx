@@ -3897,7 +3897,7 @@ function combinedFixture(f: ReturnType<typeof navigationFixture>, patch: Partial
   const operation: WorkspaceCombinedRecoveryOperation = { id: plan.id, revision: plan.revision, workspaceId: plan.workspaceId, conversation: plan.conversation,
     entryId: plan.entryId, expectedLeafId: plan.expectedLeafId, targetLeafId: plan.targetLeafId, state: 'complete', fileState: 'restored', conversationState: 'navigated',
     affectedPathCount: 1, appliedPathCount: 1, createdAt: plan.createdAt, updatedAt: plan.createdAt, editorText: f.user.content.text, editorImages: [] };
-  const prepareCombinedRecovery = vi.fn<WorkspaceRecoveryAPI['prepareCombinedRecovery']>(async () => ({ status: 'ready', plan }));
+  const fileReview = vi.fn<() => Promise<Awaited<ReturnType<WorkspaceRecoveryAPI['prepareCombinedRecovery']>> | null>>(async () => ({ status: 'ready', plan }));
   const applyCombinedRecovery = vi.fn<WorkspaceRecoveryAPI['applyCombinedRecovery']>(async input => {
     f.view.history = [f.assistant]; f.view.historyPage.head = plan.targetLeafId; f.view.thread.branches[0]!.head = plan.targetLeafId;
     return { status: 'ready', operation: { ...operation, id: input.operationId } };
@@ -3905,8 +3905,13 @@ function combinedFixture(f: ReturnType<typeof navigationFixture>, patch: Partial
   const getCombinedOperation = vi.fn<WorkspaceRecoveryAPI['getCombinedOperation']>(async () => ({ status: 'ready', operation }));
   const cancelCombinedOperation = vi.fn<WorkspaceRecoveryAPI['cancelCombinedOperation']>(async () => ({ status: 'ready', operation: { ...operation, state: 'aborted', fileState: 'unchanged', conversationState: 'unchanged' } }));
   const prepareCombinedUndo = vi.fn<WorkspaceRecoveryAPI['prepareCombinedUndo']>(async () => ({ status: 'ready', plan: { ...plan, id: 'undo-recovery', undoOf: plan.id } }));
-  recoveryService.api = { prepareCombinedRecovery, applyCombinedRecovery, getCombinedOperation, cancelCombinedOperation, prepareCombinedUndo } as unknown as WorkspaceRecoveryAPI;
-  return { plan, operation, prepareCombinedRecovery, applyCombinedRecovery, getCombinedOperation, cancelCombinedOperation, prepareCombinedUndo };
+  const selection = f.prepareNavigation.getMockImplementation()!;
+  f.prepareNavigation.mockImplementation(async input => {
+    const draft = await selection(input);
+    return input.withFiles ? { ...draft, fileRecovery: await fileReview() } : draft;
+  });
+  recoveryService.api = { applyCombinedRecovery, getCombinedOperation, cancelCombinedOperation, prepareCombinedUndo } as unknown as WorkspaceRecoveryAPI;
+  return { plan, operation, fileReview, applyCombinedRecovery, getCombinedOperation, cancelCombinedOperation, prepareCombinedUndo };
 }
 
 it('thread recovery restores the owner-selected head and original image draft, then undoes the same branch without running work', async () => {
@@ -3994,13 +3999,12 @@ it.each(['thread', 'host'] as const)('thread recovery cannot submit a late prepa
   expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Message thread"]')!.value).not.toBe('Old conversation');
 });
 
-it.each(['local', 'managed_host'] as const)('thread recovery uses the actual %s materialized source owner for combined restore and operation-based undo', async kind => {
+it('thread recovery applies and undoes the owner-prepared plan for the selected conversation', async () => {
   const f = navigationFixture(); const recovery = combinedFixture(f); useUIStore.setState({ recoveryPreference: 'both' });
-  if (kind === 'managed_host') f.recoverySource.mockResolvedValue({ resourceOwner: { kind, hostId: 'resource-host', connectionId: 'paired-resource', endpointIdentity: 'https://resource-host.test' }, workspaceId: 'actual-source-owner', mode: 'materialized', runId: 'finished-run' });
   await act(async () => root.render(<ThreadConversation api={f.api} identity={identity} initialWorkspacePath="/unrelated-sidebar" />));
   await openOverview('recovery');
   await act(async () => button('Restore before this message').click());
-  expect(recovery.prepareCombinedRecovery).toHaveBeenCalledWith({ workspaceId: 'actual-source-owner', conversation: { kind: 'thread', threadId: identity.threadId, branchId: identity.branchId }, entryId: f.user.id });
+  expect(f.prepareNavigation).toHaveBeenCalledExactlyOnceWith({ ...identity, entryId: f.user.id, withFiles: true });
   expect(recovery.applyCombinedRecovery).toHaveBeenCalledWith({ operationId: recovery.plan.id, expectedRevision: recovery.plan.revision, conflictPolicy: 'abort', confirmedConflicts: [] });
   expect(container.querySelector('[role="dialog"]')).toBeNull(); expect(f.navigate).not.toHaveBeenCalled();
   expect(container.querySelectorAll('article')).toHaveLength(1);
@@ -4011,11 +4015,11 @@ it.each(['local', 'managed_host'] as const)('thread recovery uses the actual %s 
 
 it('thread recovery keeps fixed-branch sources conversation-only even when combined recovery is preferred', async () => {
   const f = navigationFixture(); const recovery = combinedFixture(f); useUIStore.setState({ recoveryPreference: 'both' });
-  f.recoverySource.mockResolvedValue({ resourceOwner: { kind: 'local' }, workspaceId: 'read-only-source', mode: 'fixed_branch', runId: 'finished-run' });
+  recovery.fileReview.mockResolvedValueOnce(null);
   await act(async () => root.render(<ThreadConversation api={f.api} identity={identity} />));
   await openOverview('recovery');
   await act(async () => button('Restore before this message').click());
-  expect(f.navigate).toHaveBeenCalledOnce(); expect(recovery.prepareCombinedRecovery).not.toHaveBeenCalled();
+  expect(f.navigate).toHaveBeenCalledOnce(); expect(recovery.applyCombinedRecovery).not.toHaveBeenCalled();
 });
 
 it('thread recovery observes the original combined operation after uncertain file and history commits', async () => {
@@ -4030,7 +4034,7 @@ it('thread recovery observes the original combined operation after uncertain fil
   f.view.history = [f.assistant]; f.view.historyPage.head = f.assistant.id;
   await act(async () => button('Check recovery status').click());
   expect(recovery.getCombinedOperation).toHaveBeenLastCalledWith('original-recovery');
-  expect(recovery.prepareCombinedRecovery).toHaveBeenCalledOnce(); expect(recovery.applyCombinedRecovery).toHaveBeenCalledOnce();
+  expect(recovery.fileReview).toHaveBeenCalledOnce(); expect(recovery.applyCombinedRecovery).toHaveBeenCalledOnce();
   expect(f.navigate).not.toHaveBeenCalled(); expect(container.querySelectorAll('article')).toHaveLength(1);
   expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Message thread"]')!.value).toBe('Original user instruction');
 });
@@ -4098,7 +4102,7 @@ it('thread recovery freezes a confirmed conflict acknowledgement and observes th
   expect(container.querySelector('[role="dialog"]')).toBeNull();
   recovery.getCombinedOperation.mockResolvedValueOnce({ status: 'ready', operation: { ...recovery.operation, state: 'planned', conversationState: 'unchanged', fileState: 'unchanged' } });
   await act(async () => button('Check recovery status').click());
-  expect(recovery.prepareCombinedRecovery).toHaveBeenCalledOnce();
+  expect(recovery.fileReview).toHaveBeenCalledOnce();
   expect(recovery.applyCombinedRecovery.mock.calls[1]![0]).toEqual(recovery.applyCombinedRecovery.mock.calls[0]![0]);
 });
 
@@ -4182,7 +4186,7 @@ it('thread recovery resumes a stopped nonterminal combined operation using its o
   await act(async () => button('Restore before this message').click());
   expect(container.querySelectorAll('article')).toHaveLength(2);
   await act(async () => button('Check recovery status').click());
-  expect(recovery.prepareCombinedRecovery).toHaveBeenCalledOnce();
+  expect(recovery.fileReview).toHaveBeenCalledOnce();
   expect(recovery.applyCombinedRecovery.mock.calls[1]![0]).toEqual(recovery.applyCombinedRecovery.mock.calls[0]![0]);
   expect(f.navigate).not.toHaveBeenCalled(); expect(container.querySelectorAll('article')).toHaveLength(1);
 });
@@ -4264,7 +4268,7 @@ it('Bot thread recovery reveals interrupted operations on demand without replayi
   expect(recovery.applyCombinedRecovery).not.toHaveBeenCalled();
   await act(async () => button('Resume saved recovery').click());
   expect(recovery.applyCombinedRecovery).toHaveBeenCalledWith({ operationId: interrupted.id, expectedRevision: interrupted.revision, conflictPolicy: 'abort', confirmedConflicts: [] });
-  expect(recovery.prepareCombinedRecovery).not.toHaveBeenCalled(); expect(f.navigate).not.toHaveBeenCalled();
+  expect(recovery.fileReview).not.toHaveBeenCalled(); expect(f.navigate).not.toHaveBeenCalled();
   expect(container.querySelectorAll('article')).toHaveLength(1);
   expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Message thread"]')!.value).toBe('New draft while reviewing recovery');
 });
@@ -4286,6 +4290,8 @@ it('thread recovery never applies a rediscovered inert file plan without its con
 it('thread recovery offers an explicit conversation-only choice when file preparation is unavailable', async () => {
   const f = navigationFixture(); useUIStore.setState({ recoveryPreference: 'both' });
   await act(async () => root.render(<ThreadConversation api={f.api} identity={identity} />));
+  const original = f.prepareNavigation.getMockImplementation()!;
+  f.prepareNavigation.mockImplementationOnce(async input => ({ ...await original(input), fileRecovery: { status: 'failed', failure: { code: 'unavailable', message: 'Recovery unavailable', retryable: true } } }));
   await openOverview('recovery');
   await act(async () => button('Restore before this message').click());
   expect(f.navigate).not.toHaveBeenCalled(); expect(container.textContent).toContain('Recovery unavailable');
@@ -4297,17 +4303,15 @@ it('thread recovery offers an explicit conversation-only choice when file prepar
 
 it('keeps an unavailable managed file owner explicit and preserves conversation-only navigation', async () => {
   const f = navigationFixture(); const recovery = combinedFixture(f); useUIStore.setState({ recoveryPreference: 'both' });
-  f.recoverySource.mockResolvedValue({ resourceOwner: { kind: 'managed_host', hostId: 'host-b', connectionId: 'b', endpointIdentity: 'sha256-b' },
-    workspaceId: 'same-path-on-b', mode: 'materialized', runId: 'finished-run' });
-  recovery.prepareCombinedRecovery.mockRejectedValueOnce(new Error('Original file Host is offline'));
+  recovery.fileReview.mockResolvedValueOnce({ status: 'failed', failure: { code: 'unavailable', message: 'Original file Host is offline', retryable: true } });
   await act(async () => root.render(<ThreadConversation api={f.api} identity={identity} />));
   await act(async () => button('Restore before this message').click());
-  expect(recovery.prepareCombinedRecovery).toHaveBeenCalledWith({ workspaceId: 'same-path-on-b', conversation: { kind: 'thread', threadId: identity.threadId, branchId: identity.branchId }, entryId: f.user.id }); expect(f.navigate).not.toHaveBeenCalled();
+  expect(f.navigate).not.toHaveBeenCalled();
   expect(container.textContent).toContain('Original file Host is offline');
   const conversation = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.includes('Restore conversation only'));
   expect(conversation).toBeDefined();
   await act(async () => conversation!.click());
-  expect(f.navigate).toHaveBeenCalledOnce(); expect(recovery.prepareCombinedRecovery).toHaveBeenCalledOnce(); expect(recovery.applyCombinedRecovery).not.toHaveBeenCalled();
+  expect(f.navigate).toHaveBeenCalledOnce(); expect(recovery.fileReview).toHaveBeenCalledOnce(); expect(recovery.applyCombinedRecovery).not.toHaveBeenCalled();
 });
 
 

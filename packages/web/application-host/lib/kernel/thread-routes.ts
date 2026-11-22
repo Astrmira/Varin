@@ -252,6 +252,7 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
     'plan/update': ['runtime', 'threadId', 'branchId', 'key', 'expectedHeadId', 'expectedRef', 'content'],
     'recovery/source': ['runtime', 'threadId', 'branchId', 'entryId'],
     'navigation/prepare': ['runtime', 'threadId', 'branchId', 'entryId'],
+    'navigation/prepare-files': ['runtime', 'threadId', 'branchId', 'entryId'],
     navigate: ['runtime', 'threadId', 'branchId', 'key', 'expectedHeadId', 'targetHeadId', 'undoOf'],
     'navigation/receipt': ['runtime', 'threadId', 'branchId', 'key'],
     fork: ['runtime', 'threadId', 'branchId', 'key', 'headId'],
@@ -656,6 +657,7 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
   post('read', 'write', body => adapter.markRead({ ...catalogIdentity(body), key: text(body.key), throughCursor: revision(body.throughCursor) }));
   post('create', 'write', body => adapter.create(text(body.key), body.organization === undefined ? undefined : { organization: parseConversationOrganizationPlacement(body.organization) }));
   post('recovery/source', 'read', (body, signal) => adapter.recoverySource({ ...identity(body), entryId: text(body.entryId) }, signal));
+  post('navigation/prepare-files', 'write', (body, signal) => adapter.prepareRecovery({ ...identity(body), entryId: text(body.entryId) }, signal));
   post('navigation/prepare', 'read', (body, signal) => adapter.prepareNavigation({ ...identity(body), entryId: text(body.entryId) }, signal));
   post('tree', 'read', (body, signal) => adapter.conversationTree(identity(body), signal));
   post('tree/preview', 'read', (body, signal) => adapter.treePreview(identity(body), { firstItemId: text(body.firstItemId), lastItemId: text(body.lastItemId), ...(body.query === undefined ? {} : { query: text(body.query) }) }, signal));

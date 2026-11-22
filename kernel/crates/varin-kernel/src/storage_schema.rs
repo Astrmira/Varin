@@ -51,6 +51,9 @@ pub(crate) const CATALOG_USER_VERSION: i64 = 16;
 // Run retirement addresses that Run's grants, excluding the unrelated Host-read
 // ledger from its index and from the shared Storage control path.
 pub(crate) const CATALOG_QUERY_INDEXES: &str = "
+     CREATE INDEX IF NOT EXISTS recovery_operations_branch ON recovery_operations(thread_id, json_extract(data_json,'$.plan.conversation.branchId')) WHERE kind='combined';
+    CREATE INDEX IF NOT EXISTS recovery_operations_resumable ON recovery_operations(workspace_id,updated_at DESC)
+    WHERE kind='combined' AND state NOT IN ('complete','aborted','compensated','needs-attention');
     CREATE INDEX IF NOT EXISTS grants_run_lifetime
     ON grants(json_extract(grant_json,'$.run_id'), host_id, grant_id)
     WHERE json_extract(grant_json,'$.run_id') IS NOT NULL;
