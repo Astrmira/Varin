@@ -1,3 +1,4 @@
+import { CredentialOwnerError } from './credential-owner.js';
 import { KernelClientError } from './kernel-error.js';
 import { McpAuthorityError, McpPreparationError } from '../mcp/errors.js';
 import { sourceFailureCode } from './source-admission-error.js';
@@ -9,7 +10,7 @@ export type PreparationFailureCode = SourceFailureCode | 'binding_changed' | 'cr
 /** Shared desktop logs may include a public failure code or an MCP owner's diagnostic. */
 export function preparationLogReason(error: unknown): string {
   if (error instanceof McpPreparationError) return error.message;
-  if (error instanceof KernelClientError || error instanceof McpAuthorityError) return error.code;
+  if (error instanceof CredentialOwnerError || error instanceof KernelClientError || error instanceof McpAuthorityError) return error.code;
   if (error instanceof Error && /^mcp[-_][a-z0-9_-]+$/.test(error.message)) return error.message;
   return sourceFailureCode(error) ?? 'preparation_failed';
 }

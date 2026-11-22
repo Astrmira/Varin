@@ -586,10 +586,13 @@ it('private credential rendezvous uses a fake existing owner without persisting 
     runtime: { getAuth: async () => { lookups++; return { auth: { apiKey: fakeKey } }; } },
   });
   await f.runtimeClient.createThread('credential-thread', 'credential-branch');
-  const run = await f.runtimeClient.submit({ key: 'credential-input', threadId: 'credential-thread', branchId: 'credential-branch', expectedHead: null, input: { text: 'credential fixture prompt' }, configuration: { ...provider.configuration, allowAnonymous: false } });
+  const run = await f.runtimeClient.submit({ key: 'credential-input', threadId: 'credential-thread', branchId: 'credential-branch', expectedHead: null, input: { text: 'credential fixture prompt' }, configuration: { ...provider.configuration, allowAnonymous: false },
+    launch: { inheritSource: true, source: null, enabledTools: [], credentialScope: await owner.scope() } });
+  await f.runtimeClient.selectModel(run.run_id, 'switch-before-start', { ...provider.configuration, model: 'selected-before-start', credentialEnvironment: null, allowAnonymous: false }, owner);
   await f.runtimeClient.startRunWithCredentialOwner(run.run_id, owner);
   await expect.poll(async () => (await f.runtimeClient.run(run.run_id)).state, { timeout: 8_000 }).toBe('completed');
   expect(lookups).toBe(1);
+  expect(provider.requests[0]?.model).toBe('selected-before-start');
   expect(authorization).toBe(`Bearer ${fakeKey}`);
   expect(f.requests.some(request => request.kind === 'credential-response')).toBe(true);
   expect(JSON.stringify(f.requests.filter(request => request.kind === 'request'))).not.toContain(fakeKey);

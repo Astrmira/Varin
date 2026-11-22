@@ -31,7 +31,7 @@ import type { ThreadIdentity, ThreadModel, ThreadModelInfo, ThreadSubmit, Thread
 import type { InputMode, InitialContext, InputSubmitParams, InputEnqueueParams, InputResourcePreparation, ContextResources, PreparedExplicitSkill, ModelSessionConfiguration, CredentialScope, PolicyResumeReceipt } from './protocol.generated.js';
 import type { ExistingHostCredentialOwner } from './credential-owner.js';
 import { isAbortError, waitWithSignal } from '../cancellation.js';
-import { modelCredentialBindingIdentity, waitForModelBinding } from './model-binding-lifetime.js';
+import { launchModelSelection, modelCredentialBindingIdentity, waitForModelBinding } from './model-binding-lifetime.js';
 import { botModelMatches } from '../bots/bot-model.js';
 import type { AgentRuntimeClient } from './agent-runtime-client.js';
 import type { ContextPreparer } from './thread-context.js';
@@ -203,7 +203,7 @@ export class ThreadAdapter {
     return this.sourceFiles.files(identity, source, options, signal, sourceRunId);
   }
   private sourceDirectory?: SourceDirectory;
-  private botWorkProfile?: (botId: string, signal: AbortSignal) => Promise<{ homeDir: string; model: ThreadModel } | null>;
+  private botWorkProfile?: (botId: string, signal: AbortSignal | undefined, preference?: ThreadModel) => Promise<{ homeDir: string; model: ThreadModel } | null>;
   private conversationWorkModel?: (identity: ThreadIdentity, signal: AbortSignal) => Promise<ThreadModel | null>;
   private readonly coldWorkPreparations = new Set<string>();
   bindBotWorkProfile(resolve: NonNullable<ThreadAdapter['botWorkProfile']>): void { this.botWorkProfile = resolve; }
@@ -223,10 +223,14 @@ export class ThreadAdapter {
           signal.throwIfAborted();
           await this.runtime.holdColdWork({ inputId: work.inputId, revision: work.revision, reason }, signal);
         };
+        let botThread: Awaited<ReturnType<ThreadAdapter['requireIdentity']>> | undefined;
         let bot: { homeDir: string; model: ThreadModel } | null | undefined;
         let model: Awaited<ReturnType<ThreadModelAuthority['resolveModel']>> | undefined;
         try {
-          bot = work.botId ? await this.botWorkProfile?.(work.botId, signal) : null;
+          if (work.botId) {
+            botThread = await this.requireIdentity(identity, signal);
+            bot = await this.botWorkProfile?.(work.botId, signal, botThread.model_preference);
+          }
           const selection = work.botId ? bot?.model : await this.conversationWorkModel?.(identity, signal);
           if (selection) model = await waitForModelBinding(this.models.resolveModel(selection), model => model.credentialOwner.release(), signal);
         } catch (error) {
@@ -238,7 +242,7 @@ export class ThreadAdapter {
           let source: ThreadSource | null = null;
           let initialContext: InitialContext;
           try {
-            const thread = await this.requireIdentity(identity, signal);
+            const thread = botThread ?? await this.requireIdentity(identity, signal);
             const workspace = thread.branches.find(b => b.branch_id === identity.branchId)?.workspace_default;
             if (workspace) {
               if (!await this.runtime.principalCanUseHostResources?.(thread.principal_id)) throw new Error('Host source access is unavailable');
@@ -860,9 +864,20 @@ export class ThreadAdapter {
     const principalId = currentRequestPrincipal();
     return this.runtime.threadCatalog({ ...options, ...(principalId !== undefined ? { principalId } : {}) }, signal);
   }
-  update(input: import('@varin/application-client').ThreadUpdate) {
+  async update(input: import('@varin/application-client').ThreadUpdate) {
     const { runtime: _runtime, ...command } = input;
-    return this.runtime.updateThread(command);
+    if (command.model) {
+      const thread = await this.runtime.thread(command.threadId);
+      if (!thread.bot_id || thread.parent_thread_id) throw new Error('Conversation model settings require a Bot conversation');
+    }
+    const updated = await this.runtime.updateThread(command);
+    if (command.model && updated.model_preference) {
+      for (const branch of updated.branches) {
+        if (branch.active_run_id) await this.refreshBotModel({ runtime: 'agent', threadId: updated.thread_id,
+          branchId: branch.branch_id, runId: branch.active_run_id });
+      }
+    }
+    return updated;
   }
   async delete(input: import('@varin/application-client').ThreadDelete) {
     const { runtime: _runtime, ...command } = input;
@@ -1492,19 +1507,34 @@ export class ThreadAdapter {
     } finally { model.credentialOwner.release(); }
   }
 
-  /** Profile updates affect live work; finished Runs keep their historical configuration. */
-  async refreshBotModel(input: ThreadIdentity & { runId: string; key: string; model: ThreadModel }, signal?: AbortSignal): Promise<void> {
-    const run = await this.requireRun(input.runId, signal);
-    if (run.cancel_requested || ['completed', 'failed', 'cancelled'].includes(run.state)) return;
-    const selected = await this.runtime.modelSelections(run.id, signal);
-    if (botModelMatches(selected.desired?.configuration ?? run.configuration as ModelSessionConfiguration, input.model)) return;
-    try {
-      await this.selectModel({ ...input, key: `${input.key}:${selected.desired?.revision ?? 0}` }, signal);
-    } catch (error) {
+  private readonly botModelUpdates = new Map<string, Promise<void>>();
+
+  /** Read the current conversation preference at the point of applying it. A slow
+   * profile refresh and a newer composer edit must finish in the same order. */
+  refreshBotModel(input: ThreadIdentity & { runId: string; model?: ThreadModel }, signal?: AbortSignal): Promise<void> {
+    const previous = this.botModelUpdates.get(input.runId);
+    const next = (previous ?? Promise.resolve()).catch(() => {}).then(async () => {
       signal?.throwIfAborted();
-      const current = await this.runtime.run(run.id, signal);
-      if (!current.cancel_requested && !['completed', 'failed', 'cancelled'].includes(current.state)) throw error;
-    }
+      const thread = await this.runtime.thread(input.threadId, signal);
+      if (!thread.bot_id || thread.parent_thread_id) return;
+      const run = await this.requireRun(input.runId, signal);
+      if (run.cancel_requested || ['completed', 'failed', 'cancelled'].includes(run.state)) return;
+      const model = input.model ? thread.model_preference ?? input.model
+        : (await this.botWorkProfile?.(thread.bot_id, signal, thread.model_preference))?.model;
+      if (!model) throw new Error('Bot model is unavailable. Select an available model in this conversation or in Bot settings.');
+      const selected = await this.runtime.modelSelections(run.id, signal);
+      if (botModelMatches(selected.desired?.configuration ?? run.configuration as ModelSessionConfiguration, model)) return;
+      const digest = createHash('sha256').update(JSON.stringify(model)).digest('hex');
+      const key = ['bot-model', run.id, digest, selected.desired?.revision ?? 0].join(':');
+      try { await this.selectModel({ ...input, model, key }, signal); }
+      catch (error) {
+        signal?.throwIfAborted();
+        const current = await this.runtime.run(run.id, signal);
+        if (!current.cancel_requested && !['completed', 'failed', 'cancelled'].includes(current.state)) throw error;
+      }
+    });
+    this.botModelUpdates.set(input.runId, next);
+    return next.finally(() => { if (this.botModelUpdates.get(input.runId) === next) this.botModelUpdates.delete(input.runId); });
   }
 
   assertImagesSupported(images: readonly unknown[] | undefined, configuration: unknown): void {
@@ -1728,20 +1758,14 @@ export class ThreadAdapter {
         }
         // live_root is validated by rebindLaunch's existing LiveSource owner.
         if (this.botWorkProfile && run.thread_id.startsWith('thread:')) {
-          const thread = await this.runtime.thread(run.thread_id, signal);
-          if (thread.bot_id && !thread.parent_thread_id) {
-            const profile = await this.botWorkProfile(thread.bot_id, signal);
-            if (!profile) throw new Error('Bot model is unavailable. Select an available model in Bot settings.');
-            const key = `bot-profile:${createHash('sha256').update(JSON.stringify(profile.model)).digest('hex')}`;
-            await this.refreshBotModel({ ...identity, runId, key, model: profile.model }, signal);
-          }
+          await this.refreshBotModel({ ...identity, runId }, signal);
         }
         let owner: ExistingHostCredentialOwner | undefined;
         let desiredOwner: ExistingHostCredentialOwner | undefined;
         try {
           const selected = await this.runtime.modelSelections(runId, signal);
           const desired = selected.desired;
-          const initial = selected.exchange_closed ? desired : selected.active;
+          const initial = launchModelSelection(selected);
           if (initial?.status === 'failed') throw new Error(`Selected model preparation failed: ${initial.failure ?? 'model unavailable'}`);
           const configuration = initial?.configuration ?? run.configuration as ModelSessionConfiguration;
           const scope = initial ? initial.credential_scope : launch.selection.credential_scope;
@@ -1772,7 +1796,6 @@ export class ThreadAdapter {
             if (['completed', 'failed', 'cancelled'].includes(retainedRun.state)) return;
           }
           signal.throwIfAborted();
-          this.runtime.releaseMainModelCredentials(runId, selected);
           const selectedOwner = desiredOwner ?? (initial?.id === desired?.id ? owner : undefined);
           if (desired && selectedOwner) {
             // Reattach the original selection, including its frozen child catalog.

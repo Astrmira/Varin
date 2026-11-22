@@ -3,6 +3,8 @@
  * Do not hand-edit the wire shapes; run `node scripts/generate-kernel-protocol.mjs`.
  */
 
+import type { ThinkingLevel } from '@varin/protocol';
+
 export const KERNEL_PROTOCOL_VERSION = 96 as const;
 export const KERNEL_REQUEST_WINDOW = 256 as const;
 export const KERNEL_STREAM_CREDITS = 4 as const;
@@ -3308,7 +3310,9 @@ export interface ThreadTitlePrepareParams { threadId: string; branchId: string; 
 
 export interface ThreadTitleFinishParams { job: ThreadTitleJob; title: string | null; }
 
-export interface ThreadMetadataUpdateParams { threadId: string; key: string; expectedRevision: number; title?: string; pinned?: boolean; archived?: boolean; titleMode?: 'automatic' | 'manual'; }
+export interface ThreadModelPreference { providerId: string; modelId: string; thinkingLevel?: ThinkingLevel; temperature?: number }
+
+export interface ThreadMetadataUpdateParams { threadId: string; key: string; expectedRevision: number; title?: string; pinned?: boolean; archived?: boolean; titleMode?: 'automatic' | 'manual'; model?: ThreadModelPreference; }
 
 export interface ThreadDeleteParams { threadId: string; key: string; expectedRevision: number; }
 
@@ -3317,6 +3321,7 @@ export interface BranchDeleteParams { threadId: string; branchId: string; key: s
 export interface ThreadReadPositionParams { threadId: string; key: string; throughCursor: number; }
 
 export interface ThreadSummary {
+  model_preference?: ThreadModelPreference;
   creation_identity_known?: boolean;
   principal_id?: string | null;
   agent_code?: string;

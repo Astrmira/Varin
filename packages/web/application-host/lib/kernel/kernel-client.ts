@@ -801,6 +801,11 @@ export class KernelClient {
     signal?.throwIfAborted();
     return this.credentialBridge.register(runId, owner, signal, bindingId, lifetime);
   }
+  async withModelCredential<T>(runId: string, bindingId: string | undefined, owner: ExistingHostCredentialOwner,
+    signal: AbortSignal | undefined, use: (scope: CredentialScope) => Promise<T>): Promise<T> {
+    if (!this.handshakeResult) await this.start();
+    return this.credentialBridge.withModelBinding(runId, bindingId, owner, signal, use);
+  }
   /** `runId` restricts the search to that Run's own registrations and their retained graph. */
   findModelCredentialOwner(configuration: import('./protocol.generated.js').ModelSessionConfiguration, scope: CredentialScope, runId?: string): ExistingHostCredentialOwner | undefined {
     return this.credentialBridge.findOwner(modelCredentialBindingIdentity(configuration), scope, runId);

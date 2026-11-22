@@ -30,6 +30,7 @@ fn submit(db: &mut Catalog, thread: &str, branch: &str) -> Receipt {
         expected_revision: 1,
         title: Some(format!("Task {thread}")),
         title_mode: None,
+        model: None,
         pinned: None,
         archived: None,
     })
@@ -197,6 +198,7 @@ fn attention_keeps_hidden_unsettled_work_but_not_hidden_idle_history() {
                 .unwrap(),
             title: None,
             title_mode: None,
+            model: None,
             pinned: None,
             archived: Some(true),
         })
@@ -457,6 +459,7 @@ fn attention_reuse_never_hides_a_later_commit() {
         expected_revision: db.inspect_thread("task").unwrap()["revision"].as_u64().unwrap(),
         title: Some("Renamed".into()),
         title_mode: None,
+        model: None,
         pinned: None,
         archived: None,
     })

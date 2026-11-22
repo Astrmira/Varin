@@ -46,6 +46,21 @@ it('prepares the original cold collaboration ingress using the receiving thread 
   expect(onError).not.toHaveBeenCalled();
 });
 
+it('reads the saved model and thinking for a cold Bot wake with no composer attached', async () => {
+  const work: ColdBotWork = { botId: 'bot', threadId: 'thread:receiver', branchId: 'branch:receiver', inputId: 'input:wake', revision: 1, ownerEpoch: 1 };
+  const preference = { providerId: 'chosen', modelId: 'sol', thinkingLevel: 'high' as const };
+  const runtime = {
+    pendingBotWork: async () => [work], holdColdWork: vi.fn(),
+    thread: async () => ({ model_preference: preference, branches: [{ branch_id: work.branchId }] }),
+  };
+  const models = { resolveModel: vi.fn().mockRejectedValue(new Error('test provider offline')), rebindModel: vi.fn() };
+  const adapter = new ThreadAdapter(runtime as unknown as AgentRuntimeClient, models, vi.fn(), vi.fn(), undefined, vi.fn() as unknown as ContextPreparer);
+  adapter.bindBotWorkProfile(async (_id, _signal, choice) => ({ homeDir: '/bot', model: choice ?? { providerId: 'default', modelId: 'other' } }));
+  await adapter.recoverBotWork(new AbortController().signal);
+  await vi.waitFor(() => expect(runtime.holdColdWork).toHaveBeenCalledOnce());
+  expect(models.resolveModel).toHaveBeenCalledExactlyOnceWith(preference);
+});
+
 it('keeps a cold request queued when no receiving model is available', async () => {
   const work: ColdBotWork = { threadId: 'thread:receiver', branchId: 'branch:receiver', inputId: 'input:request', revision: 5, ownerEpoch: 1 };
   const runtime = {

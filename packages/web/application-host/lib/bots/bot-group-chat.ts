@@ -259,7 +259,7 @@ export function createBotGroupChats(options: Options) {
               const thread = await runtime.thread(identity.threadId);
               const branch = thread.branches.find(value => value.branch_id === identity.branchId)!;
               if (branch.active_run_id && current.expectedHead === undefined) return;
-              const model = current.model ?? await options.model(bot);
+              const model = current.model ?? thread.model_preference ?? await options.model(bot);
               if (!model) throw invalid('This Bot needs a model');
               if (current.expectedHead === undefined) {
                 current.expectedHead = branch.head;

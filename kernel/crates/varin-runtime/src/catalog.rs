@@ -53,7 +53,7 @@ pub enum RuntimeError {
     },
 }
 type Result<T> = std::result::Result<T, RuntimeError>;
-pub(crate) const FORMAT: i64 = 101;
+pub(crate) const FORMAT: i64 = 102;
 fn sql_number(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| RuntimeError::Invalid("integer exceeds catalog range".into()))
 }
@@ -150,6 +150,7 @@ fn inspect_catalog_format(db: &Connection) -> Result<i64> {
 
 fn check_catalog_schema(db: &Connection, version: i64) -> Result<()> {
     threads::check_format(db)?;
+    if version >= 102 { db.prepare("SELECT thread_id,model FROM thread_model_preferences")?; }
     if version >= 101 { branch_workspace::check_format(db)?; }
     if version >= 99 { event_scope::check_format(db)?; }
     if version >= 98 { threads::check_hidden_format(db)?; }
@@ -261,6 +262,7 @@ fn initialize_metadata(
         model_references::initialize(&tx)?;
         organization::initialize(&tx)?;
         branch_workspace::initialize(&tx)?;
+        threads::initialize_model_preferences(&tx)?;
     }
     collaboration::initialize_recovery_indexes(&tx)?;
     titles::initialize(&tx)?;

@@ -97,7 +97,7 @@ export interface ThreadAttentionSnapshot {
   counts: { actionRequired: number; affectedBranches: number; unknownEffects: number };
 }
 export type ThreadThinkingLevel = import('@varin/protocol').ThinkingLevel;
-export interface ThreadModel { providerId: string; modelId: string; thinkingLevel?: ThreadThinkingLevel; temperature?: number }
+export type ThreadModel = import('@varin/protocol').ThreadModelPreference;
 export interface ThreadModelInfo extends ThreadModel { name?: string; acceptsImages?: boolean; contextWindowTokens?: number; thinkingLevels?: ThreadThinkingLevel[] }
 export interface ThreadAgentChoice { profileId: string | null; workFocus: import('@varin/protocol').WorkFocusId }
 /** A public model selection resolves only through the Host's existing model/credential authority. */

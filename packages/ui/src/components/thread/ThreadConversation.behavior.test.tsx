@@ -20,7 +20,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ThreadRequestError } from '@varin/application-client';
-import type { ContextCheckpoint, ThreadIdentity, ThreadModel, ThreadModelInfo, ThreadSnapshot, ThreadSubmit, ThreadsAPI } from '@varin/application-client';
+import type { ContextCheckpoint, ThreadIdentity, ThreadModel, ThreadSnapshot, ThreadSubmit, ThreadsAPI } from '@varin/application-client';
 import type { ChildTask, DelegatedExecution, StoredMedia, McpInteractionView, Attachment } from '@varin/protocol';
 import { ThreadConversation } from './ThreadConversation';
 import { BotWorkDetail } from '@/workbenches/bot/BotWorkDetail';
@@ -457,28 +457,15 @@ it('keeps a Bot conversation’s explicit source across Shells without inheritin
   expect(f.api.prepareSource).not.toHaveBeenCalled();
 });
 
-it('inherits the workbench model and thinking for an unconfigured Bot and sends that exact selection', async () => {
+it('uses the Host model default until a Bot conversation has its own selection', async () => {
   const f = fixture();
   f.view.thread.bot_id = 'bot';
-  const ordinary: ThreadIdentity = { runtime: 'agent', threadId: 'ordinary-work', branchId: 'main' };
-  const originalNavigation = useThreadStore.getState();
-  const inherited = { providerId: 'other-channel', modelId: 'strong', thinkingLevel: 'high' as const };
-  useThreadStore.setState({ hostKey: threadHostKey(), selectedIdentity: ordinary, selectedDraftKey: null });
-  useThreadDraftStore.getState().patch(threadComposerKey(threadHostKey(), ordinary), { model: inherited, text: 'Unrelated workbench draft' });
-  f.api.listModels = async () => [
-    { providerId: 'fixture-provider', modelId: 'fixture-model', thinkingLevels: ['off'] },
-    { ...inherited, thinkingLevels: ['off', 'high'] },
-  ];
-  try {
-    await act(async () => root.render(<ThreadConversation surface="bot" api={f.api} identity={identity} inheritWorkbenchModel
-      preferredModel={{ providerId: 'fixture-provider', modelId: 'fixture-model', thinkingLevel: 'off' }} />));
-    expect(useThreadDraftStore.getState().drafts[threadComposerKey(threadHostKey(), identity)]?.model).toEqual(inherited);
-    await edit('[aria-label="Message thread"]', 'Hello from Varin');
-    await submitForm(composerForm());
-    expect(f.submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: inherited, text: 'Hello from Varin' }));
-  } finally {
-    useThreadStore.setState({ hostKey: originalNavigation.hostKey, selectedIdentity: originalNavigation.selectedIdentity, selectedDraftKey: originalNavigation.selectedDraftKey });
-  }
+  const model: ThreadModel = { providerId: 'channel', modelId: 'strong', thinkingLevel: 'high' };
+  f.api.listModels = async () => [model];
+  await act(async () => root.render(<ThreadConversation surface="bot" api={f.api} identity={identity} preferredModel={model} />));
+  await edit('[aria-label="Message thread"]', 'Hello from Varin');
+  await submitForm(composerForm());
+  expect(f.submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model }));
 });
 
 it('keeps an existing physical conversation on its source without automatically requiring a mount backend', async () => {
@@ -4572,7 +4559,7 @@ it.each([false, true])('projects an active Bot model without feeding inherited d
     if (state.drafts[key]?.model !== previous.drafts[key]?.model) modelChanges.push(state.drafts[key]?.model);
   });
   const render = () => <React.StrictMode><ThreadConversation surface="bot" api={f.api} identity={identity}
-    inheritWorkbenchModel preferredModel={{ ...inherited }} /></React.StrictMode>;
+    preferredModel={{ ...inherited }} /></React.StrictMode>;
   try {
     await act(async () => root.render(render()));
     expect(container.querySelector<HTMLSelectElement>('[aria-label="Registered model"]')!.value).toBe(JSON.stringify([running.providerId, running.modelId]));
@@ -4591,37 +4578,30 @@ it.each([false, true])('projects an active Bot model without feeding inherited d
   }
 });
 
-it('waits for the Bot model catalog, uses the entry capture once, and preserves a user choice through catalog changes', async () => {
+it('saves an idle Bot model and thinking change before sending and restores it over a changed profile', async () => {
   const f = fixture();
   f.view.thread.bot_id = 'bot';
-  const ordinary: ThreadIdentity = { runtime: 'agent', threadId: 'ordinary-work', branchId: 'main' };
-  const originalNavigation = useThreadStore.getState();
-  const captured: ThreadModel = { providerId: 'captured-provider', modelId: 'captured-model', thinkingLevel: 'high', temperature: 0 };
-  const fallback: ThreadModel = { providerId: 'fixture-provider', modelId: 'fixture-model', thinkingLevel: 'off' };
-  const chosen: ThreadModel = { providerId: 'chosen-provider', modelId: 'chosen-model', thinkingLevel: 'high', temperature: 0 };
-  useThreadStore.setState({ hostKey: threadHostKey(), selectedIdentity: ordinary, selectedDraftKey: null });
-  const ordinaryKey = threadComposerKey(threadHostKey(), ordinary);
-  useThreadDraftStore.getState().patch(ordinaryKey, { model: captured });
-  let resolveModels!: (models: ThreadModelInfo[]) => void;
-  f.api.listModels = () => new Promise(resolve => { resolveModels = resolve; });
-  const key = threadComposerKey(threadHostKey(), identity);
-  try {
-    await act(async () => root.render(<ThreadConversation surface="bot" api={f.api} identity={identity} inheritWorkbenchModel preferredModel={fallback} />));
-    expect(useThreadDraftStore.getState().drafts[key]?.model?.providerId).toBeFalsy();
-    await act(async () => useThreadDraftStore.getState().patch(ordinaryKey, { model: fallback }));
-    await act(async () => resolveModels([{ ...captured, thinkingLevels: ['off', 'high'] }, fallback, { ...chosen, thinkingLevels: ['off', 'high'] }]));
-    expect(useThreadDraftStore.getState().drafts[key]?.model).toEqual(captured);
-    await edit('[aria-label="Registered model"]', JSON.stringify([chosen.providerId, chosen.modelId]), 'change');
-    expect(useThreadDraftStore.getState().drafts[key]?.model).toEqual(chosen);
-    f.api.listModels = async () => [fallback, { ...chosen, thinkingLevels: ['off'] }];
-    await act(async () => { for (const listener of varinEventListeners) listener({ type: 'settings-changed', owner: 'agent-settings', ids: ['model-channels'], scope: 'host', revision: 'catalog-2' }); });
-    expect(useThreadDraftStore.getState().drafts[key]?.model).toEqual({ ...chosen, thinkingLevel: 'off' });
-    await edit('[aria-label="Message thread"]', 'Use my chosen model');
-    await submitForm(composerForm());
-    expect(f.submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: { ...chosen, thinkingLevel: 'off' } }));
-  } finally {
-    useThreadStore.setState({ hostKey: originalNavigation.hostKey, selectedIdentity: originalNavigation.selectedIdentity, selectedDraftKey: originalNavigation.selectedDraftKey });
-  }
+  const profile: ThreadModel = { providerId: 'profile', modelId: 'original', thinkingLevel: 'off' };
+  const chosen: ThreadModel = { providerId: 'other', modelId: 'sol', thinkingLevel: 'high' };
+  f.api.listModels = async () => [profile, { ...chosen, thinkingLevels: ['off', 'high'] }];
+  f.api.update = vi.fn(async command => {
+    expect(command.expectedRevision).toBe(f.view.thread.revision);
+    f.view.thread.model_preference = command.model;
+    f.view.thread.revision++;
+    return f.view.thread;
+  });
+  const render = (model: ThreadModel) => <ThreadConversation surface="bot" api={f.api} identity={identity} preferredModel={model} />;
+  await act(async () => root.render(render(profile)));
+  await edit('[aria-label="Registered model"]', JSON.stringify([chosen.providerId, chosen.modelId]), 'change');
+  await edit('[aria-label="Thinking level"]', 'high', 'change');
+  expect(f.view.thread.model_preference).toEqual(chosen);
+  expect(f.submit).not.toHaveBeenCalled();
+  await act(async () => root.render(null));
+  useThreadDraftStore.getState().remove(threadComposerKey(threadHostKey(), identity));
+  await act(async () => root.render(render({ ...profile, modelId: 'new-default' })));
+  await edit('[aria-label="Message thread"]', 'Continue');
+  await submitForm(composerForm());
+  expect(f.submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: chosen }));
 });
 
 it('applies changed Bot defaults atomically without replaying the same preference over idle edits or reopening', async () => {

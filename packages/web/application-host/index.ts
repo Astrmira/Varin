@@ -1583,7 +1583,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     dataDir: VARIN_DATA_DIR,
     agent: {
       ...createBotSessions(() => agentRuntime, (identity, placement) => conversationOrganization.creationDefaults(currentRequestPrincipal() ?? null, identity.threadId, placement)),
-      model: bot => botAgentModel(bot),
+      model: bot => botAgentModel(bot, 'display'),
       listWork: async (bot, includeEntry) => {
         const principalId = currentRequestPrincipal();
         const scope = await agentRuntime.botScope(bot.id, undefined, false, principalId);
@@ -1618,17 +1618,16 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
         if (bot.entry.runtime !== 'agent') return;
         const scope = await agentRuntime.botScope(bot.id);
         await threads.refreshPersonalization(scope.threads.flatMap(thread => thread.branches.map(branch => ({ runtime: 'agent', threadId: thread.thread_id, branchId: branch.branch_id }))));
+        const sessionIds = new Set(scope.sessions);
+        const sessions = scope.threads.filter(thread => sessionIds.has(thread.thread_id) && !thread.model_preference
+          && thread.branches.some(branch => branch.active_run_id));
+        if (!sessions.length) return;
         const model = await botAgentModel(bot);
         if (!model) return;
-        // Every Bot conversation follows the profile model; delegated work keeps its own selection.
-        const sessions = new Set(scope.sessions);
-        const profileRevision = (await botService.executionGate(bot.id)).profileRevision;
-        for (const thread of scope.threads.filter(thread => sessions.has(thread.thread_id))) {
+        for (const thread of sessions) {
           for (const branch of thread.branches) {
-            const run = branch.latest_run;
-            if (!run) continue;
-            await threads.refreshBotModel({ runtime: 'agent', threadId: thread.thread_id, branchId: branch.branch_id, runId: run.id,
-              key: `bot-profile:${bot.id}:${profileRevision}:${branch.branch_id}`, model });
+            if (branch.active_run_id) await threads.refreshBotModel({ runtime: 'agent', threadId: thread.thread_id,
+              branchId: branch.branch_id, runId: branch.active_run_id, model });
           }
         }
       },
@@ -2012,9 +2011,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   kernelClient.subscribeExit(() => { for (const runId of agentMcpScopes.keys()) releaseAgentMcpScope(runId); });
   const prepareAgentPolicy = createAgentPolicy(extensionRuntime);
   const modelAuthority = createModelAuthority(modelsService, { retrySettings: async () => (await modelsService.readGlobalInferenceSettings()).retry, outputVisibleBytes: async () => (await modelsService.settings.harness()).output.visibleBytes });
-  const botAgentModel = async (bot: import('@varin/application-client').BotSummary) => {
+  const botAgentModel = async (bot: import('@varin/application-client').BotSummary, usage: 'execute' | 'display' = 'execute') => {
     const global = (await modelsService.settings.snapshot()).global;
-    return resolveBotModelSelection(bot.model, global, await modelAuthority.listModels());
+    return resolveBotModelSelection(bot.model, global, await modelAuthority.listModels(), usage);
   };
   const liveSources = createLiveSourceOwner({ documents: documentsAuthority, kernel: kernelClient });
   const mcpProcessAdmission = (input: import('./lib/kernel/agent-runtime-client.js').McpPreparation) => {
@@ -2518,10 +2517,10 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   const prepareProjectSource = createChildProjectSourcePreparer({ projects: async () => sanitizeProjects((await readSettingsFromDisk()).projects) ?? [],
     inspectBackend:(projectId,signal)=>nativeWorkspaces.inspectBackend(projectId,signal),sources: sourceDirectory, prepare: prepareThreadSource });
-  threads.bindBotWorkProfile(async botId => {
+  threads.bindBotWorkProfile(async (botId, _signal, preference) => {
     const bot = await botService.get(botId);
     if (!bot || !await botService.canExecute(botId)) return null;
-    const model = await botAgentModel(bot);
+    const model = preference ?? await botAgentModel(bot);
     return model ? { homeDir: bot.homeDir, model } : null;
   });
   threads.bindConversationWorkModel(async (identity, signal) => {
