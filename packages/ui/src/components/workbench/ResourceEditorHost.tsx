@@ -172,8 +172,8 @@ export const ResourceEditorHost: React.FC<ResourceEditorHostProps> = ({
 
   React.useEffect(() => {
     if (!needsDocument) return;
-    void registry.open(identity).catch(() => undefined);
-  }, [identity, needsDocument, registry]);
+    void registry.open(identity, { revalidate: true }).catch(() => undefined);
+  }, [identity, needsDocument, registry, tab.viewId]);
 
   const editorDocument = React.useMemo(() => createEditorDocumentController({
     identity,

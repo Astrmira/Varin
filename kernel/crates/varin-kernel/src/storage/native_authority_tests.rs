@@ -41,6 +41,32 @@ fn record_input(id: &str) -> Value {
 }
 
 #[test]
+fn a_busy_terminal_does_not_start_a_recovery_write() {
+    let (mut storage, root) = fixture();
+    let directory = root.join("work");
+    fs::create_dir(&directory).unwrap();
+    let registered = invoke(&mut storage, "file.root.register", &json!({
+        "workspaceId":"workspace", "executionWorkspaceId":"workspace", "canonicalRoot":directory
+    })).unwrap();
+    let path = registered["canonicalRoot"].as_str().unwrap();
+    let writer = json!({"processId":"terminal-1","kernelEpoch":"epoch","cwd":path,
+        "sourceRoot":path,"mode":"pty","status":"starting","writerActive":true});
+    storage.conn.execute("INSERT INTO process_records(process_id,workspace_id,execution_workspace_id,grant_id,kernel_epoch,cwd,job_name,params_hash,status_json)
+        VALUES('terminal-1','workspace','workspace','actor','epoch',?1,'test','test',?2)", params![path,writer.to_string()]).unwrap();
+    let _launch = storage.processes.prepare_launch("terminal-1", json!({})).unwrap();
+    let input = json!({"operationId":"restore-file","workspaceId":"workspace","rootId":registered["rootId"],
+        "path":"scratch.txt","expectedJson":"{\"kind\":\"missing\"}","targetJson":"{\"kind\":\"missing\"}"});
+    let error = invoke(&mut storage, "file.apply", &input).unwrap_err();
+    assert!(matches!(error, KernelError::ActiveProcessWriter(detail) if detail.contains("terminal-1")), "{:?}", input);
+    assert!(storage.operation_get(&json!({"operationId":"restore-file"})).unwrap().is_null());
+    storage.conn.execute("UPDATE process_records SET status_json=?1 WHERE process_id='terminal-1'",
+        params![json!({"status":"released","writerActive":false}).to_string()]).unwrap();
+    assert_eq!(invoke(&mut storage, "file.apply", &input).unwrap()["status"], "applied");
+    drop(storage);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn binary_file_apply_joins_the_original_journal_and_replays_after_temporary_owners_are_consumed() {
     let (mut storage, root) = fixture();
     let directory = root.join("binary-workspace");

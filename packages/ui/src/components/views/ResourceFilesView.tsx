@@ -157,7 +157,7 @@ export function ResourceFilesView({ view, active, setCloseGuard, workItems, navi
     const current = ++generation.current;
     setSelected(entry); setPreview(undefined); setEditing(false); setEditorState({});
     if (entry.kind === 'directory') return;
-    await scope.documents.open({ workspaceId: location.workspaceId, resourceId: entry.path });
+    await scope.documents.open({ workspaceId: location.workspaceId, resourceId: entry.path }, { revalidate: true });
     if (current !== generation.current) return;
     if (entry.match) requestFileEditorNavigation({ workspaceId: location.workspaceId, resourceId: entry.path }, entry.match.line, entry.match.column, editorViewId);
     if (mime(entry.name) !== 'application/octet-stream') {

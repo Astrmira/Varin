@@ -707,15 +707,14 @@ export class DocumentRegistry {
     return true;
   }
 
-  open(identity: DocumentIdentity, options?: { reload?: boolean }): Promise<DocumentRecord> {
+  open(identity: DocumentIdentity, options?: { reload?: boolean; revalidate?: boolean }): Promise<DocumentRecord> {
     return this.resolveIdentity(identity).then((resolved) => {
       const key = this.keyFor(resolved);
       if (!options?.reload) {
         const pending = this.openOperations.get(key);
         if (pending) return pending;
       }
-      const operation = this.performOpen(resolved, options);
-      if (options?.reload) return operation;
+      const operation: Promise<DocumentRecord> = this.performOpen(resolved, options, () => this.openOperations.get(key) === operation);
       this.openOperations.set(key, operation);
       void operation.finally(() => {
         if (this.openOperations.get(key) === operation) this.openOperations.delete(key);
@@ -724,7 +723,7 @@ export class DocumentRegistry {
     });
   }
 
-  private async performOpen(identity: DocumentIdentity, options?: { reload?: boolean }): Promise<DocumentRecord> {
+  private async performOpen(identity: DocumentIdentity, options: { reload?: boolean; revalidate?: boolean } | undefined, currentRead: () => boolean): Promise<DocumentRecord> {
     this.assertActive();
     while (this.isDirtyBarrierHeld(identity)) {
       await Promise.all([...this.dirtyBarriers.values()].filter(barrier => barrier.active
@@ -737,12 +736,13 @@ export class DocumentRegistry {
     // Retention can cross a Host request. Publish loading from the current
     // buffer, never from a snapshot taken before the editor could change it.
     const existing = this.records.get(key);
-    if (this.disposed || generation !== this.getGeneration()) {
+    if (this.disposed || generation !== this.getGeneration() || !currentRead()) {
       return existing ?? emptyRecord(identity, generation, this.createDocumentInstanceId());
     }
     if (
       !options?.reload
       && existing
+      && (!options?.revalidate || existing.dirty || existing.saving || this.pendingSaves.has(existing.documentInstanceId))
       && existing.connectionGeneration === generation
       && existing.status !== 'unloaded'
       && existing.status !== 'loading'
@@ -758,13 +758,14 @@ export class DocumentRegistry {
       connectionGeneration: generation,
       // A controlled deletion is a recoverable document state, not a fresh
       // missing-file open. Keep its tombstone while checking disk again.
-      status: existing?.status === 'deleted' && existing.baseRevision === null ? 'deleted' : 'loading',
+      status: options?.revalidate && existing?.status === 'ready' ? 'ready'
+        : existing?.status === 'deleted' && existing.baseRevision === null ? 'deleted' : 'loading',
     };
     this.commit(loading);
     this.ensureWatch(identity.workspaceId);
     try {
       const result = await this.documents.read(identity);
-      if (this.disposed || generation !== this.getGeneration()) return loading;
+      if (this.disposed || generation !== this.getGeneration() || !currentRead()) return this.records.get(key) ?? loading;
       const current = this.records.get(key) ?? loading;
       if (current.localEditRevision !== capturedEdit) {
         const next = applyRead({ ...current, dirty: true }, result);
@@ -782,7 +783,7 @@ export class DocumentRegistry {
       await this.restoreJournalIfNeeded(this.records.get(key) ?? next);
       return this.records.get(key) ?? next;
     } catch (error) {
-      if (this.disposed || generation !== this.getGeneration()) return loading;
+      if (this.disposed || generation !== this.getGeneration() || !currentRead()) return this.records.get(key) ?? loading;
       const current = this.records.get(key) ?? loading;
       if (current.dirty) {
         this.commit({
@@ -1785,7 +1786,7 @@ export class DocumentRegistry {
       for (const record of this.records.values()) {
         if (this.aliasesFor(record.identity).some(alias => alias.workspaceId === event.resource.workspaceId
           && (alias.resourceId === event.resource.resourceId || alias.resourceId.startsWith(`${event.resource.resourceId}/`)))) {
-          if (this.deferWatchReload(record) || record.status === 'loading' || record.saving || this.pendingSaves.has(record.documentInstanceId)) continue;
+          if (this.deferWatchReload(record) || record.saving || this.pendingSaves.has(record.documentInstanceId)) continue;
           void this.open(record.identity, { reload: true }).catch(error => this.reportJournalFailure(error));
         }
       }
