@@ -241,6 +241,7 @@ fn initialize_metadata(
     tx.execute_batch("CREATE INDEX IF NOT EXISTS attention_open_runs ON runs(branch_id) WHERE json_extract(body,'$.state') NOT IN ('completed','failed','cancelled');
         CREATE INDEX IF NOT EXISTS attention_open_operations ON operations(run_id) WHERE (json_extract(body,'$.phase')!='terminal' OR json_extract(body,'$.effect')='unknown' OR json_extract(body,'$.outcome')='indeterminate' OR (json_extract(body,'$.mcp_resource_subscription') IS NOT NULL AND (json_extract(body,'$.cancel_requested')=0 OR json_extract(body,'$.mcp_resource_subscription.localReleased')=0)))")?;
     // Product discovery and Bot ancestry need only memory-work owners, not every retained tool.
+    tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS pending_host_jobs ON operations(run_id) WHERE {}", host_jobs::PENDING_JOB))?;
     tx.execute_batch("CREATE INDEX IF NOT EXISTS thread_memory_operations ON operations(run_id) WHERE json_extract(body,'$.intent.kind')='memory_work_v1'")?;
     tx.execute_batch("CREATE INDEX IF NOT EXISTS pending_code_exchange_jobs ON operations(run_id) WHERE json_extract(body,'$.host_job.binding.domain')='collaboration.code' AND (coalesce(json_extract(body,'$.external_receipt.executor_stopped'),0)=0 OR json_extract(body,'$.phase')!='terminal')")?;
     tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS pending_waits_by_event ON waits(json_extract(body,'$.subject'),json_extract(body,'$.kind')) WHERE {PENDING_WAIT}"))?;

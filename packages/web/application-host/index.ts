@@ -1366,13 +1366,14 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     }
   };
   let managedRemoteTargets: ManagedRemoteTargetRegistry | null = null;
+  let researchSourceReached: ReturnType<typeof createResearchRuntime>['sourceReached'] | undefined;
   const managedTarget = createManagedResourceTarget({
     kernel: kernelClient, storageAvailable: true,
     onError: error => console.error("[VarinManagedRemote]", error.message),
     capacity: {
       onError: (error) => console.error("[VarinResource]", error.message),
       onChange: (workspaceId) => broadcastResearchFacts(workspaceId, 'machine'),
-      onCapacityAvailable: (workspaceId) => experimentService.refreshQueue(workspaceId),
+      onCapacityAvailable: (workspaceId) => experimentService.ensureReconciled(workspaceId),
       refreshTargets: (workspaceId) => managedRemoteTargets?.refresh(workspaceId),
       resolveExternalAuthority: (machineId, machine) => managedRemoteTargets?.externalAuthority(machineId, machine) ?? null,
     },
@@ -1388,6 +1389,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     // reconcile inspects and re-polls rather than resubmitting.
     onSourceReachable: (owner) => {
       requestSourceMaintenance();
+      researchSourceReached?.(owner);
       managedMcpOwner.current?.sourceReached(owner);
       managedMcpInteractionsOwner.current?.wake();
       mcpTaskRuntimeOwner.current?.sourceReached();
@@ -2825,8 +2827,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   agentRuntime.setMcpResourceOwner(mcpResourceRuntime);
   const researchRuntime = createResearchRuntime({ kernel: kernelClient, runtime: agentRuntime,
     experiments: experimentService, resources: resourceService, sources: sourceService,
-    onError: (_error: Error) => console.error('[Research] Original job reconciliation requires attention'),
+    onError: error => console.error('[Research]', error.message),
   });
+  researchSourceReached = researchRuntime.sourceReached;
   computerRuntimeOwner.current.start(error => console.error('[Computer] Native execution cleanup is unconfirmed:', error instanceof Error ? error.message : String(error)));
   const pluginCredentials = new PluginCredentialCapability(extensionRuntime,
     new HostCredentialService(extensionRuntime.services.hostId, fileSecretStore(path.join(VARIN_DATA_DIR, 'plugin-credentials.json'))),

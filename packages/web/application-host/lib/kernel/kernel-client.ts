@@ -2090,6 +2090,10 @@ export class KernelClient {
     return { workspaceIds: ids };
   }
 
+  async experimentRecovery(params: KernelMethodParams["storage.experiment.recovery"], grant: KernelGrantHandle): Promise<Array<{ workspaceId: string; attemptId: string }>> {
+    return this.requestRaw("storage.experiment.recovery", params, { grant });
+  }
+
   async uiCleanup(params: KernelMethodParams["storage.ui.cleanup"], grant: KernelGrantHandle, signal?: AbortSignal): Promise<{ pending: boolean; failures: string[] }> {
     return this.requestRaw<{ pending: boolean; failures: string[] }>("storage.ui.cleanup", params, { signal, grant });
   }

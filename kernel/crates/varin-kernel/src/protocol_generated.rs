@@ -2781,6 +2781,12 @@ pub(crate) struct KernelExperimentArtifactsParams {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct KernelExperimentRecoveryParams {
+    pub(crate) workspace_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct KernelExperimentLogChunksParams {
     pub(crate) workspace_id: String,
     pub(crate) attempt_id: String,
@@ -6184,6 +6190,11 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
             .map_err(|error| error.to_string()),
         "storage.experiment.artifacts" => {
             serde_json::from_value::<KernelExperimentArtifactsParams>(params.clone())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        "storage.experiment.recovery" => {
+            serde_json::from_value::<KernelExperimentRecoveryParams>(params.clone())
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }

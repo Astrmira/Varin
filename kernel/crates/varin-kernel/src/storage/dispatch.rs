@@ -133,6 +133,9 @@ impl Storage {
             "storage.experiment.artifacts" => {
                 storage.experiment_artifact_page(authorized_params, grant_id.unwrap_or(""))
             }
+            "storage.experiment.recovery" => {
+                storage.experiment_recovery(authorized_params, grant_id.unwrap_or(""))
+            }
             "storage.record.list" => {
                 storage.domain_record_list(authorized_params, grant_id.unwrap_or(""))
             }

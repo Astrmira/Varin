@@ -360,6 +360,7 @@ export type KernelMethod =
   | "storage.record.put"
   | "storage.record.get"
   | "storage.experiment.artifacts"
+  | "storage.experiment.recovery"
   | "storage.experiment.logChunks"
   | "storage.record.list"
   | "storage.record.workspaces"
@@ -2552,6 +2553,10 @@ export interface KernelExperimentArtifactsParams {
   attemptId: string;
   after?: string;
   pageSize?: number;
+}
+
+export interface KernelExperimentRecoveryParams {
+  workspaceId?: string;
 }
 
 export interface KernelExperimentArtifactsResult {
@@ -7954,6 +7959,7 @@ export type KernelMethodParams = {
   "storage.record.get": KernelRecordGetParams;
   "storage.record.list": KernelRecordListParams;
   "storage.experiment.artifacts": KernelExperimentArtifactsParams;
+  "storage.experiment.recovery": KernelExperimentRecoveryParams;
   "storage.experiment.logChunks": KernelExperimentLogChunksParams;
   "storage.record.workspaces": KernelRecordWorkspacesParams;
   "storage.record.release": KernelRecordReleaseParams;
@@ -11183,6 +11189,15 @@ export type KernelRequest =
       id: string;
       method: "storage.experiment.artifacts";
       params: KernelExperimentArtifactsParams;
+      epoch?: string;
+      grantId?: string;
+    }
+  | {
+      v: typeof KERNEL_PROTOCOL_VERSION;
+      kind: "request";
+      id: string;
+      method: "storage.experiment.recovery";
+      params: KernelExperimentRecoveryParams;
       epoch?: string;
       grantId?: string;
     }
