@@ -30,6 +30,8 @@
   </picture>
 </p>
 
+https://github.com/user-attachments/assets/a55fcac8-e198-4ca5-9c04-93239ae698f9
+
 ## Faites connaissance avec Varin
 
 Varin est un agent IA personnel open source qui travaille avec vos fichiers, votre navigateur et vos ordinateurs connectés. Discutez d'une idée, confiez-lui une tâche ou laissez-le coordonner d'autres Agents pour un travail plus important. Vous pouvez préciser vos consignes en cours de route, suivre son activité et reprendre une tâche plus tard. Exécutez-le sur votre ordinateur ou votre serveur, avec les modèles de votre choix.

@@ -30,6 +30,8 @@ English | [简体中文](.github/readme/README.zh-CN.md) | [繁體中文](.githu
   </picture>
 </p>
 
+https://github.com/user-attachments/assets/a55fcac8-e198-4ca5-9c04-93239ae698f9
+
 ## Meet Varin
 
 Varin is an open-source personal AI agent that works with your files, browser and connected computers. Discuss an idea, ask it to get something done, or let it coordinate other Agents on a larger task. You can give further instructions as work progresses, inspect what it is doing and pick up a task later. Run it on your own computer or server, with your choice of models.
