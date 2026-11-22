@@ -358,6 +358,8 @@ const applyRead = (record: DocumentRecord, result: VarinDocumentReadResult): Doc
   };
 };
 
+type OpenRead = { revalidate: boolean; usingBuffer: boolean };
+
 type TextHistoryEntry = {
   beforeState: number;
   afterState: number;
@@ -381,7 +383,7 @@ export class DocumentRegistry {
   private readonly pendingSaves = new Map<string, { request: VarinDocumentWriteRequest; record: DocumentRecord }>();
   private readonly savingEdits = new Map<string, { base: string; buffer: string; edits: VarinTextEdit[]; states: Map<number, VarinTextEdit[]> }>();
   private readonly records = new Map<string, DocumentRecord>();
-  private readonly openOperations = new Map<string, Promise<DocumentRecord>>();
+  private readonly openOperations = new Map<string, { promise: Promise<DocumentRecord>; read: OpenRead }>();
   private readonly listeners = new Map<string, Set<DocumentListener>>();
   private readonly coordinationByAlias = new Map<string, string>();
   private readonly aliasesByCoordination = new Map<string, Map<string, DocumentIdentity>>();
@@ -712,18 +714,25 @@ export class DocumentRegistry {
       const key = this.keyFor(resolved);
       if (!options?.reload) {
         const pending = this.openOperations.get(key);
-        if (pending) return pending;
+        // A view may join a disk read or upgrade an undecided model acquisition.
+        // Once that acquisition has chosen the buffer it cannot satisfy a reopen.
+        if (pending && !(options?.revalidate && pending.read.usingBuffer)) {
+          if (options?.revalidate) pending.read.revalidate = true;
+          return pending.promise;
+        }
       }
-      const operation: Promise<DocumentRecord> = this.performOpen(resolved, options, () => this.openOperations.get(key) === operation);
-      this.openOperations.set(key, operation);
+      const read = { revalidate: options?.revalidate === true, usingBuffer: false };
+      const currentRead = () => this.openOperations.get(key)?.read === read;
+      const operation = this.performOpen(resolved, read, options?.reload === true, currentRead);
+      this.openOperations.set(key, { promise: operation, read });
       void operation.finally(() => {
-        if (this.openOperations.get(key) === operation) this.openOperations.delete(key);
+        if (currentRead()) this.openOperations.delete(key);
       }).catch(() => undefined);
       return operation;
     });
   }
 
-  private async performOpen(identity: DocumentIdentity, options: { reload?: boolean; revalidate?: boolean } | undefined, currentRead: () => boolean): Promise<DocumentRecord> {
+  private async performOpen(identity: DocumentIdentity, read: OpenRead, reload: boolean, currentRead: () => boolean): Promise<DocumentRecord> {
     this.assertActive();
     while (this.isDirtyBarrierHeld(identity)) {
       await Promise.all([...this.dirtyBarriers.values()].filter(barrier => barrier.active
@@ -740,13 +749,14 @@ export class DocumentRegistry {
       return existing ?? emptyRecord(identity, generation, this.createDocumentInstanceId());
     }
     if (
-      !options?.reload
+      !reload
       && existing
-      && (!options?.revalidate || existing.dirty || existing.saving || this.pendingSaves.has(existing.documentInstanceId))
+      && (!read.revalidate || existing.dirty || existing.saving || this.pendingSaves.has(existing.documentInstanceId))
       && existing.connectionGeneration === generation
       && existing.status !== 'unloaded'
       && existing.status !== 'loading'
     ) {
+      read.usingBuffer = true;
       this.ensureWatch(identity.workspaceId);
       if (!existing.dirty) await this.restoreJournalIfNeeded(existing);
       return this.records.get(key) ?? existing;
@@ -758,7 +768,7 @@ export class DocumentRegistry {
       connectionGeneration: generation,
       // A controlled deletion is a recoverable document state, not a fresh
       // missing-file open. Keep its tombstone while checking disk again.
-      status: options?.revalidate && existing?.status === 'ready' ? 'ready'
+      status: read.revalidate && existing?.status === 'ready' ? 'ready'
         : existing?.status === 'deleted' && existing.baseRevision === null ? 'deleted' : 'loading',
     };
     this.commit(loading);

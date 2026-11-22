@@ -491,7 +491,6 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
         routeToChat();
 
         let identity: ThreadIdentity;
-        let directory = await projectExecutionPath(projectRef);
         if (pendingSendTarget.kind === 'worktree') {
           if (!canCreateWorktree) {
             toast.error(t('rightSidebar.contextNotesTodo.toast.worktreeRequiresGitRepo'));
@@ -502,15 +501,13 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
             projectsState.setActiveProjectIdOnly(projectRef.id);
           }
           const created = await createWorktreeThread();
-          identity = await useThreadStore.getState().materializeDraft(created.draftKey); directory = created.path;
+          identity = await useThreadStore.getState().materializeDraft(created.draftKey);
         } else {
-          identity = await createThreadForSubmission({
-            directory,
-          });
+          identity = await createThreadForSubmission({ projectId: projectRef.id });
         }
 
         setPendingSendTarget(null);
-        await submitThreadPrompt(identity, promptText, { providerId: execution.providerID, modelId: execution.modelID, thinkingLevel: execution.thinkingLevel }, directory);
+        await submitThreadPrompt(identity, promptText, { providerId: execution.providerID, modelId: execution.modelID, thinkingLevel: execution.thinkingLevel });
 
         toast.success(
           pendingSendTarget.kind === 'worktree'
