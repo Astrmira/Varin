@@ -1845,7 +1845,7 @@
     "DriverSelection": {"raw":"export type DriverSelection = {kind:'builtin';name:'varin.default';version:'1'} | {kind:'extension';artifact:DriverArtifact};","rustType":"varin_runtime::driver::DriverSelection"},
     "DriverBinding": {"raw":"export interface DriverBinding {reference:string;artifact:DriverArtifact}","rustType":"varin_runtime::driver::DriverBinding"},
     "DriverModelInput": {"raw":"export interface DriverModelInput {id:string;capabilityId:string|null;history:ModelConversationItem[];instructions:string[];tools:string[]}","rustType":"varin_runtime::driver::DriverModelInput"},
-    "DriverModelFailure": {"raw":"export interface DriverModelFailure {code:string;message:string;tool_name?:string|null;retry_after_ms:number|null;provider_request_id:string|null}","rustType":"varin_runtime::execution::ModelFailure"},
+    "DriverModelFailure": {"raw":"export interface DriverModelFailure {code:string;message:string;tool_name?:string|null;transport_cause?:string;retry_after_ms:number|null;provider_request_id:string|null}","rustType":"varin_runtime::execution::ModelFailure"},
     "DriverModelItem": {"raw":"export interface DriverModelItem {id:string;content:ModelContent;opaque:ModelOpaqueItem|null}","rustType":"varin_runtime::execution::ProviderItem"},
     "DriverModelReceipt": {"raw":"export interface DriverModelReceipt {id:string;requestId:string;outcome:'completed'|'interrupted'|'failed'|'cancelled';items:DriverModelItem[];usage:ModelUsageReceipt;finishReason:FinishReason|null;failure:DriverModelFailure|null}","rustType":"varin_runtime::driver::DriverModelReceipt"},
     "DriverToolInput": {"raw":"export interface DriverToolInput {id:string;name:string;arguments:unknown}","rustType":"varin_runtime::driver::DriverToolInput"},

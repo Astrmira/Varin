@@ -652,16 +652,31 @@ pub enum FinishReason {
 pub struct ModelFailure {
     pub code: String,
     pub message: String,
+    /// Per-attempt transport evidence. Retry rules continue to match the stable message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_cause: Option<String>,
     pub retry_after_ms: Option<u64>,
     pub provider_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
 }
 
+impl ModelFailure {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            transport_cause: None,
+            retry_after_ms: None,
+            provider_request_id: None,
+            tool_name: None,
+        }
+    }
+}
+
 impl From<ExecutionError> for ModelFailure {
     fn from(error: ExecutionError) -> Self {
-        Self { code: error.code, message: error.message, tool_name: error.tool_name,
-            retry_after_ms: None, provider_request_id: None }
+        Self { tool_name: error.tool_name, ..Self::new(error.code, error.message) }
     }
 }
 impl From<ModelFailure> for ExecutionError {
@@ -3621,13 +3636,7 @@ pub(crate) fn generate_model<P: Persistence + ?Sized, M: ModelProvider + ?Sized>
             }
         }))
         .unwrap_or_else(|_| {
-            Err(ModelFailure {
-                tool_name: None,
-                code: "provider_panicked".into(),
-                message: "provider worker panicked after dispatch".into(),
-                retry_after_ms: None,
-                provider_request_id: None,
-            })
+            Err(ModelFailure::new("provider_panicked", "provider worker panicked after dispatch"))
         });
         // Covers normal completion, transport failure, cooperative cancellation and panic.
         if phase.is_some() {

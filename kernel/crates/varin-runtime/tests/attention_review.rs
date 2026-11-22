@@ -545,7 +545,7 @@ fn provider_phase_and_retry_are_exact_current_owner_observations() {
     owner.lock().unwrap().commit_execution(&receipt.run_id, epoch, &ExecutionRecord::StateChanged { state: RunState::Generating, waiting_on: None }).unwrap();
     assert!(current()["generation"].is_null());
     owner.lock().unwrap().commit_execution(&receipt.run_id, epoch, &ExecutionRecord::ModelFinished { request_id: "model-1".into(), outcome: ModelOutcome::Failed, finish_reason: None,
-        items: vec![], interrupted_deltas: vec![], usage: UsageReceipt::default(), failure: Some(ModelFailure { code: "transport_error".into(), message: "private diagnostic".into(), tool_name: None, retry_after_ms: None, provider_request_id: None }) }).unwrap();
+        items: vec![], interrupted_deltas: vec![], usage: UsageReceipt::default(), failure: Some(ModelFailure { code: "transport_error".into(), message: "private diagnostic".into(), tool_name: None, retry_after_ms: None, transport_cause: None, provider_request_id: None }) }).unwrap();
     owner.observe_retry(&receipt.run_id, epoch, "model-1", Some((1,0)));
     let retry = current()["retry"].clone(); assert_eq!(retry["attempt"], 1); assert_eq!(retry["scheduledAtMs"], retry["retryAtMs"]);
     assert!(!current()["retry"].is_null()); // Expired clock is not resumed execution.
@@ -622,7 +622,7 @@ fn real_provider_callbacks_clear_phase_on_success_failure_abort_and_panic() {
             assert_eq!(wire["branches"][0]["currentRun"]["generation"]["phase"],"reasoning");assert!(!wire.to_string().contains("private provider words"));
             if self.ending==2 {self.stop.cancel();emit(ProviderEvent::TextDelta{item_id:"late".into(),text:"cancelled".into()})?;unreachable!()}
             if self.ending==3 {panic!("provider panic fixture")}
-            if self.ending==1 || (self.ending==4 && attempt==0) {return Err(ModelFailure{code:"transport_error".into(),message:"fixture failure".into(),retry_after_ms:None,provider_request_id:None,tool_name:None})}
+            if self.ending==1 || (self.ending==4 && attempt==0) {return Err(ModelFailure{code:"transport_error".into(),message:"fixture failure".into(),retry_after_ms:None,transport_cause: None, provider_request_id:None,tool_name:None})}
             emit(ProviderEvent::TextDelta{item_id:"answer".into(),text:"answer".into()})?;
             emit(ProviderEvent::ItemCompleted{item:ProviderItem{id:"answer".into(),content:Content::Text{text:"answer".into()},opaque:None}})?;
             Ok(FinishReason::Stop)

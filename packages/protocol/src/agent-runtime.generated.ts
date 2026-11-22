@@ -96,7 +96,7 @@ export interface DriverBinding {reference:string;artifact:DriverArtifact}
 
 export interface DriverModelInput {id:string;capabilityId:string|null;history:ModelConversationItem[];instructions:string[];tools:string[]}
 
-export interface DriverModelFailure {code:string;message:string;tool_name?:string|null;retry_after_ms:number|null;provider_request_id:string|null}
+export interface DriverModelFailure {code:string;message:string;tool_name?:string|null;transport_cause?:string;retry_after_ms:number|null;provider_request_id:string|null}
 
 export interface DriverModelItem {id:string;content:ModelContent;opaque:ModelOpaqueItem|null}
 
