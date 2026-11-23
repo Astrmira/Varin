@@ -168,9 +168,14 @@ export const EMPTY_THREAD_DRAFT: ThreadDraft = Object.freeze({ text: '', images:
 type SavedComposer = Pick<ThreadDraft, 'text' | 'references' | 'markerObjects' | 'interactions'>;
 
 function savedComposerKey(key: string, identity?: ThreadIdentity): string | undefined {
-  // Native keys contain the stable Host and branch, even when the live composer retained its first-send key.
-  if (!key.startsWith('["')) return;
-  const [host, thread, branch] = JSON.parse(key) as [string, string, string];
+  // The live draft store also accepts workflow keys built by appending a suffix.
+  if (!key.startsWith('["') || !key.endsWith('"]')) return;
+  let parts: unknown;
+  try { parts = JSON.parse(key); } catch { return; }
+  if (!Array.isArray(parts) || parts.length !== 3) return;
+  const [host, thread, branch] = parts;
+  if (typeof host !== 'string' || typeof thread !== 'string' || typeof branch !== 'string') return;
+  // A materialized Thread keeps its live composer key but saves under its actual identity.
   if (identity) return JSON.stringify([host, identity.threadId, identity.branchId]);
   if (thread !== 'draft' && branch) return key;
 }
