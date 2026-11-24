@@ -3,6 +3,104 @@
 All notable changes to Varin are recorded here. The project is pre-1.0; the
 private runtime protocol and product surfaces still move together.
 
+## 0.9.53 - 2026-11-23
+
+### English
+
+Varin 0.9.53 makes completed conversations easier to read and improves draft retention, workspace recovery, and Bot execution.
+
+#### Chat and interactive content
+
+- Completed work folds automatically after a turn, keeping the final answer in view. Expand it when you need the details, or change the default in Settings → Chat.
+- “Keep unsent drafts” now restores text and references in existing Varin conversations after a reload. Successfully sent drafts are cleared.
+- Choice cards can preview a complete plan and insert the selected option’s full text into the composer for editing. Inline previews stay within the conversation so they don’t cover approval actions or the New Reply button.
+
+#### Files, projects, and memory
+
+- Reopening a restored file in the Web editor reads the current contents. File recovery can resume after an interruption, and rollback looks up the history for the selected branch.
+- Open project notes directly from a project conversation. Notes and task checkmarks survive a reload, and conversations dispatched from a project task appear under that project.
+- Corrections to saved memories supersede older values when new conversations retrieve them. Opening a file from the command palette now gives the editor keyboard focus.
+
+#### Bot execution and Host reliability
+
+- Model and reasoning changes in a Bot conversation are saved for that conversation and used for queued, scheduled, and resumed turns. Switching models no longer tries to register the same credentials twice. [#408](https://github.com/Astrmira/Varin/issues/408)
+- Desktop requests handle non-Latin-1 MCP response headers. MCP discovery and failed model requests now report more specific causes when available. [#407](https://github.com/Astrmira/Varin/issues/407)
+- Host startup loads conversation context on demand. Recovery of interrupted research jobs avoids repeat reconciliation and coalesces background scans. [#406](https://github.com/Astrmira/Varin/issues/406)
+- Bots and the Files panel choose usable default locations on hosts with restricted filesystem access.
+
+[Full changelog](https://github.com/Astrmira/Varin/compare/v0.9.52...v0.9.53)
+
+### 中文
+
+Varin 0.9.53 加入了整轮结束后自动收起工作过程，并改进了草稿、工作区恢复和 Bot 执行。
+
+#### 对话和交互内容
+
+- 一轮完成后，默认收起工作过程，保留最终回复。需要回看时可以展开，也可以在「设置 → 聊天」里关闭自动收起。
+- 「保留没发出去的草稿」现在能在刷新后恢复已有 Varin 会话里的文字和引用。消息成功发送后会清除草稿。
+- 选方案时可以预览正文，再把所选方案完整填入输入框继续编辑。内嵌预览限制在会话区域内，避免挡住审批和「新回复」按钮。
+
+#### 文件、项目和记忆
+
+- 文件恢复后，从 Web 文件树重开会读取当前内容。中断的文件恢复可以接续，回退记录按当前分支查找。
+- 从项目会话可以直接打开项目备注。备注和待办勾选状态在刷新后保留，待办派发的新会话归到原项目。
+- 修改记忆后，新会话会召回更正后的内容。用命令面板打开文件后，编辑器会接到键盘焦点。
+
+#### Bot 执行与 Host 稳定性
+
+- 在 Bot 会话里选定的模型和思考强度会随会话保存，用于排队、定时唤起和恢复后的执行。切换模型时会复用同一份凭据绑定。 [#408](https://github.com/Astrmira/Varin/issues/408)
+- 修复 MCP 响应头含中文等非 Latin-1 字符时桌面请求挂住的问题。MCP 发现和模型请求失败时，也会报告更具体的原因。 [#407](https://github.com/Astrmira/Varin/issues/407)
+- Host 启动时按需加载会话上下文。中断的研究任务恢复时会合并后台扫描，避免反复协调同一批任务。 [#406](https://github.com/Astrmira/Varin/issues/406)
+- 在文件访问受限的 Host 上，Bot 和文件面板会选用实际可访问的默认位置。
+
+[完整更新记录](https://github.com/Astrmira/Varin/compare/v0.9.52...v0.9.53)
+
+## 0.9.52 - 2026-11-20
+
+### English
+
+Varin 0.9.52 adds group chats for Bots, introduces 15 new animated characters, and brings Bot profiles into Settings.
+
+#### Let Bots work together in a group
+
+- Start a group from the Bot sidebar. Mention one or more Bots to bring them in, or reply to a Bot’s message to continue with that member. Unaddressed messages only reach members with listening enabled. If nobody is listening, the post stays in the group without starting a turn.
+- Share files and search past messages. Bots can look up group history and address each other. The side panel shows members, activity, and schedules. Set up a group schedule through the same Calendar and scheduled follow-up controls used for direct Bot conversations.
+
+#### Give each Bot its own look and profile
+
+- Choose from 16 built-in characters, including Varin. When creating a Bot, leave the appearance on Random to let Varin pick; leave the name blank to use the chosen character’s name.
+- Open a Bot’s profile from its side panel or sidebar. Settings brings appearance, instructions, model, and reasoning effort together, with a separate tab for the Bot’s memory. Closing Settings returns you to your conversation. On desktop, the transition starts at the button you clicked.
+
+#### Startup and recovery
+
+- Reduce Host startup work and idle memory by loading optional features and preparing built-in tool validators on first use.
+- Resume pending child Agent work when its relevant event arrives, without repeatedly scanning completed work. Fix workspace cleanup getting stuck on retry after a branch was deleted or a pin was released, and reduce the amount of retained history scanned during recovery. [#396](https://github.com/Astrmira/Varin/issues/396)
+- Docker builds reuse the browser bundle across architectures, so it only needs to be compiled once per release build.
+
+[Full changelog](https://github.com/Astrmira/Varin/compare/v0.9.51...v0.9.52)
+
+### 中文
+
+Varin 0.9.52 新增 Bot 群聊和 15 个可动角色，并重做了设置里的 Bot 档案。
+
+#### 让多个 Bot 在群里协作
+
+- 从 Bot 左栏新建群聊。想让谁接话就 @ 谁，回复某个 Bot 的消息也可以直接找它继续。没有指定对象的消息只会交给开启监听的成员；没人监听时，消息留在群里，不会启动 Bot。
+- 群里可以共享文件、搜索消息；Bot 也可以按需查阅群消息、联系其他成员。右侧面板集中查看成员、活动和日程。群日程沿用单聊的日程与定时接续功能。
+
+#### 给每个 Bot 配自己的形象和档案
+
+- 内置 16 个角色，含薇琳。新建 Bot 时可以指定形象，也可以保留随机；名字留空时，自动用选中角色的名字。
+- 从 Bot 右侧面板或左栏进入档案，在设置里调整形象、指令、模型和思考强度，也可以切到「记忆」查看和管理它的记忆。关闭设置后回到原来的对话；桌面端打开和返回的动画从点击位置展开。
+
+#### 启动与恢复
+
+- 把可选功能和内置工具的参数校验延后到首次使用，减少 Host 启动时的工作和空载内存占用。
+- 子 Agent 的待办工作由相关事件唤醒，减少反复扫描已完成任务。修复分支已删除或固定引用已解除后，工作区清理重试仍然卡住的问题，并减少恢复时对历史记录的扫描。 [#396](https://github.com/Astrmira/Varin/issues/396)
+- Docker 镜像构建在不同架构之间复用前端产物，同一次发布只编译一次。
+
+[完整更新记录](https://github.com/Astrmira/Varin/compare/v0.9.51...v0.9.52)
+
 ## 0.9.51 - 2026-11-19
 
 ### English

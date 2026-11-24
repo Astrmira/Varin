@@ -3,7 +3,7 @@ import { MessageHandoff } from '@/components/conversation/messageHandoff';
 import React from 'react';
 import { VARIN_WORKBENCH_BOT_PROFILE_ID } from '@varin/extension-contract';
 import type { BotMatter } from '@varin/protocol';
-import { getRuntimeEndpointGeneration, type BotSession, type ThreadIdentity } from '@varin/application-client';
+import { getRuntimeEndpointGeneration, type BotAppearance, type BotSession, type ThreadIdentity } from '@varin/application-client';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { BOT_CONVERSATION_PANEL_SCOPE, openConversationTree } from '@/lib/openConversationTree';
 import { CONVERSATION_TOOL_MODES, ConversationToolsContext, toggleBotConversationTools } from '@/lib/conversationTools';
@@ -30,7 +30,7 @@ import { useThreadDraftStore } from '@/stores/useThreadDraftStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDeviceInfo } from '@/lib/device';
 import { noteSwitchDirection } from '@/lib/motion/switchDirection';
-import { activationPoint } from '@/lib/motion/pointer';
+import { activationPoint, type RecentPointer } from '@/lib/motion/pointer';
 import { BotNameDialog } from '@/components/sections/bots/BotNameDialog';
 import type { BotMenuAction } from '@/components/sections/bots/BotMenu';
 import { BotActivityBanner } from '@/components/sections/bots/BotActivityBanner';
@@ -76,6 +76,12 @@ const momentOf = (event: BotStageEvent, nameOf: (key: string) => string): BotTea
 const openSettings = (event: React.MouseEvent<HTMLButtonElement>) => {
   useUIStore.getState().setSettingsDialogOpen(true, activationPoint(event));
 };
+
+function openBotProfile(botId: string, origin?: RecentPointer) {
+  const ui = useUIStore.getState();
+  ui.setSettingsPage('harness-bots', botId);
+  ui.setSettingsDialogOpen(true, origin);
+}
 
 function useMatchMedia(query: string): boolean {
   const subscribe = React.useCallback((change: () => void) => {
@@ -197,7 +203,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const [deleting, setDeleting] = React.useState<BotSummary | null>(null);
   const [deletingSession, setDeletingSession] = React.useState<{ botId: string; identity: ThreadIdentity; branch: boolean; title: string } | null>(null);
   const [revision, refresh] = React.useReducer((value: number) => value + 1, 0);
-  const [profileOpen, setProfileOpen] = React.useState(false);
   const [focus, setFocus] = React.useState<BotPanelFocus | null>(null);
   const [narrowPanelOpen, setNarrowPanelOpen] = React.useState(false);
   const [spaceExpanded, setSpaceExpanded] = React.useState(false);
@@ -446,7 +451,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const returned = useBotReturn(state => state.returned);
   const focusToken = React.useRef(0);
   const focusTab = React.useCallback((tab: BotPanelTab, id?: string) => {
-    setProfileOpen(false);
     setTab(tab);
     if (id) setFocus({ tab, id, token: ++focusToken.current });
     if (floating) setNarrowPanelOpen(true); else if (!isMobile) setPanelOpen(true);
@@ -483,21 +487,19 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     setNameDialog({ mode: 'create' });
   };
 
-  const saveName = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const saveName = async (name: string, appearance?: BotAppearance) => {
     const host = getRuntimeEndpointGeneration();
     const dialog = nameDialog;
-    const trimmed = nameDraft.trim();
-    if (!dialog || !trimmed) return;
+    if (!dialog) return;
     setActionBusy(dialog.mode === 'create' ? 'create' : `rename:${dialog.mode === 'session' ? dialog.session.identity.threadId : dialog.bot.id}`);
     setError(null);
     try {
       if (dialog.mode === 'session') {
-        await useThreadStore.getState().updateThread(dialog.session.identity.threadId, { title: trimmed });
+        await useThreadStore.getState().updateThread(dialog.session.identity.threadId, { title: name });
         if (!alive.current || host !== getRuntimeEndpointGeneration()) return;
         refreshWork();
       } else {
-        const bot = dialog.mode === 'create' ? await createBot({ name: trimmed }) : await updateBot(dialog.bot.id, { name: trimmed });
+        const bot = dialog.mode === 'create' ? await createBot({ name, appearance }) : await updateBot(dialog.bot.id, { name });
         if (!alive.current || host !== getRuntimeEndpointGeneration()) return;
         setBots((list) => dialog.mode === 'create' ? [...(list ?? []), bot] : list?.map((item) => item.id === bot.id ? bot : item) ?? [bot]);
         if (dialog.mode === 'create') { useBotNavigation.setState({ botId: null, entry: null }); setShowArchived(false); setSelectedId(bot.id); }
@@ -623,10 +625,10 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const mutateBot = React.useCallback(async (bot: BotSummary, action: BotMenuAction) => {
     if (action === 'delete') { setDeleting(bot); return; }
     if (action === 'rename') { setError(null); setNameDraft(bot.name); setNameDialog({ mode: 'rename', bot }); return; }
-    if (action === 'profile' || action === 'memory') {
-      // The selected Bot's profile and memory live in its panel; another Bot opens without switching.
-      if (bot.id === selectedId) { if (action === 'profile') { setProfileOpen(true); if (!floating && !isMobile) setPanelOpen(true); else if (floating) setNarrowPanelOpen(true); } else focusTab('memory'); }
-      else setDetails({ id: bot.id, name: bot.name, tab: action });
+    if (action === 'profile') { openBotProfile(bot.id); return; }
+    if (action === 'memory') {
+      if (bot.id === selectedId) focusTab('memory');
+      else setDetails({ id: bot.id, name: bot.name, tab: 'memory' });
       return;
     }
     setActionBusy(`${action}:${bot.id}`);
@@ -643,7 +645,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     } finally {
       if (alive.current) setActionBusy(null);
     }
-  }, [selectedId, floating, isMobile, setPanelOpen, focusTab]);
+  }, [selectedId, focusTab]);
 
   const newSession = React.useCallback(async () => {
     if (!selected) return;
@@ -680,7 +682,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const selectBot = (botId: string) => {
     dismissDraft();
     useUIStore.getState().setSessionSwitcherOpen(false);
-    setProfileOpen(false);
     // Keep the current conversation/page until the requested Bot entry is ready.
     void openEntry(botId, true);
   };
@@ -692,7 +693,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const panelModel = React.useMemo<BotPanelModel | null>(() => selected && sessionsWithWork && line ? {
     bot: selected, figure: pose, stage: stageFeed, line,
     sessions: sessionsWithWork, session: currentSession, work, workItems: workItems ?? [], needs, timeline, facts, matters: mattersForBot, threads,
-    readOnly: readOnly || offline, busy: actionBusy !== null, focus, profileOpen,
+    readOnly: readOnly || offline, busy: actionBusy !== null, focus,
     sessionTitle, focusTab,
     openWork,
     openSession,
@@ -700,12 +701,8 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     changeState: action => { void mutateBot(selected, action); },
     archiveMatter,
     newSession: () => { void newSession(); },
-    openProfile: () => setProfileOpen(true),
-    closeProfile: () => setProfileOpen(false),
-    onBotChanged: bot => { if (bot) setBots(list => list?.map(item => item.id === bot.id ? bot : item) ?? [bot]); refresh(); },
-    requestDelete: () => setDeleting(selected),
-    archive: () => { void mutateBot(selected, 'archive'); },
-  } : null, [selected, pose, stageFeed, line, needs, sessionsWithWork, currentSession, work, timeline, facts, mattersForBot, threads, readOnly, offline, actionBusy, focus, profileOpen,
+    openProfile: origin => openBotProfile(selected.id, origin),
+  } : null, [selected, pose, stageFeed, line, needs, sessionsWithWork, currentSession, work, timeline, facts, mattersForBot, threads, readOnly, offline, actionBusy, focus,
     sessionTitle, focusTab, openWork, openSession, mutateBot, archiveMatter, newSession, workItems]);
 
   const spaces = useBotWorkspaces(panelModel, committed && !settingsOpen, () => { closeConversationPanel(); if (floating) setNarrowPanelOpen(true); else setPanelOpen(true); });
@@ -780,7 +777,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     {activeDraftKey && threads && active ? <div className="min-h-0 flex-1"><ThreadDraftConversation key={activeDraftKey} api={threads} draftKey={activeDraftKey} handoff={messageHandoff} /></div> : ownsConversation && !busy && active ? <div className="min-h-0 flex-1">{selectedEntry && threads
       ? <ChildNavigationContext.Provider value={childNavigation}><MemoryNavigationContext.Provider value={memoryNavigation}>
         <ThreadConversation key={`${selectedEntry.threadId}:${selectedEntry.branchId}`} surface="bot" api={threads} identity={selectedEntry} messageHandoff={messageHandoff} onWorkChanged={refreshWork} onActivity={stage.onActivity}
-          inheritWorkbenchModel={!selected?.model}
           preferredModel={selected && entryResolution?.botId === selected.id && entryResolution.profileModelKey === profileModelKey ? entryResolution.model : null} readOnly={readOnly || conversationArchived}
           emptyHero={selected ? { visual: <BotFigure bot={selected} state={figure} size={64} />, title: t('bot.hero.title', { name: selected.name }) } : undefined}
           onBranchCreated={entry => { if (selected) void openBotConversation(selected.id, entry); refreshWork(); }} />
@@ -798,6 +794,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     )}
     <BotNameDialog
       open={nameDialog !== null}
+      mode={nameDialog?.mode === 'create' ? 'create' : 'rename'}
       title={nameDialog?.mode === 'session' ? t('sessions.sidebar.session.menu.rename') : nameDialog?.mode === 'rename' ? t('settings.bots.rename') : t('settings.bots.create')}
       submitLabel={nameDialog?.mode === 'create' ? t('settings.bots.createAction') : t('settings.bots.save')}
       name={nameDraft}
@@ -805,7 +802,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
       error={error}
       onNameChange={setNameDraft}
       onOpenChange={(open) => { if (!open && actionBusy === null) setNameDialog(null); }}
-      onSubmit={(event) => { void saveName(event); }}
+      onSubmit={(name, appearance) => { void saveName(name, appearance); }}
     />
     <Dialog open={deletingSession !== null} onOpenChange={open => { if (!open && actionBusy === null) setDeletingSession(null); }}>
       <DialogContent showCloseButton={false} className="max-w-sm gap-5">
@@ -826,7 +823,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     </Dialog>
     {deleting ? <BotDeleteDialog key={deleting.id} bot={deleting} onClose={() => setDeleting(null)} onAccepted={(bot) => {
       setBots((list) => list?.flatMap((item) => item.id === deleting.id ? bot ? [bot] : [] : [item]) ?? null);
-      if (deleting.id === selectedId) setProfileOpen(false);
       refresh();
     }} /> : null}
     {details ? <React.Suspense fallback={null}><BotDetailsDialog bot={details} onClose={() => { setDetails(null); refresh(); }} /></React.Suspense> : null}

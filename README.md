@@ -23,8 +23,14 @@ English | [简体中文](.github/readme/README.zh-CN.md) | [繁體中文](.githu
 </p>
 
 <p align="center">
-  <img src=".github/readme/assets/varin-at-work.gif" alt="Varin reads, works with her team and responds as the work progresses" width="600" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/readme/assets/varin-cast-dark.webp" />
+    <source media="(prefers-color-scheme: light)" srcset=".github/readme/assets/varin-cast-light.webp" />
+    <img src=".github/readme/assets/varin-cast-light.webp" alt="Varin and her 15 built-in Bot characters gathered along a long banquet table" width="1100" />
+  </picture>
 </p>
+
+https://github.com/user-attachments/assets/a55fcac8-e198-4ca5-9c04-93239ae698f9
 
 ## Meet Varin
 
@@ -39,7 +45,15 @@ Varin is an open-source personal AI agent that works with your files, browser an
   <img src=".github/readme/assets/varin-en.png" alt="A conversation with Varin about a product release, with an inline audience choice, a document and the current work alongside it" width="1100" />
 </p>
 
-[About the assistant](docs/bot.md) · [Collaboration and task reuse](docs/collaboration.md)
+### Multiple Bots and group chats
+
+Create multiple Bots, each with its own instructions, model, thinking level, memory, schedules and appearance. Choose from 16 built-in animated characters (including Varin), leave the choice on random when creating a Bot, or import custom images and animation packs.
+
+Start a group chat from the Bot sidebar to let several Bots work together on one timeline. Mention or reply to specific members to bring them in, use per-member listening for unaddressed posts, share files and search group history, and set up group schedules alongside direct conversations.
+
+https://github.com/user-attachments/assets/5b8fa63d-fc6b-4ad6-95bd-ffbb96ad458c
+
+[About the assistant](docs/bot.md) · [Appearances](docs/bot-appearances.md) · [Collaboration and task reuse](docs/collaboration.md)
 
 ## Choose how closely you want to work
 
@@ -47,7 +61,7 @@ You can stay with the overall conversation, work directly with an Agent, or open
 
 | View | What stays in focus | What you can open when needed |
 | --- | --- | --- |
-| **Varin** | Your conversation, ongoing work and results | Task details, questions, memory, files and computers |
+| **Varin** | Direct or group conversations, ongoing work and results | Task details, questions, memory, files and computers |
 | **Workbench** | A specific task and the Agent doing it | Tool activity, teammates, plans, context and recovery |
 | **IDE** | Files and code you want to work on directly | Editor groups, diffs, terminals, Git and the Agent conversation |
 
@@ -128,9 +142,13 @@ Common tools are available directly; other capabilities are discovered as needed
 
 **Bring other Agents.** Codex, Claude Code, Pi and ACP-compatible programs can run as sessions or take delegated tasks while retaining their own accounts, models and tools. [External Agents](docs/external-agents.md)
 
-**Place the work where it belongs.** Run locally, self-host on a server, or connect from a browser or phone. The interface, Agent service, file workspace and computer-use device can be on different machines. [Deployment](docs/ops/cloud-deployment.md) · [Resources](docs/resources.md)
+**Place the work where it belongs.** Run locally, self-host on a server, or connect from a browser or phone. The interface, Agent service, file workspace and computer-use device can be on different machines, and a single conversation can work across connected devices while keeping file links and recovery tied to where each change happened. [Deployment](docs/ops/cloud-deployment.md) · [Resources](docs/resources.md)
 
 **Keep an optional companion nearby.** The desktop companion follows the selected Bot's activity. Download its artwork and wake or put it to sleep from Settings.
+
+<p align="center">
+  <img src=".github/readme/assets/varin-at-work.gif" alt="Varin reads, works with her team and responds as the work progresses" width="600" />
+</p>
 
 <a id="how-the-harness-works"></a>
 
@@ -152,8 +170,8 @@ The core runtime is written in Rust. The desktop, web and mobile interfaces shar
 
    | Where | How |
    | --- | --- |
-   | Windows, macOS or Linux | [Download the installer](https://github.com/Astrmira/Varin/releases/latest) for your system and CPU architecture. |
-   | Your own server, used from a browser | [Self-host with Docker](docs/ops/cloud-deployment.md), with persistent storage, passwords and remote access. |
+   | Windows, macOS or Linux | [Download the full desktop installer](https://github.com/Astrmira/Varin/releases/latest) to run locally, or **Varin Light** to connect to an existing Varin service. |
+   | Your own server, used from a browser | [Self-host with Docker](docs/ops/cloud-deployment.md) (`varin` / `varin-toolbelt`), or run a standalone **Resource Node** (`varin-node`) to expose files and commands from another machine. |
    | Your phone | On Android, install the APK from the [latest release](https://github.com/Astrmira/Varin/releases/latest); on iPhone, install the web app (PWA). Then pair it with your Host from Settings. [Mobile guide](packages/docs/content/docs/mobile.mdx) |
    | From source | See [Run from source](#run-from-source). |
 

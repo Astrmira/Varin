@@ -298,7 +298,7 @@ const CATALOG_ENTRIES: readonly SettingsCatalogEntry[] = [
       { path: 'harness.models.memoryOrganizer', kind: 'json', scope: 'user', note: '{enabled?: boolean, providerId?: string, modelId?: string}; set replaces this binding: include retained model fields, or use agents.catalog enable/disable' },
     ],
     apply: 'next-run',
-    ui: { page: 'harness-bots', titleKey: 'settings.harness.role.memoryOrganizer', keywords: ["memoryOrganizer", "agent", "model", "enable", "disable"] },
+    ui: { page: 'model-roles', titleKey: 'settings.harness.role.memoryOrganizer', keywords: ["memoryOrganizer", "agent", "model", "enable", "disable"] },
   },
   {
     id: 'harness.models.permissionJudge', category: 'harness', owner: 'agent-settings', authority: 'permissions',
@@ -768,6 +768,12 @@ const CATALOG_ENTRIES: readonly SettingsCatalogEntry[] = [
     apply: 'next-run',
     ui: { page: 'chat', titleKey: 'settings.varin.visual.goal.budgetLabel',
       keywords: ['goal', 'budget', 'tokens', 'limit'] },
+  },
+  {
+    id: 'chat.collapse-completed-work', category: 'chat', owner: 'app',
+    field: { path: 'collapseCompletedWork', kind: 'boolean' },
+    apply: 'immediate',
+    ui: { page: 'chat', titleKey: 'settings.chat.collapseCompletedWork', keywords: ['turn', 'collapse', '工作过程', '折叠'] },
   },
   {
     id: 'chat.reasoning-traces', category: 'chat', owner: 'app',

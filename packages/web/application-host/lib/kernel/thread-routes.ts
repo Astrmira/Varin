@@ -10,6 +10,7 @@ import { parseThreadMaterials } from './thread-material-input.js';
 import { normalizeThreadSourcePreparation, parseSourceResourceOwner } from './thread-sources.js';
 import { parseContentReferenceInput, type ContentReferenceInput, threadSourceFailureMessage } from '@varin/application-client';
 import { sourceFailureCode } from './source-admission-error.js';
+import { WorkspaceDirectoryError } from '../documents/errors.js';
 import type { McpElicitationResponse, McpSamplingRequestAction, McpSamplingOutputAction } from '@varin/protocol';
 import type { OutputMediaHolder } from '@varin/protocol';
 import { parseComputerWorkRef, parseComputerExecutionRef } from '@varin/protocol';
@@ -252,6 +253,7 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
     'plan/update': ['runtime', 'threadId', 'branchId', 'key', 'expectedHeadId', 'expectedRef', 'content'],
     'recovery/source': ['runtime', 'threadId', 'branchId', 'entryId'],
     'navigation/prepare': ['runtime', 'threadId', 'branchId', 'entryId'],
+    'navigation/prepare-files': ['runtime', 'threadId', 'branchId', 'entryId'],
     navigate: ['runtime', 'threadId', 'branchId', 'key', 'expectedHeadId', 'targetHeadId', 'undoOf'],
     'navigation/receipt': ['runtime', 'threadId', 'branchId', 'key'],
     fork: ['runtime', 'threadId', 'branchId', 'key', 'headId'],
@@ -311,6 +313,10 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
             : reason.failure.status === 'missing' ? 404 : reason.failure.status === 'unavailable' ? 503 : 400;
           response.status(status).json({ code: reason.code, error: reason.message, ...(error instanceof ThreadPreAdmissionError ? { admission: 'not_started' } : {}) }); return;
         }
+        if (reason instanceof WorkspaceDirectoryError) {
+          response.status(reason.statusCode).json({ code: reason.code === 'failed' ? 'resource-directory-unavailable' : reason.code,
+            error: reason.message, ...(error instanceof ThreadPreAdmissionError ? { admission: 'not_started' } : {}) }); return;
+        }
         if (reason instanceof WorkspaceBackendUnavailableError) {
           response.status(503).json({ code: reason.code, error: reason.message, admission: 'not_started' }); return;
         }
@@ -318,14 +324,15 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
         const admission = error instanceof ThreadPreAdmissionError ? { admission: 'not_started' as const } : {};
         if (sourceCode) { response.status(sourceCode === 'source_authority_denied' ? 403 : sourceCode === 'source_registration_missing' ? 404 : 409).json({ code: sourceCode, error: threadSourceFailureMessage(sourceCode), ...admission }); return; }
         const conflict = reason instanceof PlanConflict || reason instanceof KernelClientError && reason.code === 'operation-error' && reason.message.startsWith('operation error: conflict:');
-        if (conflict) console.warn('[Threads] Request state conflict', { method,
-          admission: error instanceof ThreadPreAdmissionError ? 'not_started' : 'unknown' });
         if (error instanceof ComputerError) { response.status(error.computerCode === 'computer-work-not-found' ? 404 : error.computerCode === 'computer-execution-stale' ? 409 : error.computerCode === 'computer-request-invalid' ? 400 : 503).json({ code: error.computerCode, error: error.message }); return; }
         const suppliedCode = conflict ? 'thread-conflict' : error instanceof HarnessServiceError ? error.harnessCode
           : error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'thread-request-failed';
         const code = threadSourceFailureMessage(suppliedCode) ? 'thread-request-failed' : suppliedCode;
         const status = code.includes('conflict') ? 409 : code === 'denied' || code === 'forbidden' ? 403
           : code === 'not-found' ? 404 : code === 'unavailable' || code === 'timeout' || code === 'extension-host-unavailable' ? 503 : 400;
+        if (status === 400 || conflict) console.warn('[Threads] Request rejected', {
+          method, status, code, admission: admission.admission ?? 'unknown',
+        });
         response.status(status).json({ code, error: code === 'extension-host-unavailable' ? 'The local extension process is unavailable. Restart Varin; if it persists, reinstall the application.'
           : code === 'agent-profile-unavailable' ? 'The selected Agent is unavailable. Choose an enabled Agent for this work focus.' : 'Thread request could not be completed',
           ...admission });
@@ -647,6 +654,7 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
     for (const field of ['pinned', 'archived']) if (body[field] !== undefined && typeof body[field] !== 'boolean') throw new Error('Thread flag must be boolean');
     if (body.titleMode !== undefined && body.titleMode !== 'automatic' && body.titleMode !== 'manual') throw new Error('Invalid title mode');
     return adapter.update({ ...catalogIdentity(body), key: text(body.key), expectedRevision: revision(body.expectedRevision),
+      ...(body.model === undefined ? {} : { model: modelSelection(body.model) }),
       ...(body.titleMode === undefined ? {} : { titleMode: body.titleMode }),
       ...(body.title === undefined ? {} : { title: text(body.title) }),
       ...(body.pinned === undefined ? {} : { pinned: body.pinned as boolean }),
@@ -656,6 +664,7 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
   post('read', 'write', body => adapter.markRead({ ...catalogIdentity(body), key: text(body.key), throughCursor: revision(body.throughCursor) }));
   post('create', 'write', body => adapter.create(text(body.key), body.organization === undefined ? undefined : { organization: parseConversationOrganizationPlacement(body.organization) }));
   post('recovery/source', 'read', (body, signal) => adapter.recoverySource({ ...identity(body), entryId: text(body.entryId) }, signal));
+  post('navigation/prepare-files', 'write', (body, signal) => adapter.prepareRecovery({ ...identity(body), entryId: text(body.entryId) }, signal));
   post('navigation/prepare', 'read', (body, signal) => adapter.prepareNavigation({ ...identity(body), entryId: text(body.entryId) }, signal));
   post('tree', 'read', (body, signal) => adapter.conversationTree(identity(body), signal));
   post('tree/preview', 'read', (body, signal) => adapter.treePreview(identity(body), { firstItemId: text(body.firstItemId), lastItemId: text(body.lastItemId), ...(body.query === undefined ? {} : { query: text(body.query) }) }, signal));

@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import type { SidebarSection } from '@/constants/sidebar';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
+import { clearUnsentComposers } from './utils/unsentComposerStorage';
 import type { RecentPointer } from '@/lib/motion/pointer';
 import { CONTEXT_SURFACES, getContextRailMode } from '@/lib/surfaces/registry';
 import { SEMANTIC_TYPOGRAPHY, getTypographyVariable, type SemanticTypographyKey } from '@/lib/typography';
@@ -565,6 +566,7 @@ interface UIStore {
 
   // Settings IA (new shell)
   settingsPage: string;
+  settingsCatalogSelection: string | null;
   settingsModelFocus: { channelId: string; modelId: string } | null;
   settingsHasOpenedOnce: boolean;
   settingsTransitionOrigin: RecentPointer | null;
@@ -574,6 +576,8 @@ interface UIStore {
   eventStreamHint: string | null;
   showReasoningTraces: boolean;
   showGenerationSpeed: boolean;
+  collapseCompletedWork: boolean;
+  setCollapseCompletedWork: (value: boolean) => void;
   setShowGenerationSpeed: (value: boolean) => void;
   sessionGoalEnabled: boolean;
   sessionGoalDefaultBudgetEnabled: boolean;
@@ -736,7 +740,7 @@ interface UIStore {
   setModelSelectorOpen: (open: boolean) => void;
   applyTheme: () => void;
   setSidebarSection: (section: SidebarSection) => void;
-  setSettingsPage: (slug: string) => void;
+  setSettingsPage: (slug: string, selection?: string) => void;
   setSettingsModelFocus: (focus: { channelId: string; modelId: string } | null) => void;
   setSettingsProjectsSelectedId: (projectId: string | null) => void;
   setSettingsRemoteInstancesSelectedId: (instanceId: string | null) => void;
@@ -897,6 +901,7 @@ export const useUIStore = create<UIStore>()(
         isModelSelectorOpen: false,
         sidebarSection: 'sessions',
         settingsPage: 'home',
+        settingsCatalogSelection: null,
         settingsModelFocus: null,
         settingsHasOpenedOnce: false,
         settingsTransitionOrigin: null,
@@ -906,6 +911,8 @@ export const useUIStore = create<UIStore>()(
         eventStreamHint: null,
         showReasoningTraces: true,
         showGenerationSpeed: true,
+        collapseCompletedWork: true,
+        setCollapseCompletedWork: value => set({ collapseCompletedWork: value }),
         setShowGenerationSpeed: value => set({ showGenerationSpeed: value }),
         sessionGoalEnabled: true,
         sessionGoalDefaultBudgetEnabled: false,
@@ -1621,6 +1628,7 @@ export const useUIStore = create<UIStore>()(
         setSettingsDialogOpen: (open, origin) => {
           set(state => state.isSettingsDialogOpen === open ? state : {
             isSettingsDialogOpen: open,
+            settingsCatalogSelection: open ? state.settingsCatalogSelection : null,
             settingsHasOpenedOnce: open || state.settingsHasOpenedOnce,
             settingsTransitionOrigin: origin ?? null,
           });
@@ -1638,8 +1646,8 @@ export const useUIStore = create<UIStore>()(
           set({ sidebarSection: section });
         },
 
-        setSettingsPage: (slug) => {
-          set({ settingsPage: slug });
+        setSettingsPage: (slug, selection) => {
+          set({ settingsPage: slug, settingsCatalogSelection: selection ?? null });
         },
         setSettingsModelFocus: (focus) => set({ settingsModelFocus: focus }),
 
@@ -2179,6 +2187,7 @@ export const useUIStore = create<UIStore>()(
         setSummaryLength: (value) => { set({ summaryLength: value }); },
         setMaxLastMessageLength: (value) => { set({ maxLastMessageLength: value }); },
         setPersistChatDraft: (value) => {
+          if (!value && get().persistChatDraft) clearUnsentComposers();
           set({ persistChatDraft: value });
         },
         setInputSpellcheckEnabled: (value) => {
@@ -2335,6 +2344,7 @@ export const useUIStore = create<UIStore>()(
           // Note: isSettingsDialogOpen intentionally NOT persisted
           showReasoningTraces: state.showReasoningTraces,
           showGenerationSpeed: state.showGenerationSpeed,
+          collapseCompletedWork: state.collapseCompletedWork,
           sessionGoalEnabled: state.sessionGoalEnabled,
           sessionGoalDefaultBudgetEnabled: state.sessionGoalDefaultBudgetEnabled,
           sessionGoalDefaultBudget: state.sessionGoalDefaultBudget,

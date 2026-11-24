@@ -60,8 +60,11 @@ const setup = async () => {
 };
 
 it('persists each Bot appearance without propagating model instructions or overwriting profile edits', async () => {
-  const { service, recreate, applyProfile } = await setup();
-  const bot = await service.create({ name: 'Moon', instructions: 'Keep it clear' });
+  const { service, recreate, applyProfile, ensureEntry } = await setup();
+  const appearance = { kind: 'preset', character: 'mistral', color: 'original' } as const;
+  const bot = await service.create({ name: 'Moon', instructions: 'Keep it clear', appearance });
+  expect(ensureEntry).toHaveBeenCalledWith(expect.objectContaining({ appearance }));
+  expect((await recreate().get(bot.id))?.appearance).toEqual(appearance);
   await service.update(bot.id, { appearance: { kind: 'varin', color: '#ab97cd' } });
   await service.update(bot.id, { name: 'Moonlight' });
   expect(await recreate().get(bot.id)).toMatchObject({ name: 'Moonlight', instructions: 'Keep it clear', appearance: { kind: 'varin', color: '#ab97cd' } });
@@ -216,7 +219,6 @@ it('closes admission before stopping work, retains failures, and retries only un
   await vi.waitFor(async () => expect((await service.get(bot.id))?.activity?.state).toBe('sleep-failed'));
   expect(lifecycle.stop.mock.calls.map(([, work]) => work.threadId)).toEqual(['a', 'b']);
   expect(await service.canExecute(bot.id)).toBe(false);
-  await expect(service.wake(bot.id)).rejects.toThrow(/Finish/);
   lifecycle.stop.mockResolvedValue();
   await service.sleep(bot.id);
   await vi.waitFor(async () => expect((await service.get(bot.id))?.activity?.state).toBe('asleep'));
@@ -282,17 +284,19 @@ it('starts further conversations under fresh identities only while the Bot can e
   await expect(service.createSession('missing')).rejects.toThrow(/Unknown Bot/);
 });
 
-it('stops work even when the VM inventory is unavailable, and retains that progress on retry', async () => {
+it('wakes the Bot and resumes its stopped work after the VM inventory makes sleep fail', async () => {
   const { service, lifecycle } = await setup();
   const bot = await service.create();
   lifecycle.planWork.mockResolvedValue([{ runtime: 'agent' as const, threadId: 'a', branchId: 'branch-a', runId: 'r', resume: true, stopped: false, resumed: false }]);
-  lifecycle.planMachines.mockRejectedValueOnce(new Error('VM inventory offline'));
+  lifecycle.planMachines.mockRejectedValue(new Error('VM inventory offline'));
   await service.sleep(bot.id);
   await vi.waitFor(async () => expect((await service.get(bot.id))?.activity?.state).toBe('sleep-failed'));
   expect(lifecycle.stop).toHaveBeenCalledTimes(1);
   expect((await service.get(bot.id))?.activity?.work[0]?.stopped).toBe(true);
-  await service.retry(bot.id);
-  await vi.waitFor(async () => expect((await service.get(bot.id))?.activity?.state).toBe('asleep'));
+  await service.wake(bot.id);
+  await vi.waitFor(async () => expect(await service.canExecute(bot.id)).toBe(true));
+  await vi.waitFor(async () => expect((await service.get(bot.id))?.activity?.state).toBe('awake'));
+  expect(lifecycle.resume).toHaveBeenCalledTimes(1);
   expect(lifecycle.stop).toHaveBeenCalledTimes(1);
 });
 
