@@ -30,6 +30,8 @@
   </picture>
 </p>
 
+https://github.com/user-attachments/assets/a55fcac8-e198-4ca5-9c04-93239ae698f9
+
 ## 从和 Varin 交流开始
 
 Varin 是一个开源个人 AI 智能体，能使用文件、浏览器和连接的电脑完成工作。你可以和它讨论想法、让它直接处理任务，也可以让它组织其他 Agent 协作。工作过程中随时补充要求、查看进展，之后也能继续交办。在自己的电脑或服务器上运行，模型由你选择。
@@ -49,9 +51,7 @@ Varin 是一个开源个人 AI 智能体，能使用文件、浏览器和连接�
 
 从 Bot 侧栏发起群聊，让多位 Bot 在同一条时间线上协作：通过 `@` 提及或回复点名成员接话，按成员控制未点名消息的监听开关，共享文件、搜索群历史，并沿用同一套日程与定时接续功能。
 
-<p align="center">
-  <img src="assets/varin-at-work.gif" alt="Varin 阅读、和队友合作，并随着工作进展作出回应" width="600" />
-</p>
+https://github.com/user-attachments/assets/5b8fa63d-fc6b-4ad6-95bd-ffbb96ad458c
 
 [了解总助手](../../docs/bot.md) · [外观与角色](../../docs/bot-appearances.md) · [协作与任务复用](../../docs/collaboration.md)
 
@@ -143,6 +143,10 @@ Varin 是一个开源个人 AI 智能体，能使用文件、浏览器和连接�
 **工作放在合适的设备上。** 本地运行、服务器自托管，或者用浏览器和手机连接。前端、Agent 服务、文件工作区和 Computer Use 设备可以分开部署；同一个会话也可以跨多台已连接设备读写文件、执行命令，文件引用与恢复记录始终对应实际操作的设备和目录。[部署](../../docs/ops/cloud-deployment.md) · [资源](../../docs/resources.md)
 
 **也可以有桌面上的陪伴。** 可选桌宠跟随所选 Bot 的活动，在设置中按需下载形象，并控制唤醒和沉睡。
+
+<p align="center">
+  <img src="assets/varin-at-work.gif" alt="Varin 阅读、和队友合作，并随着工作进展作出回应" width="600" />
+</p>
 
 <a id="how-the-harness-works"></a>
 

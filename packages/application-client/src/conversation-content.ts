@@ -2,7 +2,7 @@ import type { JsonValue } from '@varin/protocol';
 
 export interface ConversationUiAction { type: 'compose' | 'copy' | 'reference' | 'send' | 'open'; label: string; ref?: string }
 interface Base { key: string; label?: string; action?: string | ConversationUiAction }
-export interface ConversationUiChoice extends Base { type: 'choice'; options: { key: string; label: string }[]; multiple?: boolean; required?: boolean; allowOther?: boolean }
+export interface ConversationUiChoice extends Base { type: 'choice'; options: { key: string; label: string; content?: string }[]; multiple?: boolean; required?: boolean; allowOther?: boolean }
 export interface ConversationUiInput extends Base { type: 'input'; inputType: 'text' | 'number' | 'range' | 'date' | 'textarea'; required?: boolean; min?: number; max?: number; step?: number; placeholder?: string; unit?: string }
 export type ConversationUiField = ConversationUiChoice | ConversationUiInput;
 export type ConversationUiNode = ConversationUiField
@@ -38,7 +38,12 @@ export function normalizeConversationUi(value: unknown, fallbackKey = 'root'): C
   const required = v.required === undefined ? undefined : typeof v.required === 'boolean' ? v.required : (() => { throw new Error('required must be boolean'); })();
   if (v.type === 'choice') {
     if (!Array.isArray(v.options) || !v.options.length) throw new Error('Choice needs options');
-    const options = v.options.map(option => { if (typeof option === 'string') return { key: `label:${string(option, 'option')}`, label: option }; const o = object(option); const label = string(o.label, 'option.label'); return { key: o.key === undefined ? `label:${label}` : string(o.key, 'option.key'), label }; });
+    const options = v.options.map(option => {
+      if (typeof option === 'string') return { key: `label:${string(option, 'option')}`, label: option };
+      const o = object(option), label = string(o.label, 'option.label');
+      return { key: o.key === undefined ? `label:${label}` : string(o.key, 'option.key'), label,
+        ...(o.content === undefined ? {} : { content: string(o.content, 'option.content') }) };
+    });
     unique(options.map(option => option.key));
     if (v.allowOther !== undefined && typeof v.allowOther !== 'boolean') throw new Error('allowOther must be boolean');
     if (v.multiple !== undefined && typeof v.multiple !== 'boolean') throw new Error('multiple must be boolean');
@@ -74,7 +79,7 @@ export function normalizeConversationUi(value: unknown, fallbackKey = 'root'): C
   throw new Error('Unknown interaction type');
 }
 
-/** Only unindented, top-level assistant fences are executable. Outer examples stay opaque. */
+/** Only unindented, top-level assistant interaction blocks activate. Outer examples stay opaque. */
 export function parseConversationContent(text: string, options: { role: string; streaming?: boolean }): ConversationContentPart[] {
   if (options.role !== 'assistant') return [{ kind: 'markdown', text, start: 0, end: text.length }];
   const parts: ConversationContentPart[] = [];
@@ -91,6 +96,33 @@ export function parseConversationContent(text: string, options: { role: string; 
       if (end) { if (!end.test(body)) htmlEnd = end; continue; }
     }
     if (outer) { if (new RegExp(`^ {0,3}${outer.char}{${outer.length},}\\s*$`).test(body)) outer = undefined; continue; }
+    // Some providers return the dedicated block as a tag. Parse only the
+    // standalone assistant block; quoted examples and ordinary HTML stay text.
+    const tag = /^<varin-ui(?:\s+ref="(ui:[\w-]+@[1-9]\d*)"\s*\/>|>(.*))\s*$/.exec(body);
+    if (tag) {
+      let last = i;
+      let payload = '';
+      if (!tag[1]) {
+        while (!lines[last]![0].trimEnd().endsWith('</varin-ui>')) {
+          const next = lines[last + 1]?.[0];
+          if (!next || /^(?:<varin-ui|\x60{3,}|~{3,})/.test(next)) break;
+          last++;
+        }
+        if (!lines[last]![0].trimEnd().endsWith('</varin-ui>')) continue;
+        const block = text.slice(start + '<varin-ui>'.length, lines[last]!.index! + lines[last]![0].length);
+        payload = block.trimEnd().slice(0, -'</varin-ui>'.length).trim();
+      }
+      try {
+        const definition: unknown = tag[1] || /^ui:[\w-]+@[1-9]\d*$/.test(payload)
+          ? { type: 'embed', ref: tag[1] || payload } : JSON.parse(payload);
+        const node = normalizeConversationUi(definition);
+        const end = lines[last]!.index! + lines[last]![0].length;
+        if (start > markdownStart) parts.push({ kind: 'markdown', text: text.slice(markdownStart, start), start: markdownStart, end: start });
+        parts.push({ kind: 'ui', node, definition, raw: text.slice(start, end), start, end, fragmentKey: 'offset:' + start });
+        markdownStart = end; i = last;
+      } catch { /* Preserve unsupported markup verbatim. */ }
+      continue;
+    }
     const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(body);
     if (!opening) continue;
     const marker = opening[2]!, info = opening[3]!.trim();
@@ -111,20 +143,29 @@ export function parseConversationContent(text: string, options: { role: string; 
   return parts;
 }
 export function conversationUiFields(node: ConversationUiNode): ConversationUiField[] { return node.type === 'form' ? node.fields : node.type === 'choice' || node.type === 'input' ? [node] : []; }
+export function selectedConversationUiOptions(field: ConversationUiChoice, value: JsonValue | undefined) {
+  return field.options.filter(option => Array.isArray(value) ? value.includes(option.key) : value === option.key);
+}
+
 export function conversationUiText(node: ConversationUiNode, values?: Record<string, JsonValue>): string {
   const lines: string[] = [];
-  if (node.action) lines.push(typeof node.action === 'string' ? node.action : node.action.label);
+  const fields = conversationUiFields(node);
+  const hasOptionContent = fields.some(field => field.type === 'choice' && field.options.some(option => option.content));
+  if (typeof node.action === 'string') lines.push(node.action);
+  else if (node.action && !hasOptionContent) lines.push(node.action.label);
   if (node.type === 'form' && node.label) lines.push(node.label);
-  for (const field of conversationUiFields(node)) {
+  for (const field of fields) {
     // Without an observed view, list available options, never imply that all were selected.
     if (field.type === 'choice' && values === undefined) {
-      lines.push(`${field.label ?? field.key}：\n${field.options.map(option => `- ${option.label}`).join('\n')}`);
+      lines.push(`${field.label ?? field.key}：\n${field.options.map(option => `- ${option.label}${option.content ? `\n\n${option.content}\n` : ''}`).join('\n')}`);
       continue;
     }
     const value = values && Object.hasOwn(values, field.key) ? values[field.key] : undefined;
-    const shown = field.type === 'choice' ? (values ? field.options.filter(option => Array.isArray(value) ? value.includes(option.key) : value === option.key) : field.options).map(option => option.label).join('、') : value == null ? '' : String(value);
+    const selected = field.type === 'choice' ? selectedConversationUiOptions(field, value) : [];
+    const shown = field.type === 'choice' ? selected.map(option => option.label).join('、') : value == null ? '' : String(value);
     const other = field.type === 'choice' && field.allowOther && typeof values?.[`${field.key}:other`] === 'string' ? values[`${field.key}:other`] as string : '';
     lines.push(`${field.label ?? field.key}：${[shown, other].filter(Boolean).join('、')}${field.type === 'input' && shown && field.unit ? ` ${field.unit}` : ''}`);
+    for (const option of selected) if (option.content) lines.push(selected.length > 1 ? `${option.label}\n\n${option.content}` : option.content);
   }
   if (node.type === 'disclosure') lines.push(node.label ?? '', node.content);
   if (node.type === 'tabs') lines.push(node.label ?? '', ...node.tabs.map(tab => `${tab.label}\n${tab.content}`));
