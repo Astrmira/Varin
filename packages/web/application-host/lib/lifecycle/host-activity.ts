@@ -17,6 +17,9 @@ interface ActivityOwners {
   externalIngressActive(): boolean;
   admission(signal: AbortSignal): Promise<Pick<AdmissionSummary, 'localComputeActive' | 'queued'>>;
   calendar(signal: AbortSignal): Promise<CalendarActivity>;
+  browser?(): {preparing:number;activePageWrites:number;waitingPageWrites:number;outstandingStopConfirmations:number};
+  computerOperations?(): number;
+  dictation?(): {state:'cold'|'live'|'retiring';pendingRequests:number;sessions:number;warm:boolean} | null;
 }
 
 export const HOST_ACTIVITY_PATH = '/api/system/lifecycle';
@@ -38,6 +41,9 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
   const observations = owners.observationStreams();
   const ingress = owners.externalIngressActive();
   const draining = owners.draining();
+  const browser = owners.browser?.() ?? null;
+  const computerOperations = owners.computerOperations?.() ?? null;
+  const dictation = owners.dictation?.() ?? null;
   const retentionReasons = [
     ...(draining ? ['host-draining'] : []),
     ...(!admission ? ['catalog-admission-unavailable'] : []),
@@ -51,6 +57,11 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
     ...(calendar?.nextWakeAtMs != null ? ['calendar-wake-not-transferred'] : []),
     ...(observations ? ['http-observation-streams'] : []),
     ...(ingress ? ['external-ingress-active'] : []),
+    ...(browser && (browser.preparing || browser.activePageWrites || browser.waitingPageWrites || browser.outstandingStopConfirmations)
+      ? ['browser-owner-activity'] : []),
+    ...(computerOperations ? ['computer-owner-activity'] : []),
+    ...(dictation && (dictation.state === 'retiring' || dictation.pendingRequests || dictation.sessions)
+      ? ['dictation-owner-activity'] : []),
     'owner-coverage-incomplete',
     'durable-supervisor-handoff-unavailable',
   ];
@@ -68,6 +79,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
       watchingAssets: calendar.watchingAssets,
     },
     retention: { observationStreams: observations, externalIngressActive: ingress, reasons: retentionReasons },
+    owners: {browser,computerOperations,dictation},
     parking: { supported: false, eligible: false },
   } as const;
 };

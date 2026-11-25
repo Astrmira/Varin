@@ -26,7 +26,8 @@ function fixture(captureLocationContext?: Parameters<typeof createModelWorkLocat
   const launch = {run_id:'run',selection:{source:{mode:'live_root'},tools:[{name:'file_read'}],extension_bindings:[]}};
   const runtime = {run:vi.fn(async()=>run),thread:vi.fn(async()=>thread),launch:vi.fn(async()=>launch),
     principalCanUseHostResources,managedSource:vi.fn(async()=>client),coordinatorHostId:'coordinator'};
-  const directory = {list:vi.fn(async()=>({workspace,targets,unavailable:[]})),resolve:vi.fn(async()=>({resourceOwner:owner,path:'/logs',workspaceId:'logs'}))};
+  const directory = {list:vi.fn(async()=>({workspace,targets,unavailable:[]})),describe:vi.fn(async()=>({workspace,targets,unavailable:[]})),
+    resolve:vi.fn(async()=>({resourceOwner:owner,path:'/logs',workspaceId:'logs'}))};
   const prepare = vi.fn(async()=>({source,path:'/logs'}));
   const kernel = {issueGrant:vi.fn(),scoped:vi.fn(),retireGrant:vi.fn()};
   const work = createModelWorkLocations({runtime,kernel,directory,prepare,captureLocationContext} as unknown as Parameters<typeof createModelWorkLocations>[0]);
@@ -55,6 +56,8 @@ describe('model location admission',()=>{
     expect(row.device).toBe('Managed Host');
     expect(row.name).toBe('Logs');
     expect(f.client.bind).not.toHaveBeenCalled();
+    expect(f.directory.describe).toHaveBeenCalledOnce();
+    expect(f.directory.list).not.toHaveBeenCalled();
     expect(f.directory.resolve).not.toHaveBeenCalled();
     expect(f.prepare).not.toHaveBeenCalled();
     const binding=await f.work.query({...selection,key:row.key},signal) as SourceToolBinding;
@@ -68,6 +71,14 @@ describe('model location admission',()=>{
     expect(f.client.release).toHaveBeenCalledWith({coordinatorHostId:'coordinator',authorityId:'read-only',resourceEpoch:'epoch',mode:'retire'});
     await f.work.releaseRun('run'); expect(f.client.release).toHaveBeenCalledTimes(1);
     expect(f.launch.selection.source).toEqual({mode:'live_root'});
+  });
+  it('probes configured devices only on an explicit refresh',async()=>{
+    const f=fixture();
+    await f.work.query({...discovery,refresh:true},signal);
+    expect(f.directory.list).toHaveBeenCalledOnce();
+    expect(f.directory.describe).not.toHaveBeenCalled();
+    expect(f.directory.resolve).not.toHaveBeenCalled();
+    expect(f.prepare).not.toHaveBeenCalled();
   });
   it('keeps an unregistered saved path dormant until a selected operation resolves it',async()=>{
     const f=fixture();

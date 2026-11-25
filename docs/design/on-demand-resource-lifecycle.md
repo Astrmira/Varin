@@ -2,6 +2,8 @@
 
 Design proposal, 2026-11-25. Source baseline `0581422ca439d75c85b8aaf45b18ed4b63b29720`.
 
+Implemented first slices: [dormant native launch defaults](../../packages/web/application-host/lib/kernel/THREADS.md#dormant-launch-work-locations), passive Browser/Computer discovery and selected activation, worker/connection retention, the [resource-node package](../ops/cloud-deployment.md) and authenticated Host activity. Existing explicit project/native workspace preparation remains when needed to capture its admitted context. Separate native live-location child/script authority, independent managed Browser/Computer deployment, and durable ingress/wake handoff for automatic Host parking are not supplied by these slices. The activity view does not request parking or repurpose cancelling shutdown.
+
 This proposal covers the open-source runtime, resource owners, clients and distribution. It follows the [resource optimization work](resource-optimization.md) and prepares reusable integration points for a separately operated hosted product. The behavior below is proposed unless identified as current implementation. Startup latency, retained memory and idle policy values require measurements on the resulting implementation.
 
 ## Intended behavior

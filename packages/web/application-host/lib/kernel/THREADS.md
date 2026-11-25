@@ -320,3 +320,22 @@ An automatic activation whose previous launch uses a different source waits
 until a foreground submission prepares a matching launch or the user restores
 the previous default. The branch preference applies between Runs. Each
 admitted request and Operation retains its original execution source.
+
+### Dormant launch work locations
+
+An ordinary owner-controlled launch can record `lazy_work_location` without
+an execution Source. A fresh Bot's home/default directory or a saved folder
+can be selected this way. Explicit fixed/native views, explicit branch
+workspace selection and project context capture still use their existing
+admission paths. A previous source-less launch without this selection stays
+source-less; this is not a grant for historical restricted work or children.
+
+The native location router resolves a saved default only for an admitted
+file or process operation and records that operation's actual target. The
+renderer addresses completed file actions through the recorded target.
+Ordinary location discovery and background labels use saved/cached facts;
+explicit refresh probes devices. If preparation discovers default-location
+instructions, the operation does not dispatch and returns the precise
+instructions plus their revision. Reissue with that revision after applying
+the instructions; changed instructions invalidate a previous revision.
+`work_location_switch` remains an explicit next-Run live workspace change.

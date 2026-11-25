@@ -3435,6 +3435,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     externalIngressActive: () => Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled),
     admission: async (ownerSignal) => (await agentRuntime.status(ownerSignal)).admission,
     calendar: scheduledTasksRuntime.getActivity,
+    browser: () => browserResources.activity(),
+    computerOperations: () => computerService.activities().filter(row => row.activity.status === 'running').length,
+    dictation: () => dictationRuntime?.activity() ?? null,
   }, signal);
   registerHostActivityRoute(app, uiAuthController.requireAuth, async request => {
     const auth = await uiAuthController!.resolveRequestAuth(request, { allowUrlToken: false });

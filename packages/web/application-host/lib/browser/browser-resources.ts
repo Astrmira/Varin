@@ -85,6 +85,15 @@ export class BrowserResources {
       remote: options.remote ?? false, dispose: options.dispose ?? true, source: options.source, device: options.device });
   }
   hasProviders() { return this.providers.size > 0; }
+  activity() {
+    const lanes = [...this.lanes.values()];
+    return {
+      preparing: [...this.providers.values()].filter(provider => provider.preparing).length,
+      activePageWrites: lanes.filter(lane => lane.active).length,
+      waitingPageWrites: lanes.reduce((n, lane) => n + lane.waiting.length, 0),
+      outstandingStopConfirmations: lanes.filter(lane => lane.stopUnconfirmed).length,
+    };
+  }
   private async describe(provider: Provider): Promise<BrowserResource> {
     const { owner, label, deviceName, fallbackInstance } = provider;
     const status = await owner.resource?.() ?? { state: 'online' as const, instanceId: fallbackInstance,

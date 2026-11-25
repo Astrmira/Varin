@@ -334,14 +334,15 @@ export class ThreadAdapter {
   async fileTarget(input: ThreadIdentity & { itemId: string; path: string }, signal?: AbortSignal) {
     const entry = await this.recoveryEntry({ ...input, entryId: input.itemId }, signal);
     if (!this.fileResolver) throw new Error('File navigation is unavailable');
-    const launch = await this.runtime.launch(entry.run_id, signal);
+    let launch: ReturnType<AgentRuntimeClient['launch']> | undefined;
+    const originalLaunch = () => launch ??= this.runtime.launch(entry.run_id, signal);
     if (entry.source === 'assistant') {
       const item = await this.runtime.historyItem(entry, signal);
       const content = (item.content as { content?: { kind?: string; call?: { name?: string; call_id?: string; arguments?: { location?: string; ref?: string } } } } | null)?.content;
       const call = content?.kind === 'tool_call' ? content.call : undefined;
       const request = historyModelRequestId(item);
       if (call?.name && ['file_read', 'file_list', 'file_search', 'file_write', 'file_edit'].includes(call.name)
-        && (launch?.selection.lazy_work_location || call.arguments?.location || /^(file|read):/.test(call.arguments?.ref ?? ''))) {
+        && (call.arguments?.location || /^(file|read):/.test(call.arguments?.ref ?? '') || (await originalLaunch())?.selection.lazy_work_location)) {
         if (!request || !call.call_id) return { kind: 'unavailable', reason: 'no_source' } as const;
         const operation = await this.runtime.operation(`${request}:tool:${call.call_id}`, signal);
         if (operation.run_id !== entry.run_id) throw new Error('The original file operation changed');
@@ -349,7 +350,7 @@ export class ThreadAdapter {
         if (call.arguments?.location) return { kind: 'unavailable', reason: 'no_source' } as const;
       }
     }
-    return this.fileResolver(entry.run_id, launch?.selection.source ?? null, input.path, signal);
+    return this.fileResolver(entry.run_id, (await originalLaunch())?.selection.source ?? null, input.path, signal);
   }
   async usage(identity: ThreadIdentity, signal?: AbortSignal) {
     await this.requireIdentity(identity, signal);

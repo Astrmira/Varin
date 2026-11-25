@@ -26,7 +26,8 @@ const object = (value: unknown): value is Record<string, unknown> =>
 const nonempty = (value: unknown): value is string => typeof value === 'string' && !!value.trim();
 
 type Row = Extract<ThreadLocationDirectory['locations'][number], { resourceOwner: SourceResourceOwner }>;
-interface LocationKey { id?: string; path: string; workspaceId: string; resourceOwner: SourceResourceOwner }
+interface LocationDescription { id?: string; path: string; workspaceId?: string; resourceOwner: SourceResourceOwner }
+interface LocationKey extends LocationDescription { workspaceId: string }
 interface Lease { binding: SourceToolBinding; operationId: string; release(): Promise<void> }
 type Runtime = Pick<AgentRuntimeClient, 'run' | 'thread' | 'launch' | 'operation' | 'managedSource' | 'coordinatorHostId' | 'principalCanUseHostResources'>;
 export type ModelWorkLocationOwner = (query: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
@@ -222,7 +223,7 @@ export function createModelWorkLocations(options: {
           return { locations: [{ name, path: key.path, device: device(target), key }], devices: [] };
         }
         const search = String(q.query ?? '').toLowerCase().trim();
-        const results: Array<{name:string;device:string;path:string;key?:LocationKey;unavailable?:string}> = [];
+        const results: Array<{name:string;device:string;path:string;key?:LocationDescription;unavailable?:string}> = [];
         for (const row of rows) {
           const target = listed.targets.find(t => isDeepStrictEqual(t.resourceOwner,row.resourceOwner));
           const label = target ? device(target) : 'Managed Host';
