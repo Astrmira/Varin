@@ -29,17 +29,36 @@ const run = (cwd, command, args) => {
   if (out.error || out.status !== 0) throw out.error ?? new Error(`${command} exited ${out.status}`);
 };
 
+// BuildKit compiles the Host in oven/bun, but deployed roles execute on Node.
+// Bun treats several npm packages and its own runtime as builtins. Those are
+// not part of the role's Node module namespace. Explicit Node-only modules
+// are present in Node releases even where the builder does not implement them.
+const builderOnlyBuiltins = new Set(['bun', 'ws', 'undici']);
+const explicitNodeBuiltins = new Set(['node:sea', 'node:sqlite', 'node:test', 'node:test/reporters']);
+function isRoleBuiltin(specifier) {
+  const name = specifier.replace(/^node:/u, '');
+  return explicitNodeBuiltins.has(specifier) ||
+    !builderOnlyBuiltins.has(name) && !name.startsWith('bun:') && isBuiltin(specifier);
+}
+
 export function collectResourceClosure(serverDir, ts, basename = 'resource-node') {
   const seen = new Set();
   const references = new Set();
   const assetFiles = new Set();
+  const { dependencies: declared } = readJson(original('packages/web/package.json'));
   function visit(filename) {
     if (seen.has(filename)) return;
     seen.add(filename);
     const source = ts.createSourceFile(filename, fs.readFileSync(path.join(serverDir, filename), 'utf8'),
       ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     function handle(specifier) {
-      if (isBuiltin(specifier)) return;
+      // A declared bare production import must be included even when the
+      // current interpreter happens to bundle an emulation of that package.
+      if (!/^[./#]|:/u.test(specifier) && Object.hasOwn(declared, packageName(specifier))) {
+        references.add(packageName(specifier));
+        return;
+      }
+      if (isRoleBuiltin(specifier)) return;
       if (specifier.startsWith('.')) {
         const target = path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier));
         if (target === '../package.json') return;
@@ -104,11 +123,10 @@ export function collectResourceClosure(serverDir, ts, basename = 'resource-node'
     walk(source);
   }
   visit(`${basename}.js`);
-  const manifest = readJson(original('packages/web/package.json'));
   const dependencies = {};
   for (const name of references) {
-    if (!Object.hasOwn(manifest.dependencies, name)) throw new Error(`Resource-node dependency not declared by Web: ${name}`);
-    dependencies[name] = manifest.dependencies[name];
+    if (!Object.hasOwn(declared, name)) throw new Error(`Resource-node dependency not declared by Web: ${name}`);
+    dependencies[name] = declared[name];
   }
   return { files: [...seen, ...assetFiles].sort(), dependencies: sort(dependencies) };
 }
@@ -160,7 +178,13 @@ export function validateResourceNodeLock(output) {
     const staged = lock.workspaces?.[`packages/${directory}`];
     if (staged?.version !== owner.version || staged.name !== owner.name ||
         stableValue(staged.dependencies) !== stableValue(owner.dependencies) || Object.keys(staged.devDependencies ?? {}).length) {
-      throw new Error(`Resource-node lock is stale for ${directory}`);
+      const actual = owner.dependencies ?? {}, locked = staged?.dependencies ?? {};
+      const missing = Object.keys(actual).filter(name => !Object.hasOwn(locked, name));
+      const extra = Object.keys(locked).filter(name => !Object.hasOwn(actual, name));
+      const changed = Object.keys(actual).filter(name => Object.hasOwn(locked, name) && locked[name] !== actual[name]);
+      const differences = [['missing from lock', missing], ['only in lock', extra], ['different specifier', changed]]
+        .filter(([, names]) => names.length).map(([label, names]) => `${label}: ${names.sort().join(', ')}`);
+      throw new Error(`Resource-node lock is stale for ${directory}${differences.length ? ` (${differences.join('; ')})` : ''}`);
     }
   }
   return lock;
