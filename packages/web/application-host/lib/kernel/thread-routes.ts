@@ -672,7 +672,11 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
   post('navigate', 'write', (body, signal) => adapter.navigate({ ...identity(body), key: text(body.key), expectedHeadId: body.expectedHeadId === null ? null : text(body.expectedHeadId), targetHeadId: body.targetHeadId === null ? null : text(body.targetHeadId), ...(body.undoOf === undefined ? {} : { undoOf: text(body.undoOf) }) }, signal));
   post('fork', 'write', (body, signal) => adapter.fork({ ...identity(body), key: text(body.key), headId: body.headId === null ? null : text(body.headId) }, signal));
   post('branch/delete', 'write', (body, signal) => adapter.deleteBranch({ ...identity(body), key: text(body.key) }, signal));
-  post('source/list', 'read', (body, signal) => adapter.listSourceTargets(Object.keys(body).length ? identity(body) : null, signal));
+  post('source/list', 'read', (body, signal) => {
+    const {refresh,...selection} = body;
+    if (refresh !== undefined && typeof refresh !== 'boolean') throw new Error('Invalid source refresh mode');
+    return adapter.listSourceTargets(Object.keys(selection).length ? identity(selection) : null, signal, refresh !== false);
+  });
   post('source/set-default', 'write', (body, signal) => adapter.setBranchWorkspace(identity(body),
     revision(body.expectedRevision), body.source === null ? null : threadSource(body.source), signal));
   post('source/resolve', 'read', (body, signal) => adapter.resolveSource(identity(body), { resourceOwner: parseSourceResourceOwner(body.resourceOwner), path: text(body.path) }, signal));
