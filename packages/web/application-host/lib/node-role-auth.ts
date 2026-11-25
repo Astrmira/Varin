@@ -1,0 +1,99 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import type { Request } from 'express';
+import { ExtensionCatalogStore } from '@varin/extension-host';
+import { createRemoteClientAuthRuntime } from './client-auth/remote-clients.js';
+import { assertDataRootMayStart } from './data-restore-guard.js';
+import { createKernelClient } from './kernel/kernel-client.js';
+import { createPrincipalStore } from './ui-auth/principals.js';
+import type { createUiAuth } from './ui-auth/ui-auth.js';
+import { canonicalizePathIdentity, isPathWithinRoot } from './workspace/path-safety.js';
+
+export function nodeRoleAbsolute(value: string | undefined, name: string): string {
+  if (!value || !path.isAbsolute(value)) throw new Error(name + ' must be an explicit absolute path');
+  return value;
+}
+
+export async function nodeRoleDataDirectory(input: string): Promise<string> {
+  const root = await canonicalizePathIdentity(nodeRoleAbsolute(input, 'VARIN_DATA_DIR'), { allowMissing: true });
+  await assertDataRootMayStart(root);
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  return root;
+}
+
+export async function createNodeRoleKernel(dataDir: string, kernelPath?: string) {
+  const { hostId } = await new ExtensionCatalogStore(dataDir).getHostIdentity();
+  const version: unknown = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8')).version;
+  if (typeof version !== 'string' || !version) throw new Error('Missing Varin build version');
+  // Native Storage's exclusive writer lock also fences offline administration against a running role.
+  const kernel = createKernelClient({ role: 'resources', hostId, storageRoot: path.join(dataDir, 'kernel', hostId),
+    buildVersion: version, kernelBuildIdentity: version, allowCargoDevRunner: false, ...(kernelPath ? { kernelPath } : {}) });
+  return { hostId, kernel, version };
+}
+
+export function openNodeRoleAuth(dataDir: string) {
+  const principals = createPrincipalStore(path.join(dataDir, 'ui-principals.json'));
+  const clients = createRemoteClientAuthRuntime({ crypto, fsPromises: fs, path,
+    storePath: path.join(dataDir, 'remote-clients.json'), principals });
+  return { clients, principals };
+}
+
+export async function withNodeRoleState<T>(dataDir: string, kernelPath: string | undefined,
+  work: (clients: ReturnType<typeof openNodeRoleAuth>['clients']) => Promise<T>): Promise<T> {
+  const { kernel } = await createNodeRoleKernel(dataDir, kernelPath);
+  try {
+    await kernel.start();
+    const { clients } = openNodeRoleAuth(dataDir);
+    try { return await work(clients); } finally { await clients.dispose(); }
+  } finally { await kernel.close(); }
+}
+
+export async function pairNodeRoleClient(dataDir: string, kernelPath: string | undefined, outputPath: string,
+  options: { label: string; capabilities: string[]; deniedDirectories?: string[] }): Promise<string> {
+  dataDir = await nodeRoleDataDirectory(dataDir);
+  const output = await canonicalizePathIdentity(nodeRoleAbsolute(outputPath, '--output'), { allowMissing: true });
+  if ([dataDir, ...(options.deniedDirectories ?? [])].some(root => isPathWithinRoot(output, root))) {
+    throw new Error('Store the new credential in a private file outside node state and shared resource directories');
+  }
+  if (!options.capabilities.length) throw new Error('At least one explicit node capability is required');
+  return withNodeRoleState(dataDir, kernelPath, async clients => {
+    const file = await fs.open(output, 'wx', 0o600);
+    const created = await file.stat({ bigint: true });
+    let id: string | undefined;
+    let committed = false;
+    try {
+      const entry = await clients.createClient({ label: options.label, allowedDirectories: [], capabilities: options.capabilities });
+      id = entry.client.id;
+      await file.writeFile(JSON.stringify({ clientId: id, token: entry.token }) + '\n');
+      await file.sync();
+      committed = true;
+      return id;
+    } catch (error) {
+      if (id) await clients.revokeClient(id);
+      throw error;
+    } finally {
+      try { await file.close(); }
+      finally {
+        if (!committed) {
+          const current = await fs.lstat(output, { bigint: true }).catch(() => undefined);
+          if (current?.dev === created.dev && current.ino === created.ino) await fs.unlink(output);
+        }
+      }
+    }
+  });
+}
+
+export async function revokeNodeRoleClient(dataDir: string, kernelPath: string | undefined, clientId: string) {
+  if (!clientId?.trim()) throw new Error('A client ID is required');
+  await withNodeRoleState(await nodeRoleDataDirectory(dataDir), kernelPath, async clients => {
+    if (!(await clients.revokeClient(clientId)).revoked) throw new Error('Unknown client ID');
+  });
+}
+
+export async function resolveNodeRoleClient(auth: ReturnType<typeof createUiAuth>, request: Request, capability: string) {
+  if (!/^Bearer /i.test(request.get('Authorization') ?? '')) return undefined;
+  const context = await auth.resolveAuthContext(request, null, { allowUrlToken: false });
+  if (context?.type !== 'client' || typeof context.clientId !== 'string' || !context.client?.capabilities.includes(capability)) return undefined;
+  return context.clientId;
+}
