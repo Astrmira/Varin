@@ -135,7 +135,10 @@ it.skipIf(!optedIn)('captures a real isolated X11 desktop through a separate coo
     expect(replacement).not.toBe(lease);
     const admitted = await request(api + '/act', invalid, replacement);
     expect(admitted.status).toBe(400);
-    expect(await admitted.json()).toMatchObject({ error: expect.stringContaining('Unknown action kind') });
+    expect(await admitted.json()).toMatchObject({
+      code: 'invalid-params',
+      error: 'computer.act requires action.app or an observed target',
+    });
     const recovered = await catalog();
     expect(recovered.id).toBe(original.id);
     await capture(recovered.id);
