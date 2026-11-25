@@ -10,6 +10,9 @@ python3 -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("G
 fixture="$(mktemp -d /tmp/varin-x11.XXXXXX)"
 trap 'rm -rf -- "$fixture"' EXIT
 mkdir -m 700 "$fixture/runtime"
+# The authority runner formats generated Rust using the runner's installed
+# toolchain. Keep only that toolchain location, not the host desktop HOME.
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 export XDG_RUNTIME_DIR="$fixture/runtime"
 export HOME="$fixture"
 export XDG_SESSION_TYPE=x11
