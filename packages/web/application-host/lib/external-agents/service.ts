@@ -105,7 +105,7 @@ export class ExternalAgentsService {
   private readonly structuralRevisions = new Map<string, number>();
   private readonly projectedItems = new Map<string, Map<string, ExternalItem>>();
   private readonly revisions = new Map<string, number>();
-  private readonly environment = createPlatformEnvironmentRuntime();
+  private readonly environment: ReturnType<typeof createPlatformEnvironmentRuntime>;
   private readonly detectionGenerations = new Map<string, number>();
   private readonly detections = new Map<string, { configuration: string; result: import('@varin/application-client').ExternalAgentDetection }>();
   private stopping = false;
@@ -163,6 +163,7 @@ export class ExternalAgentsService {
       spawn: Spawn;
       spawnAdmitted?: ReturnType<typeof createKernelProcessService>['spawnAdmitted'];
       directory: string;
+      environment?: ReturnType<typeof createPlatformEnvironmentRuntime>;
       fetch?: import('./installations.js').ExternalAgentDownload;
       removeProgram?: (directory: string) => Promise<void>;
       fileContext?: ReturnType<typeof createKernelProcessService>['fileContext'];
@@ -172,6 +173,7 @@ export class ExternalAgentsService {
       idle?: { preparedMs?: number; conversationMs?: number; sweepMs?: number };
     },
   ) {
+    this.environment = deps.environment ?? createPlatformEnvironmentRuntime();
     this.installer = new ExternalAgentInstaller({
       directory: deps.directory, spawn: deps.spawn, fetch: deps.fetch ?? fetch,
       settings: () => this.settings(), configure: (value, revision, key) => this.configure(value, revision, key),
@@ -637,9 +639,6 @@ export class ExternalAgentsService {
     if (!config) throw new ExternalAgentError('agent_missing', 'External Agent configuration is unavailable');
     return config;
   }
-  private launchEnvironment(): NodeJS.ProcessEnv {
-    return { ...process.env, ...this.environment.getLoginShellEnvSnapshot() };
-  }
   private async resolveExecutable(config: ExternalAgentConfiguration, env: NodeJS.ProcessEnv) {
     const profile = getExternalAgentProfile(config.profileId ?? config.id);
     assertProfilePlatform(profile, process.platform, process.arch);
@@ -654,7 +653,7 @@ export class ExternalAgentsService {
     const candidates = agents.filter(agent => agent.enabled && agent.availability === 'auto');
     if (candidates.length === 0) return [];
     signal?.throwIfAborted();
-    const env = this.launchEnvironment();
+    const env = this.environment.getLaunchEnvironment();
     const found = await Promise.all(candidates.map(async agent => {
       try {
         await this.resolveExecutable(agent, env);
@@ -670,7 +669,7 @@ export class ExternalAgentsService {
   private async executable(
     config: ExternalAgentConfiguration,
   ): Promise<{ executable: string; command: string; args: string[]; env: NodeJS.ProcessEnv }> {
-    const env = this.launchEnvironment();
+    const env = this.environment.getLaunchEnvironment();
     const executable = await this.resolveExecutable(config, env);
     if (process.platform === 'win32' && /\.cmd$/i.test(executable)) {
       // npm shims invoke a JS entry point; run that entry directly without a shell quoting layer.

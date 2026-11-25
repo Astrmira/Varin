@@ -1288,6 +1288,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     return externalAgentIdentity(cwd);
   } });
   const externalAgents = new ExternalAgentsService({ managed: () => ({coordinatorHostId:agentRuntime.coordinatorHostId,source:(owner,signal)=>agentRuntime.managedSource(owner,signal)}), kernel: kernelClient, spawn: externalAgentProcesses.spawn, spawnAdmitted: externalAgentProcesses.spawnAdmitted, directory: externalAgentDirectory,
+    environment: platformEnvironmentRuntime,
     fetch: (input, init) => egressRuntime.fetch(input, init), removeProgram: externalAgentProcesses.removeProgram, fileContext: externalAgentProcesses.fileContext,
     onError: operationId => console.error('[ExternalAgents] Execution or resource cleanup needs reconciliation:', operationId),
     resolveWorkspace: async cwd => {
