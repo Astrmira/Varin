@@ -287,6 +287,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
         if (result.status === "fulfilled") {
           const target = result.value;
           probedByConnection.set(connection.id, target);
+          if (target.identity.role === 'browser' || target.identity.role === 'computer') continue;
           if (!next.has(target.machineId)) next.set(target.machineId, target);
         } else {
           failedByConnection.set(connection.id, result.reason instanceof Error ? result.reason.message : "target probe failed");

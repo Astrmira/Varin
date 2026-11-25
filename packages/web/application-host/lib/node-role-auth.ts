@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Request } from 'express';
+import type { Express, Request, RequestHandler } from 'express';
+import { MANAGED_REMOTE_PROTOCOL_VERSION, type ManagedRemoteIdentity } from './harness/managed-remote-types.js';
 import { ExtensionCatalogStore } from '@varin/extension-host';
 import { createRemoteClientAuthRuntime } from './client-auth/remote-clients.js';
 import { assertDataRootMayStart } from './data-restore-guard.js';
@@ -96,4 +97,31 @@ export async function resolveNodeRoleClient(auth: ReturnType<typeof createUiAuth
   const context = await auth.resolveAuthContext(request, null, { allowUrlToken: false });
   if (context?.type !== 'client' || typeof context.clientId !== 'string' || !context.client?.capabilities.includes(capability)) return undefined;
   return context.clientId;
+}
+
+
+/** Same authenticated receipt consumed by configured Host peers, without file or process routes. */
+export function registerNodeRoleIdentity(app: Express, options: {
+  role: 'browser' | 'computer'; hostId: string; capabilities: string[];
+  requireAuth: RequestHandler;
+  clientId(request: Request): Promise<string | undefined>;
+}) {
+  app.get('/api/harness/managed-execution/v1/identity', options.requireAuth, async (request, response, next) => {
+    try {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!await options.clientId(request)) { response.status(403).json({ error: 'A paired role credential is required' }); return; }
+      const target = request.headers['x-varin-managed-target'];
+      if (target !== undefined && target !== options.hostId) {
+        response.status(409).json({ error: 'Managed target identity changed', code: 'target-identity-changed' }); return;
+      }
+      const identity: ManagedRemoteIdentity = {
+        protocolVersion: MANAGED_REMOTE_PROTOCOL_VERSION, requestHostIdentity: true, hostId: options.hostId,
+        role: options.role, capabilities: options.capabilities,
+        machine: { machineId: 'local', kind: options.role, state: 'available',
+          connection: { status: 'connected', checkedAt: Date.now() }, commitments: [], queued: [] },
+      };
+      response.setHeader('X-Varin-Managed-Host', options.hostId);
+      response.json(identity);
+    } catch (error) { next(error); }
+  });
 }
