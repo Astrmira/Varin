@@ -86,6 +86,22 @@ but no verified capture/input capability until its driver and session are
 available. Windows and macOS helpers live on their respective native hosts,
 not inside the Linux resource image.
 
+For a real X11 role acceptance on a Linux developer/CI worker, build the
+release kernel first (or set `VARIN_TEST_KERNEL_PATH` to that binary), install
+the usual workspace dependencies, then run
+`./scripts/test-computer-role-x11.sh`. On Debian-family distributions the
+additional test dependencies are `xvfb xauth x11-xserver-utils dbus python3-gi
+gir1.2-atspi-2.0 gir1.2-gtk-3.0`. Use a `python3` on PATH that sees those
+system typelibs. The script fails immediately if requirements are missing.
+It creates a private Xauthority-protected Xvfb display and D-Bus session,
+paints a synthetic root window, and verifies actual PNG fixture pixels through
+a separate coordinator's binary stream, before and after role restart.
+The role and original desktop IDs must survive; the previous control lease
+must fail before dispatch, and a new lease must reach action validation.
+The invalid action used for that check does not emit keyboard or pointer input.
+This does not certify capture on Wayland, Windows or macOS, or the packaged
+Docker image.
+
 ## Native drivers, capture sessions and visual feedback
 
 - **Windows**: Launches version/build-verified `VarinComputer.exe` directly; a same-user local named pipe fences/releases input independently of the MTA UIA worker. Interrupt retires the input helper permanently (awaited until process exit) while capture runs in a separate read-only process. The final frame subscriber drains in-flight capture before retiring that helper; a new subscriber waits for retirement if it has already started. This does not stop the input helper.
