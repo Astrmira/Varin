@@ -120,8 +120,9 @@ it('cold-restores a real saved script service without replay, and rechecks the o
   const kernel = { agentRuntimeRequest: async (method: string, params: { node: NodeBinding }) => {
     if (method !== 'runtime.managed_process.begin') throw new Error('Unexpected dispatch');
     processAdmissions.push(params.node);
+    throw new Error('Fixture stops before physical acquisition');
   } } as unknown as KernelClient;
-  const scripts = createScriptRuntime({ kernel, runtime: { onEvent: () => () => {}, onReady: () => () => {}, launch: async () => null,
+  const scripts = createScriptRuntime({ kernel, runtime: { onEvent: () => () => {}, onReady: () => () => {}, launch: async () => ({ selection: { source } }),
     managedSource: async () => ({ scriptBinding: resolveScriptNodeBinding }) } as never,
     resolveLiveSource: async () => {}, onError: error => { throw error; } });
   let host: ApplicationExtensionRuntime | undefined;
@@ -165,8 +166,8 @@ it('cold-restores a real saved script service without replay, and rechecks the o
       executorOwner: { kind: 'kernel' }, origin: { kind: 'model_step', request_id: 'request' }, source,
       toolName: 'script_open', operation: 'effect', completion: 'job', configurationIdentity: saved.configurationIdentity, arguments: {},
     } }, async invocation => scripts.capability('open', {}, { owner: invocationOwner, signal: new AbortController().signal, invocation }));
-    // Missing physical launch deliberately stops after the actual Node admission seam.
-    expect(await invokeOpen()).toEqual({ error: 'Script environment requires the original physical source' });
+    // The fixture stops after the actual Node admission seam, before a Source grant.
+    expect(await invokeOpen()).toEqual({ error: 'Fixture stops before physical acquisition' });
     expect(processAdmissions).toEqual([original]);
     await fs.appendFile(original.worker_path, '\n// Altered after preparation.\n');
     expect(await invokeOpen()).toEqual({ error: 'Original script Node binding is unavailable' });

@@ -199,14 +199,23 @@ export function createScriptRuntime(options: {
     await recovering;
     signal.throwIfAborted();
     if (environments.has(authority.operationId)) throw new Error('script_environment_already_open');
-    const node = authority.source?.resource_owner.kind === 'managed_host'
-      ? await (await runtime.managedSource(authority.source.resource_owner, signal)).scriptBinding({ coordinatorHostId: runtime.coordinatorHostId, source: authority.source }, signal)
+    if (unaccepted.has(authority.operationId)) {
+      return result({ environmentId: authority.operationId, error: 'Original script open is awaiting reconciliation' },
+        'unknown', false, 'indeterminate');
+    }
+    const launch = await runtime.launch(authority.runId, signal);
+    const selected = launch?.selection.source;
+    if (!launch || !selected || selected.mode === 'fixed_branch' || !isDeepStrictEqual(selected, authority.source)) {
+      return undispatchedToolReceipt('Script environment requires its original admitted physical source');
+    }
+    // An executor probe is not a Source grant. Resolve it only after the
+    // trusted operation and original launch agree on the same physical owner.
+    const node = selected.resource_owner.kind === 'managed_host'
+      ? await (await runtime.managedSource(selected.resource_owner, signal)).scriptBinding({ coordinatorHostId: runtime.coordinatorHostId, source: selected }, signal)
       : await restoreScriptNodeBinding(authority.configurationIdentity);
     if (node.configuration_identity !== authority.configurationIdentity) throw new Error('script_binding_changed');
     await rpc('runtime.managed_process.begin', { operationId: authority.operationId, executionOwner: authority.executorOwner, node }, signal);
-    const launch = await runtime.launch(authority.runId, signal);
-    if (!launch?.selection.source || launch.selection.source.mode === 'fixed_branch') throw new Error('Script environment requires the original physical source');
-    const selection = savedSourceLaunch(authority.runId, launch.selection.source, sourceToolSchemas(launch.selection).map(tool => tool.name) as Parameters<typeof savedSourceLaunch>[2]);
+    const selection = savedSourceLaunch(authority.runId, selected, sourceToolSchemas(launch.selection).map(tool => tool.name) as Parameters<typeof savedSourceLaunch>[2]);
     const source = await admitRunSourceAuthority(kernel, runtime, selection, { signal, operationId: authority.operationId, retention: 'caller', purpose: 'script_environment', resolveLiveSource: options.resolveLiveSource });
     let environment: Environment | undefined;
     let enteredProcess = false;
@@ -229,7 +238,7 @@ export function createScriptRuntime(options: {
       const projection = new KernelManagedProcess(client, { workspaceId: selection.workspaceId, rootId, processId: authority.operationId }, initial,
         options.onError, () => {}, { retainOutput: true, ...(source.kind === 'managed' ? {
           terminate: async () => { await stopManagedScript(source.service, { coordinatorHostId: runtime.coordinatorHostId,
-            processId: authority.operationId, runId: authority.runId, threadId: authority.threadId, source: launch.selection.source! }); },
+            processId: authority.operationId, runId: authority.runId, threadId: authority.threadId, source: selected }); },
         } : {}) });
       environment = { id: authority.operationId, runId: authority.runId, threadId: authority.threadId, owner: authority.executorOwner, node, source, process: projection,
         ready: deferred<void>(), opening: deferred<void>(), accepting: true, accepted: false, tail: Promise.resolve(), unsubscribe: () => {} };
@@ -408,26 +417,35 @@ export function createScriptRuntime(options: {
     recoverSource: (owner: import('../harness/managed-remote-types.js').ManagedHostSourceOwner) => recover(owner),
     async prepareConfiguration(fallback: NonNullable<ExtensionToolOwnerOptions['configurationIdentity']>, source: import('./protocol.generated.js').LaunchSource | null,
       required: readonly ExtensionToolBinding[] = []): Promise<NonNullable<ExtensionToolOwnerOptions['configurationIdentity']>> {
-      // Required bindings come from Catalog. Their original extension composition
-      // is independently checked by createExtensionTools before any dispatch. Only
-      // the local builtin owner can restore one here; remote paths are not authority.
-      async function capture(original: string | null) {
-        return restoreScriptNodeBinding(original).then(value => ({ value }), error => ({ error }));
-      }
-      const originals = source?.resource_owner.kind === 'managed_host' ? [] : required.filter(binding =>
-        binding.extensionId === VARIN_BUILTIN_SCRIPT_EXTENSION_ID && SCRIPT_TOOL_DECLARATIONS.some(entry =>
-          entry.id === binding.serviceId && entry.version === binding.serviceVersion)).map(binding => binding.configurationIdentity);
-      const restored = new Map(await Promise.all([...new Set(originals)].map(async original =>
-        [original, await capture(original)] as const)));
-      const captured = await (source?.resource_owner.kind === 'managed_host'
-        ? runtime.managedSource(source.resource_owner).then(client => client.scriptBinding({ coordinatorHostId: runtime.coordinatorHostId, source }))
-        : resolveScriptNodeBinding()).then(value => ({ value }), error => ({ error }));
+      // Required bindings come from Catalog. Preparation for an absent or
+      // read-only Source must never scan the installed worker or probe a device
+      // just to determine that the physical script declaration is unavailable.
+      const scriptService = (id: string, version: number) =>
+        SCRIPT_TOOL_DECLARATIONS.some(entry => entry.id === id && entry.version === version);
+      const requiredScripts = required.filter(binding => binding.extensionId === VARIN_BUILTIN_SCRIPT_EXTENSION_ID &&
+        scriptService(binding.serviceId, binding.serviceVersion));
+      const unavailable = new Error('Original script Node binding is unavailable');
+      const needsBinding = source && source.mode !== 'fixed_branch' && (!required.length || requiredScripts.length);
+      const openBinding = (original?: string | null) => (original === undefined ? resolveScriptNodeBinding() : restoreScriptNodeBinding(original))
+        .then(value => ({ value }), error => ({ error }));
+      const restored = new Map(await Promise.all(
+        needsBinding && source.resource_owner.kind === 'local'
+          ? [...new Set(requiredScripts.map(binding => binding.configurationIdentity))]
+            .map(async original => [original, await openBinding(original)] as const)
+          : []));
+      // Local restoration needs the saved installation, not a second scan of the
+      // current installation. Remote restoration still uses its executing owner.
+      const captured = needsBinding && source.resource_owner.kind === 'managed_host'
+        ? await runtime.managedSource(source.resource_owner)
+          .then(client => client.scriptBinding({ coordinatorHostId: runtime.coordinatorHostId, source }))
+          .then(value => ({ value }), error => ({ error }))
+        : needsBinding && !required.length ? await openBinding() : { error: unavailable };
       return Object.assign((descriptor: Parameters<typeof fallback>[0], original?: string | null) => {
-        if (!SCRIPT_TOOL_DECLARATIONS.some(entry => entry.id === descriptor.id && entry.version === descriptor.version)) return fallback(descriptor, original);
-        const selected = original === undefined ? captured : restored.get(original) ?? captured;
-        if ('error' in selected) throw selected.error;
-        const node = selected.value;
-        if (original !== undefined && original !== node.configuration_identity) throw new Error('Original script Node binding is unavailable');
+        if (!scriptService(descriptor.id, descriptor.version)) return fallback(descriptor, original);
+        const binding = original === undefined ? captured : restored.get(original) ?? captured;
+        if ('error' in binding) throw binding.error;
+        const node = binding.value;
+        if (original !== undefined && original !== node.configuration_identity) throw unavailable;
         return node.configuration_identity;
       }, fallback);
     },

@@ -140,12 +140,13 @@ class ExtensionToolSourceError extends Error {
   }
 }
 /** Availability projection of the original declaration, never a grant or dispatch fence. */
-function requireToolSource(serviceId: string, requirements: LaunchTool['requirements'], source: ExtensionToolRun['source']): void {
-  if (!requirements) return;
-  const available = source && (requirements.source === 'source'
+function sourceAvailable(requirements: LaunchTool['requirements'], source: ExtensionToolRun['source']): boolean {
+  return !requirements || Boolean(source && (requirements.source === 'source'
     || (requirements.source === 'physical' && source.mode !== 'fixed_branch')
-    || (requirements.source === 'live' && source.mode === 'live_root'));
-  if (!available) throw new ExtensionToolSourceError(serviceId, requirements.source);
+    || (requirements.source === 'live' && source.mode === 'live_root')));
+}
+function requireToolSource(serviceId: string, requirements: LaunchTool['requirements'], source: ExtensionToolRun['source']): void {
+  if (requirements && !sourceAvailable(requirements, source)) throw new ExtensionToolSourceError(serviceId, requirements.source);
 }
 export interface ExtensionToolOwnerOptions {
   runtime: ApplicationExtensionRuntime;
@@ -611,7 +612,12 @@ export function createExtensionTools(
       id: string,
       version: number,
       routingRevision: number,
+      declarations: readonly VarinExtensionServiceProvision[],
     ) => {
+      // Metadata suffices if no declared provider in the slot can use this Source.
+      // A mixed slot still resolves its exact route and validates that descriptor.
+      if (declarations.length && declarations.every(descriptor => !sourceAvailable(descriptor.tool?.requirements, run.source)))
+        requireToolSource(id, declarations[0]!.tool?.requirements, run.source);
       const candidateOptions = preparedOptions;
       const releasePreparation = candidateOptions.configurationIdentity?.retainPreparation?.();
       try {
@@ -683,7 +689,7 @@ export function createExtensionTools(
           if (entry.declarations.every(descriptor => !enabled(descriptor))) return;
           // Prepare the first complete directory before the first model request.
           // Later changes still publish only at a closed request boundary.
-          initial.push(await prepare(entry.id, entry.version, snapshot!.routing.document.revision));
+          initial.push(await prepare(entry.id, entry.version, snapshot!.routing.document.revision, entry.declarations));
         } catch (error) {
           states.set(`${entry.id}@${entry.version}`, { serviceId: entry.id, version: entry.version,
             declarations: entry.declarations, status: 'unavailable',
@@ -760,7 +766,7 @@ export function createExtensionTools(
           declarations: entry.declarations,
           status: 'preparing',
         });
-        void prepare(entry.id, entry.version, current.routing.document.revision)
+        void prepare(entry.id, entry.version, current.routing.document.revision, entry.declarations)
           .then(async (retained) => {
             if (closed || signal.aborted || tokens.get(slot) !== token) {
               retained.lease.release();

@@ -41,6 +41,10 @@ Authoritative schema & code: [kernel/protocol/schema.json](../kernel/protocol/sc
 - **Typed short refs**: `file:`, `proc:`, `env:`, `material:`, `page:`, `obs:`, `item:` map via Catalog's ref index to immutable owners/versions without string-scanning prose or expanding permissions.
 - **Resource & compute admission** ([resource_admission.rs](../kernel/crates/varin-runtime/src/resource_admission.rs)): Acquires full resource plan + `configured_compute_capacity` (default `min(cores, 2)`, override `VARIN_COMPUTE_CONCURRENCY`) atomically; non-conflicting work bypasses blocked queues. Linux research probes read cgroup v1/v2 limits (`VARIN_RESEARCH_RESERVE_CPU_CORES`, `VARIN_RESEARCH_RESERVE_MEMORY_MB`).
 - **Operation receipts & cancellation**: Track phase, outcome, effect (`none` | `dispatched` | `partial` | `confirmed` | `unknown`), and confirmed `executor_stopped` separately. Cancel writes intent first, then drains owners. Unknown dispatched work is never auto-replayed on restart; explicit foreground cancel can settle a Run while leaving the underlying Operation/occupation open for late reconciliation.
+- **Script admission**: A missing Source or fixed revision does not activate a physical evaluator
+  provider or inspect its Node/worker binding. An admitted physical Run retains its selected evaluator;
+  open rechecks the captured Source and evaluator before requesting process authority. A lost
+  open acknowledgement keeps the original Operation pending instead of spawning another heap.
 - **Script nested calls**: Reuse frozen `ToolDirectory`, permissions, and resource admission; `script_run.title` labels the collapsible tree of nested Operations in UI.
 
 ## Context Preparation & Compaction
