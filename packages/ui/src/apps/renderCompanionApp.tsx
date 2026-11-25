@@ -1,3 +1,4 @@
+import { artworkHitTest } from '../components/companion/artwork-hit-test';
 import { ThemeSystemProvider } from '@/contexts/ThemeSystemContext';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { resolveCompanionAccentPalette } from '@/components/companion/companionAccentPalette';
@@ -552,7 +553,7 @@ function CompanionApp({ apis }: { apis: RuntimeAPIs }) {
       lastVisibleCue.current = cueKey;
       setVisibleCue({ cue, context: drawnContext, action: sequence.sceneAction ?? sequence.action, instance: ++visibleCueCounter.current });
     }
-    companionWindow.refreshHitMask();
+    companionWindow.refreshHitMask(artworkHitTest(images[frame.page]!, frame));
   };
   // Swap to the predecoded same-exposure drawing before sending native movement,
   // rather than letting an embedded stool travel for a React/animation frame.

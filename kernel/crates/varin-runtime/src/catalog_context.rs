@@ -328,6 +328,7 @@ impl Catalog {
         self.capture_checkpoint("SELECT c.id,c.revision,c.body,c.scope FROM runs r JOIN context_checkpoints c ON c.id=r.context_checkpoint_id WHERE r.id=?1",run_id)
     }
     pub(super) fn capture_checkpoint(&self, sql: &str, id: &str) -> Result<Option<CheckpointRead>> {
+        let publication = self.content.begin_read();
         let metadata: Option<(String, u64, String, Option<String>)> = self
             .db
             .query_row(sql, [id], |row| {
@@ -344,7 +345,7 @@ impl Catalog {
                         .transpose()?,
                     reference: serde_json::from_str(&reference)?,
                     content: self.content.clone(),
-                    _publication: self.content.begin_publication(),
+                    _publication: publication,
                 })
             })
             .transpose()

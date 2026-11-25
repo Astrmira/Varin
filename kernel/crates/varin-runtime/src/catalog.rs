@@ -54,7 +54,7 @@ pub enum RuntimeError {
 }
 type Result<T> = std::result::Result<T, RuntimeError>;
 const LEGACY_FAILED_RESULT: &str = "json_extract(body,'$.phase')='terminal' AND json_extract(body,'$.outcome')='failed' AND json_extract(body,'$.effect')='none' AND json_extract(body,'$.execution_owner.kind')='kernel' AND json_extract(body,'$.call_completion') IS NULL";
-pub(crate) const FORMAT: i64 = 102;
+pub(crate) const FORMAT: i64 = 103;
 fn sql_number(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| RuntimeError::Invalid("integer exceeds catalog range".into()))
 }
@@ -241,6 +241,8 @@ fn initialize_metadata(
     // the read does not scan retained history. Their predicates match attention::OPEN_*.
     tx.execute_batch("CREATE INDEX IF NOT EXISTS attention_open_runs ON runs(branch_id) WHERE json_extract(body,'$.state') NOT IN ('completed','failed','cancelled');
         CREATE INDEX IF NOT EXISTS attention_open_operations ON operations(run_id) WHERE (json_extract(body,'$.phase')!='terminal' OR json_extract(body,'$.effect')='unknown' OR json_extract(body,'$.outcome')='indeterminate' OR (json_extract(body,'$.mcp_resource_subscription') IS NOT NULL AND (json_extract(body,'$.cancel_requested')=0 OR json_extract(body,'$.mcp_resource_subscription.localReleased')=0)))")?;
+    // Reconciliation needs only dispatched processes whose physical owner has not stopped.
+    tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS unsettled_managed_processes ON operations(id) WHERE {}", managed_process::UNSETTLED_MANAGED_PROCESS))?;
     // Product discovery and Bot ancestry need only memory-work owners, not every retained tool.
     tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS pending_host_jobs ON operations(run_id) WHERE {}", host_jobs::PENDING_JOB))?;
     tx.execute_batch("CREATE INDEX IF NOT EXISTS thread_memory_operations ON operations(run_id) WHERE json_extract(body,'$.intent.kind')='memory_work_v1'")?;

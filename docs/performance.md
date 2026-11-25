@@ -54,3 +54,30 @@ node --import tsx packages/web/scripts/perf-knowledge-recall.ts 1000 8 2048 ipc
 - [measure-interaction-hotpaths.mjs](../scripts/measure-interaction-hotpaths.mjs): Host Documents file-op counts, UI embed/layout counts, and snapshot counts (uses portable fixtures — not full durable save/server latency).
 - [measure-kernel.mjs](../scripts/measure-kernel.mjs): `--compute-hotpaths` against a staged release kernel.
 - Browser profiling: [scripts/profile-browser.md](../scripts/profile-browser.md).
+
+### Built-in preparation and process memory
+
+From a built runtime workspace, run `node --expose-gc --import tsx packages/web/scripts/measure-builtin-preparation.mts --bots=2`.
+Repeat with `--legacy` in a fresh process for the forwarding-broker control. Both variants exercise
+the actual artifact store, service routing, directory, context and lease owners. They do not call a
+model. Each line separates elapsed directory preparation, newly launched brokers and a settled
+sample while tool leases are held. Linux uses private resident pages from smaps rollups.
+Windows uses private committed bytes for the same processes. The native HTTP context-composition
+suite covers the separate client-to-model boundary; directory timing is not first-token latency.
+
+A Linux two-Bot run (56 tools per Bot, no workspace, no model, one cold/warm pair per mode)
+took 6.14/4.91 s in the original forwarding backend and 3.15/2.47 s with direct Host handlers.
+Brokers started went from 12/11 to 0/0. With leases held after preparation, Host plus broker private
+memory was 555/580 MiB versus 267/274 MiB. These samples use the same checkout, not a comparison
+with the Windows installer or a guarantee for other hardware and plugin selections.
+
+On Windows x64 the two-Bot control started 12/11 forwarding processes on cold/warm preparation,
+while direct dispatch started zero in both rounds. With 56 tools per Bot, preparation took
+7.95/6.35 s and 3.14/3.04 s respectively. Host plus live broker private committed memory was
+620/622 MiB in the control and 267/269 MiB with direct dispatch (one cold/warm pair per mode).
+
+Local semantic preparation loads the tokenizer without acquiring ONNX. Actual inference acquires a
+worker shared across concurrent requests; the last physically settled request starts an idle grace
+based on observed reload cost and estimated process RSS growth. Reacquisition keeps the same model
+and tokenizer. For deployment measurements separate the Host-wide RSS estimate from model weights
+and sample the first inference again after worker exit.
