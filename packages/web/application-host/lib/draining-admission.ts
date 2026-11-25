@@ -90,6 +90,23 @@ export const createDrainingAdmission = (isDraining: () => boolean): RequestHandl
   response.status(503).json({ code: 'host-draining', error: 'Host is draining; new work is not accepted', admission: 'not_started' });
 };
 
+/** Fence authenticated Thread writes again at the owner boundary. An early
+ * HTTP check alone cannot observe requests paused in authentication. Count
+ * each admitted write until its owner settles, not until its socket closes. */
+export const createThreadWriteAdmission = (isDraining: () => boolean) => {
+  let inFlight = 0;
+  return {
+    count: () => inFlight,
+    begin(): (() => void) | undefined {
+      if (isDraining()) return undefined;
+      inFlight++;
+      let released = false;
+      return () => { if (!released) { released = true; inFlight--; } };
+    },
+  };
+};
+export type ThreadWriteAdmission = ReturnType<typeof createThreadWriteAdmission>;
+
 /** Observation HTTP responses outlive their events. Retain them during owner
  * drain, then end only these observers before server.close. This is not an
  * executor stop and does not release original work or its storage leases. */

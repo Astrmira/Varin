@@ -14,6 +14,7 @@ interface ActivityOwners {
   kernelEpoch(): string | null;
   draining(): boolean;
   observationStreams(): number;
+  threadWrites?(): number;
   externalIngressActive(): boolean;
   admission(signal: AbortSignal): Promise<Pick<AdmissionSummary, 'localComputeActive' | 'queued'>>;
   calendar(signal: AbortSignal): Promise<CalendarActivity>;
@@ -39,6 +40,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
     : null;
   const calendar = sameEpoch && calendarResult?.status === 'fulfilled' ? calendarResult.value : null;
   const observations = owners.observationStreams();
+  const threadWrites = owners.threadWrites?.() ?? null;
   const ingress = owners.externalIngressActive();
   const draining = owners.draining();
   const browser = owners.browser?.() ?? null;
@@ -56,6 +58,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
     ...(calendar?.watchingAssets ? ['calendar-asset-watch'] : []),
     ...(calendar?.nextWakeAtMs != null ? ['calendar-wake-not-transferred'] : []),
     ...(observations ? ['http-observation-streams'] : []),
+    ...(threadWrites ? ['http-thread-writes'] : []),
     ...(ingress ? ['external-ingress-active'] : []),
     ...(browser && (browser.preparing || browser.activePageWrites || browser.waitingPageWrites || browser.outstandingStopConfirmations)
       ? ['browser-owner-activity'] : []),
@@ -78,7 +81,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
       unresolvedSchedules: calendar.unresolvedSchedules,
       watchingAssets: calendar.watchingAssets,
     },
-    retention: { observationStreams: observations, externalIngressActive: ingress, reasons: retentionReasons },
+    retention: { observationStreams: observations, threadWrites, externalIngressActive: ingress, reasons: retentionReasons },
     owners: {
       browser: browser && {preparing:browser.preparing,activePageWrites:browser.activePageWrites,
         waitingPageWrites:browser.waitingPageWrites,outstandingStopConfirmations:browser.outstandingStopConfirmations},

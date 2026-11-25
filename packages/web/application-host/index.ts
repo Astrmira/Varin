@@ -354,7 +354,7 @@ import { createMobilePairingRuntime } from './lib/mobile/pairing-runtime.js';
 import { createMobilePushRuntime } from './lib/mobile/push-runtime.js';
 import { registerMobileRoutes } from './lib/mobile/routes.js';
 import { createGracefulShutdownRuntime, createShutdownCollector, ShutdownDeadline, resolveShutdownTimeoutMs, reportShutdownOutcome } from './lib/shutdown-runtime.js';
-import { createDrainingAdmission, createHttpObservationDrain } from './lib/draining-admission.js';
+import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteAdmission } from './lib/draining-admission.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
@@ -865,6 +865,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   console.log(`Starting Varin on port ${port === 0 ? 'auto' : port}`);
   const app = express();
   const httpObservationDrain = createHttpObservationDrain();
+  const threadWriteAdmission = createThreadWriteAdmission(() => isShuttingDown);
   app.use(httpObservationDrain.middleware);
   app.use(createDrainingAdmission(() => isShuttingDown));
   const extensionCatalog = options.extensionCatalog
@@ -2852,7 +2853,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   kernelClient.setFollowupEventOwner(createFollowupEventOwner(agentRuntime, pluginEventSources));
   const conversationOrganization = new ConversationOrganizationService({ runtime: agentRuntime, threads, external: externalAgents, readSettings: readSettingsFromDisk });
   registerConversationOrganizationRoutes(app, conversationOrganization, uiAuthController.requireAuth, (req, res) => uiAuthController!.resolveAuthContext(req, res));
-  registerThreadRoutes(app, threads, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()), researchRuntime.user, computerRuntimeOwner.current.user, webRuntimeOwner.current.user, userIntegrations, pluginEventSources);
+  registerThreadRoutes(app, threads, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()), researchRuntime.user, computerRuntimeOwner.current.user, webRuntimeOwner.current.user, userIntegrations, pluginEventSources, threadWriteAdmission);
   const agentProfiles = createAgentProfilesAPI({ settings: modelsService.settings,
     capabilities: signal => agentRuntime.childCapabilities(signal),
     contextAgentDefinition: signal => agentRuntime.contextAgentDefinition(signal),
@@ -3441,6 +3442,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     kernelEpoch: () => kernelClient.isReady ? kernelClient.kernelEpoch : null,
     draining: () => isShuttingDown,
     observationStreams: httpObservationDrain.count,
+    threadWrites: threadWriteAdmission.count,
     externalIngressActive: () => Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled),
     admission: async (ownerSignal) => (await agentRuntime.status(ownerSignal)).admission,
     calendar: scheduledTasksRuntime.getActivity,
