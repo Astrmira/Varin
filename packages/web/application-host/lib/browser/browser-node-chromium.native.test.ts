@@ -122,7 +122,13 @@ it.skipIf(!executable)('preserves Chromium profile and process identity independ
         desktopHosts: [{ id: 'same-managed-browser-route', label: 'Local Chromium',
           apiUrl: 'http://127.0.0.1:' + port, clientToken: token }],
       }) });
-    const peers = new ManagedBrowserPeers('real-chromium-coordinator', coordinator, targets);
+    let dispatched = 0;
+    const tracedFetch: typeof fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname.endsWith('/browser/call')) dispatched++;
+      return fetch(input, init);
+    };
+    const peers = new ManagedBrowserPeers('real-chromium-coordinator', coordinator, targets, tracedFetch);
     await peers.refresh();
     const [configured] = await coordinator.list();
     expect(configured).toMatchObject({ state: 'disconnected', activation: 'connect' });
@@ -179,7 +185,9 @@ it.skipIf(!executable)('preserves Chromium profile and process identity independ
     const second = await acquire();
     expect(second.instanceId).not.toBe(first.instanceId);
     expect(node.hostId).toBe(hostId);
+    const beforeStale = dispatched;
     await expect(evaluate(tab, 'document.title')).rejects.toMatchObject({ effect: 'none' });
+    expect(dispatched).toBe(beforeStale);
     const newTab = await open(second);
     expect(await evaluate(newTab, read)).toBe(marker);
   } finally {
