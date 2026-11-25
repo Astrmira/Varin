@@ -46,9 +46,19 @@ Thread-scoped UI routes (`/api/threads/computer/state`, `/decide`, `/stop`) are 
 - **Physical-control barrier (`runtimeVersion: 5`)**: `computer-records.ts` / `computer-service.ts` persist a `physicalControl` marker (Host control generation, helper identity, holder) before sending input. Malformed/obsolete records remain fenced (never auto-migrated or erased). Clearing the barrier requires the original helper's release ACK + callback/process drain (or managed desktop stop); a crashed local-console helper leaves release unconfirmed.
 - **Receipts**: `ComputerActionReceipt` separates `effect` (`none`, `dispatched`, `partial`, `verified`, `unknown`) from `inputWriterStopped`. OS acceptance is not application completion; only value readback confirms `set_value`. Lost responses remain `unknown` even if later cancellation confirms writer drain.
 
+## Catalog discovery and on-demand acquisition
+
+Catalog reads and changing the default target do not start native helpers or
+probe capabilities. The catalog keeps the owning Host's last observation and
+probe time; before a probe it reports the absence of capability evidence. The
+explicit catalog refresh discovers remote machines and refreshes managed status
+without capturing a frame. The individual Probe command acquires the selected
+driver and reports its observed capabilities. A new active operation may
+discover its explicitly selected remote Host if no local mirror exists yet.
+
 ## Native drivers, capture sessions and visual feedback
 
-- **Windows**: Launches version/build-verified `VarinComputer.exe` directly; a same-user local named pipe fences/releases input independently of the MTA UIA worker. Interrupt retires the input helper permanently (awaited until process exit) while capture runs in a separate read-only process.
+- **Windows**: Launches version/build-verified `VarinComputer.exe` directly; a same-user local named pipe fences/releases input independently of the MTA UIA worker. Interrupt retires the input helper permanently (awaited until process exit) while capture runs in a separate read-only process. The final frame subscriber drains in-flight capture before retiring that helper; a new subscriber waits for retirement if it has already started. This does not stop the input helper.
 - **macOS & Wayland**: Drivers advertise `sharedDesktopSession` to `desktop-drivers.ts`: controller observations/input keep one ordered lane while viewer `capture_frame` uses a separate correlated read-only lane on the same process. Closing a viewer preserves platform authorization; desktop reset or Host disposal closes the helper after owner cleanup.
 - **Gestures & viewer streams**: Helpers emit coordinate/operation NDJSON gestures (never typed text). Updated peers negotiate a binary stream on the desktop event route (older peers keep SSE) with unchanged-frame suppression, single-newest-frame backpressure, and paused capture for hidden views.
 - **Overlays & UI**: On Windows, Electron renders click-through, nonfocusable overlays excluded from capture via `setContentProtection` (applied only to overlays, never product windows) plus a bottom control bar (Take control / Return to Varin / Cancel). Linux/macOS show feedback in the viewer. `useComputerAutomation` projects Host snapshots + stream invalidations without polling or probing desktops.

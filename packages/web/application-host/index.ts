@@ -1767,8 +1767,6 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     vmProviders: async () => configuredVmProviders(await readSettingsFromDisk() as unknown as Record<string, unknown>),
   });
   computerServiceRef.current = computerService;
-  void computerService.defaultDesktop().then(id => id ? computerService.prewarm(id) : undefined)
-    .catch(error => console.error('[Computer] Desktop preparation failed:', errorMessage(error)));
   options.onComputerControlsReady?.({
     holderId: desktopControlHolder,
     takeover: async () => { await computerService.takeover({ desktopId: 'local-console', holderId: desktopControlHolder }); },

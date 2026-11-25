@@ -43,18 +43,16 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
     }
     next();
   });
-  app.get("/api/computers", requireAuth, async (request: Request, response: Response) => {
+  const catalog = (refresh: boolean): RequestHandler => async (request, response) => {
     response.setHeader("Cache-Control", "no-store");
     try {
-      const catalog = await computers.list(request.query.local === "1" ? { localOnly: true } : undefined);
-      response.json({
-        ...catalog,
-        defaultDesktopId: await computers.defaultDesktop(),
-      });
-    } catch (error) {
-      sendError(response, error, "Unable to list computers");
-    }
-  });
+      const localOnly = request.query.local === "1";
+      response.json({ ...await computers.list(refresh || localOnly ? { ...(localOnly ? { localOnly } : {}), ...(refresh ? { refresh } : {}) } : undefined),
+        defaultDesktopId: await computers.defaultDesktop() });
+    } catch (error) { sendError(response, error, "Unable to list computers"); }
+  };
+  app.get("/api/computers", requireAuth, catalog(false));
+  app.post("/api/computers/refresh", requireAuth, catalog(true));
 
   app.post('/api/computers/desktops/:desktopId/stop', requireAuth, async (request, response) => {
     try {
@@ -179,10 +177,6 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
         throw new HarnessServiceError("invalid-params", "desktopId must be a string or null");
       }
       const desktopId = typeof value === "string" && value.trim() ? value.trim() : null;
-      if (desktopId) {
-        // Selecting a target proves the desktop exists and reports real state.
-        await computers.probe(desktopId);
-      }
       await computers.setDefaultDesktop(desktopId);
       response.json({ ok: true });
     } catch (error) {
@@ -487,6 +481,7 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
     response.setHeader("Connection", "keep-alive");
     response.flushHeaders();
     let unsubscribe: (() => void) | null = null;
+    const lifetime = new AbortController();
     let closed = false;
     let pendingFrame: import('./computer-service.js').DesktopViewEvent | undefined;
     const write = (event: import('./computer-service.js').DesktopViewEvent) => {
@@ -498,7 +493,7 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
     response.on('drain', () => {
       if (!closed && pendingFrame) { const event = pendingFrame; pendingFrame = undefined; write(event); }
     });
-    response.on("close", () => { closed = true; unsubscribe?.(); });
+    response.on("close", () => { closed = true; lifetime.abort(); unsubscribe?.(); });
     try {
       unsubscribe = await computers.subscribeFrames(desktopId, viewerId, (event) => {
         if (closed || response.writableEnded) return;
@@ -507,8 +502,9 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
         if (event.type === "frame" && response.writableNeedDrain) { pendingFrame = event; return; }
         write(event);
         if (event.type === "error" && event.terminal) response.end();
-      }, { frames: request.query.frames !== "0" });
+      }, { frames: request.query.frames !== "0", signal: lifetime.signal });
     } catch (error) {
+      if (closed) return;
       write({ type: 'error', error: error instanceof Error ? error.message : 'subscribe failed' });
       response.end();
       return;
