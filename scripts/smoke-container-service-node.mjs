@@ -88,6 +88,14 @@ try {
     assert.equal(listed.status, 200);
     assert.equal(listed.headers.get('x-varin-computer-host'), hostId);
     assert.equal((await request(base, '/api/computers/desktops/prepare', { body: {} })).status, 403);
+    // Run the shipped driver imports as the exact image's ordinary user,
+    // without relying on the runner's Gi/AT-SPI/GDK packages.
+    docker(['exec', name, 'python3', '-c', [
+      'import sys',
+      'sys.path.insert(0, "packages/web/server/computer-driver/linux")',
+      'from runtime import Atspi, Gdk',
+      'assert Atspi is not None and Gdk is not None, "Computer image lacks AT-SPI or GDK"',
+    ].join('\n')]);
   }
   docker(['exec', name, 'node', 'verify-resource-node-install.mjs']);
   docker(['stop', name]);

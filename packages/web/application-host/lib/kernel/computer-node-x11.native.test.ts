@@ -2,15 +2,14 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import type { ComputerActor, ComputerDesktopFrame } from '@varin/protocol';
 import { pairComputerNode, startComputerNode } from '../../computer-node.js';
 import { createComputerService, type DesktopViewEvent } from '../computer/computer-service.js';
+import { computerDriverDir, localDriverSpawnSpec } from '../computer/driver-host.js';
 import { createNodeRoleKernel, nodeRoleDataDirectory } from '../node-role-auth.js';
 
 const optedIn = process.env.VARIN_TEST_COMPUTER_X11 === '1';
-const driverDir = fileURLToPath(new URL('../../../../computer-driver/linux/', import.meta.url));
 
 function assertFixturePixels(frame: ComputerDesktopFrame) {
   const png = Buffer.from(frame.base64, 'base64');
@@ -38,6 +37,10 @@ it.skipIf(!optedIn)('captures a real isolated X11 desktop through a separate coo
   if (process.platform !== 'linux' || !kernelPath || !process.env.DISPLAY ||
       !process.env.XAUTHORITY || !process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_SESSION_TYPE !== 'x11' ||
       process.env.WAYLAND_DISPLAY) throw new Error('Run through scripts/test-computer-role-x11.sh');
+  const driverDir = computerDriverDir();
+  expect(localDriverSpawnSpec('linux', driverDir), 'expected the source Linux driver beneath ' + driverDir).toMatchObject({
+    command: 'python3', args: [path.join(driverDir, 'linux', 'driver-host.py')],
+  });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vx-'));
   const options = { kernelPath, driverDir, dataDir: path.join(root, 'role'), port: 0 };
   let role: Awaited<ReturnType<typeof startComputerNode>> | undefined;

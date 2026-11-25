@@ -151,6 +151,14 @@ RUN node scripts/build-resource-node.mjs --role computer /app/artifacts/cloud-ru
 
 FROM ${RUNTIME_BASE_IMAGE} AS computer-node
 WORKDIR /home/varin/app
+# The Linux driver imports PyGObject/AT-SPI at startup and uses GDK for
+# X11 capture. Install these only on the dedicated Computer role. Desktop,
+# display credentials and the session bus still belong to the deployment.
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends at-spi2-core gir1.2-atspi-2.0 gir1.2-gtk-3.0 python3-gi \
+  && rm -rf /var/lib/apt/lists/*
+USER varin
 ARG VARIN_SOURCE_REVISION
 LABEL io.varin.image.role="computer"
 ENV HOME=/home/varin \

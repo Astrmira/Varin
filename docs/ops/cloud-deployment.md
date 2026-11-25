@@ -166,13 +166,15 @@ The existing **Container validation** workflow also accepts the optional
 the Computer driver's isolated Xvfb/AT-SPI test against the exact checked-out
 source and the checksum-verified Linux/amd64 kernel from that run's Browser
 candidate. Set `benchmark`, `toolbelt`, and `multi_platform` to false for a
-focused run. Ordinary CI still runs its existing image smokes without installing
-these extra prerequisites.
+focused run. Ordinary CI checks the shipped Linux Computer driver's PyGObject,
+AT-SPI and GDK imports inside its exact image. It does not provision a desktop, and
+the opt-in check exercises capture against the isolated runner display instead.
 
 ### Dedicated Computer control plane
 
 The Linux `computer-node` build target packages the existing platform driver alongside
-its own frozen Node dependency graph, without the Host UI or Agent. Keep its
+its own frozen Node dependency graph, without the Host UI or Agent. Only this
+dedicated image installs the Linux driver's AT-SPI and GDK runtime libraries. Keep its
 `VARIN_DATA_DIR` mounted between launches. Its passive health confirms kernel control
 and role ingress, not the presence of an accessible desktop, approved capture portal
 or installed applications. A ready role can report that any specific capability is
