@@ -56,6 +56,36 @@ without capturing a frame. The individual Probe command acquires the selected
 driver and reports its observed capabilities. A new active operation may
 discover its explicitly selected remote Host if no local mirror exists yet.
 
+## Dedicated Computer node
+
+The built Application Host includes a standalone `computer-node.js` entry.
+Set an absolute private `VARIN_DATA_DIR`; the optional
+`VARIN_COMPUTER_DRIVER_DIR` points to the same platform driver assets as the
+full Host. This role starts the resource kernel and the existing Computer
+owner only. It does not expose Agent, UI, file/command node, VM provisioning
+or general Host configuration endpoints. Default listen address is loopback.
+Use a trusted encrypted tunnel or reverse proxy for cross-device deployment.
+
+Create a coordinator credential while the node is stopped:
+`node computer-node.js pair --output /private/computer-client.json`.
+It grants desktop observation, not input. Add `--allow-control` to allow
+control of the selected desktop and `--allow-system` (which also requires
+control) for managed lifecycle, recipe installation, artifacts writes and
+explicit app binary, path or command selection. Store the token in the
+coordinator's existing desktop Host connection. `revoke CLIENT_ID` is also
+offline. The node accepts bearer credentials only; it does not issue UI
+sessions. Assignment leases are bound to both the authenticated peer and the
+owning process. Reconnect after restart must reacquire leases; durable
+device identity and the last observed capabilities remain in the private
+state directory. Live views use the original owner frame or read-only RFB
+media lane without a second input authority.
+
+Use platform-specific drivers and operating-system authorization as before.
+A Linux service with no permitted graphical session has control-plane health
+but no verified capture/input capability until its driver and session are
+available. Windows and macOS helpers live on their respective native hosts,
+not inside the Linux resource image.
+
 ## Native drivers, capture sessions and visual feedback
 
 - **Windows**: Launches version/build-verified `VarinComputer.exe` directly; a same-user local named pipe fences/releases input independently of the MTA UIA worker. Interrupt retires the input helper permanently (awaited until process exit) while capture runs in a separate read-only process. The final frame subscriber drains in-flight capture before retiring that helper; a new subscriber waits for retirement if it has already started. This does not stop the input helper.

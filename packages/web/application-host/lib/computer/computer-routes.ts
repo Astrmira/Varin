@@ -3,7 +3,7 @@ import { BINARY_EVENT_CONTENT_TYPE, encodeBinaryEvent } from '@varin/application
 import type { Express, Request, RequestHandler, Response } from "express";
 import { HarnessServiceError } from "../harness/service-error.js";
 import { ComputerBeforeDispatchError, ComputerEffectError, type ComputerService } from "./computer-service.js";
-import { parseComputerActor, type ComputerAccess } from '@varin/protocol';
+import { parseComputerActor, type ComputerAccess, type ComputerControlState } from '@varin/protocol';
 import { ComputerError } from './computer-error.js';
 
 /**
@@ -14,6 +14,11 @@ export interface ComputerRoutesOptions {
   computers: ComputerService;
   requireAuth?: RequestHandler;
   hostId?: string;
+  /** An independently deployed desktop can namespace equal viewer IDs from different peers. */
+  viewerIdentity?: {
+    admit(request: Request, viewer: string): string;
+    project(request: Request, control: ComputerControlState): ComputerControlState;
+  };
 }
 
 const noAuth: RequestHandler = (_request, _response, next) => next();
@@ -33,7 +38,12 @@ const sendError = (response: Response, error: unknown, fallback: string): void =
   response.status(500).json({ error: error instanceof Error ? error.message : fallback });
 };
 
-export function registerComputerRoutes(app: Express, { computers, requireAuth = noAuth, hostId }: ComputerRoutesOptions): void {
+export function registerComputerRoutes(app: Express, { computers, requireAuth = noAuth, hostId, viewerIdentity }: ComputerRoutesOptions): void {
+  const visibleControl = (request: Request, control: ComputerControlState) => viewerIdentity?.project(request, control) ?? control;
+  const holder = (request: Request) => {
+    const supplied = request.body?.holderId;
+    return typeof supplied === 'string' && supplied ? viewerIdentity?.admit(request, supplied) ?? supplied : undefined;
+  };
   if (hostId) app.use('/api/computers', requireAuth, (request, response, next) => {
     response.setHeader('X-Varin-Computer-Host', hostId);
     const expected = request.get('X-Varin-Computer-Host');
@@ -57,7 +67,8 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
   app.post('/api/computers/desktops/:desktopId/stop', requireAuth, async (request, response) => {
     try {
       if (!request.body || typeof request.body.automationEpoch !== 'string' || Object.keys(request.body).some(key => key !== 'automationEpoch')) throw new ComputerError('computer-request-invalid', 'Stop requires only the control generation shown by this desktop view');
-      response.json(await computers.stopDesktop({ desktopId: String(request.params.desktopId), automationEpoch: request.body.automationEpoch }));
+      const result = await computers.stopDesktop({ desktopId: String(request.params.desktopId), automationEpoch: request.body.automationEpoch });
+      response.json({ ...result, control: visibleControl(request, result.control) });
     } catch (error) { sendError(response, error, 'Unable to confirm desktop input stop'); }
   });
   app.post('/api/computers/desktops/:desktopId/assignment', requireAuth, async (request, response) => {
@@ -404,7 +415,7 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
     response.setHeader("Cache-Control", "no-store");
     try {
       const control = await computers.control(String(request.params.desktopId ?? ""));
-      response.json({ control });
+      response.json({ control: visibleControl(request, control) });
     } catch (error) {
       sendError(response, error, "Unable to read desktop control");
     }
@@ -418,12 +429,12 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
   app.post("/api/computers/desktops/:desktopId/takeover", requireAuth, async (request: Request, response: Response) => {
     response.setHeader("Cache-Control", "no-store");
     try {
-      const holderId = typeof request.body?.holderId === "string" ? request.body.holderId : undefined;
+      const holderId = holder(request);
       const result = await computers.takeover({
         desktopId: String(request.params.desktopId ?? ""),
         ...(holderId ? { holderId } : {}),
       });
-      response.json(result);
+      response.json({ ...result, control: visibleControl(request, result.control) });
     } catch (error) {
       sendError(response, error, "Unable to take over the desktop");
     }
@@ -433,12 +444,12 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
   app.post("/api/computers/desktops/:desktopId/handback", requireAuth, async (request: Request, response: Response) => {
     response.setHeader("Cache-Control", "no-store");
     try {
-      const holderId = typeof request.body?.holderId === "string" ? request.body.holderId : undefined;
+      const holderId = holder(request);
       const result = await computers.handback({
         desktopId: String(request.params.desktopId ?? ""),
         ...(holderId ? { holderId } : {}),
       });
-      response.json(result);
+      response.json({ ...result, control: visibleControl(request, result.control) });
     } catch (error) {
       sendError(response, error, "Unable to return desktop control");
     }
@@ -448,7 +459,7 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
   app.post("/api/computers/desktops/:desktopId/input", requireAuth, async (request: Request, response: Response) => {
     response.setHeader("Cache-Control", "no-store");
     try {
-      const holderId = typeof request.body?.holderId === "string" ? request.body.holderId : undefined;
+      const holderId = holder(request);
       const result = await computers.input({
         desktopId: String(request.params.desktopId ?? ""),
         ...(holderId ? { holderId } : {}),
@@ -471,9 +482,10 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
     const binary = request.query.encoding === 'binary' || request.headers.accept?.includes(BINARY_EVENT_CONTENT_TYPE);
     response.setHeader("Cache-Control", "no-store");
     const desktopId = String(request.params.desktopId ?? "");
-    const viewerId = typeof request.query.viewer === "string" && request.query.viewer
+    const suppliedViewer = typeof request.query.viewer === "string" && request.query.viewer
       ? request.query.viewer
       : `viewer-${Math.random().toString(36).slice(2)}`;
+    const viewerId = viewerIdentity?.admit(request, suppliedViewer) ?? suppliedViewer;
     // SSE headers must be committed before subscribing — the first control
     // event is delivered synchronously on subscribe.
     response.status(200);
@@ -500,7 +512,7 @@ export function registerComputerRoutes(app: Express, { computers, requireAuth = 
         // A slow viewer needs the next current frame, not an ever-growing
         // backlog of obsolete screenshots. Control receipts are still sent.
         if (event.type === "frame" && response.writableNeedDrain) { pendingFrame = event; return; }
-        write(event);
+        write(event.type === 'control' ? { ...event, control: visibleControl(request, event.control) } : event);
         if (event.type === "error" && event.terminal) response.end();
       }, { frames: request.query.frames !== "0", signal: lifetime.signal });
     } catch (error) {
