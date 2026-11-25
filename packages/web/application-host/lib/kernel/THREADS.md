@@ -328,7 +328,7 @@ an execution Source. A fresh Bot's home/default directory or a saved folder
 can be selected this way. Explicit fixed/native views, explicit branch
 workspace selection and project context capture still use their existing
 admission paths. A previous source-less launch without this selection stays
-source-less; this is not a grant for historical restricted work or children.
+source-less; it does not gain Host file or process access.
 
 The native location router resolves a saved default only for an admitted
 file or process operation and records that operation's actual target. The
@@ -337,5 +337,16 @@ Ordinary location discovery and background labels use saved/cached facts;
 explicit refresh probes devices. If preparation discovers default-location
 instructions, the operation does not dispatch and returns the precise
 instructions plus their revision. Reissue with that revision after applying
-the instructions; changed instructions invalidate a previous revision.
+the instructions; changed instructions, including captured rules for the
+requested relative directories, invalidate a previous revision. Concurrent
+preparations may share the same resolution, but each Operation owns its
+individual grant and release.
 `work_location_switch` remains an explicit next-Run live workspace change.
+
+An ordinary native child dispatch with explicitly selected file tools and a
+shared or read-only work mode can borrow the original recorded dormant
+default. It uses a child-specific tool schema, has no location selector, and
+cannot discover devices, switch location, transfer files, or acquire command
+execution from that descriptor. Both the Catalog and Host check the original
+dispatch and recorded launch before binding. Child continuations and explicit
+project/fixed/native selections keep their existing behavior.
