@@ -144,3 +144,26 @@ separately, on private networking. Do not publish the upstream CDP port.
   peer cannot ask the service to connect to arbitrary endpoints or read upstream headers.
   Protect the coordinator connection with the same private-network or HTTPS ingress
   requirements as a File and command node.
+
+### Dedicated Computer control plane
+
+The Linux `computer-node` build target packages the existing platform driver alongside
+its own frozen Node dependency graph, without the Host UI or Agent. Keep its
+`VARIN_DATA_DIR` mounted between launches. Its passive health confirms kernel control
+and role ingress, not the presence of an accessible desktop, approved capture portal
+or installed applications. A ready role can report that any specific capability is
+unavailable. Install/expose the actual desktop session and supported platform
+applications separately, using the regular Computer owner and OS approval model.
+The Linux image is not a macOS or Windows service installer.
+
+Run offline `pair --output /private/client.json` to grant observation only. The operator
+can explicitly add `--allow-control`; `--allow-system` also requires control and permits
+system-level Computer operations. Keep generated credentials on a private mount
+separate from the durable role data. Use offline `revoke CLIENT_ID` to retire a grant.
+Computer assignment credentials are additionally tied to their paired client and
+to the serving process; reassume the actual desktop assignment after a restart.
+
+These two new image targets are built and qualified in the disposable container
+validation graph. This does not publish new tags or change ordinary release image
+names. Use an exact source revision and immutable configured runtime base when
+building a deployment artifact.

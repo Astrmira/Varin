@@ -125,6 +125,7 @@ export function registerManagedBrowserRoutes(app: Express, options: {
   hostId: string; resources: BrowserResources; requireAuth: RequestHandler;
   settings?: BrowserSettingsOwner;
   allowProbe?: boolean;
+  parseRequestBody?: RequestHandler;
   clientId(request: Request): Promise<string | undefined>;
 }) {
   const principals = new WeakMap<Request, string>();
@@ -149,6 +150,7 @@ export function registerManagedBrowserRoutes(app: Express, options: {
       principals.set(req, clientId); next();
     }).catch(next);
   });
+  if (options.parseRequestBody) app.use(base, options.parseRequestBody);
   app.get(`${base}/resources`, route(async (_req, res) => {
     // Never publish imported peers: discovery and dispatch are strictly one hop.
     res.json({ resources: await options.resources.list({ localOnly: true }) });

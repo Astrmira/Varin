@@ -90,11 +90,11 @@ export async function startBrowserNode(options: BrowserNodeOptions) {
       if (draining) { res.status(503).json({ code: 'host-draining' }); return; }
       next();
     });
-    app.use(express.json({ limit: '64mb' }));
     // Peers can operate on provisioned browsers, never turn the role into an arbitrary CDP
     // connection broker or retrieve the deployment's upstream credentials / scratch paths.
     registerNodeRoleIdentity(app, { role: 'browser', hostId, capabilities: ['browser'], ...auth });
-    registerManagedBrowserRoutes(app, { hostId, resources, allowProbe: false, ...auth });
+    registerManagedBrowserRoutes(app, { hostId, resources, allowProbe: false,
+      parseRequestBody: express.json({ limit: '64mb' }), ...auth });
     const fail: express.ErrorRequestHandler = (error, _req, res, _next) => {
       if (res.headersSent) { res.destroy(); return; }
       const status = typeof error?.status === 'number' && error.status >= 400 && error.status < 600 ? error.status : 500;
