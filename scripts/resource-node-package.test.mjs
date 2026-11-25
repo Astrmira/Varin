@@ -35,12 +35,24 @@ test('resource role follows imports from its emitted entry only and fails closed
   assert.throws(() => collectResourceClosure(root, ts), /Unshippable/);
 });
 
-test('committed resource resolution lock matches current role manifests', () => checkResourceNodeLock());
+test('committed resolution locks match their own role manifests', () => {
+  for (const role of ['resources', 'browser', 'computer']) checkResourceNodeLock({ role });
+});
+
+test('browser and computer closure traces never include an unreferenced role entry', t => {
+  const { root, write } = fixture(t);
+  write('browser-node.js', "import 'ws';");
+  write('computer-node.js', "import './active.js';");
+  write('active.js', "import 'express';");
+  write('index.js', "import 'lost-host-only-dependency';");
+  assert.deepEqual(collectResourceClosure(root, ts, 'browser-node').files, ['browser-node.js']);
+  assert.deepEqual(collectResourceClosure(root, ts, 'computer-node').files, ['active.js', 'computer-node.js']);
+});
 
 test('installed resource dependency validation rejects missing and unreferenced locked packages', t => {
   const { root, write } = fixture(t);
   const dependencies = { resourceExample: '1.0.0' };
-  write('resource-node.json', { role: 'resources', workspaces: ['web'], dependencies });
+  write('resource-node.json', { role: 'resources', entrypoint: 'packages/web/server/resource-node.js', workspaces: ['web'], dependencies });
   write('bun.lock', { packages: { resourceExample: ['resourceExample@1.0.0'],
     unusedExample: ['unusedExample@1.0.0'] } });
   write('packages/web/package.json', { name: '@varin/web', version: '1.0.0', dependencies });

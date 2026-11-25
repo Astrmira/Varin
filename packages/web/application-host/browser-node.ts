@@ -56,7 +56,9 @@ export async function startBrowserNode(options: BrowserNodeOptions) {
     stops.push(() => clients.dispose());
     const auth = nodeRoleBearerAuth(clients, useBrowser);
     const resources = new BrowserResources();
-    stops.push(() => resources.dispose());
+    let disposal: Promise<void> | undefined;
+    const disposeResources = () => disposal ??= resources.dispose();
+    stops.push(disposeResources);
     const store = createSettingsFileStore({ filePath: path.join(dataDir, 'browser-node-settings.json') });
     const settings = createBrowserSettings({ resources, read: () => store.read(), update: change => store.update(change),
       environment: { endpoint: options.endpoint, scratchDirectory } });
@@ -104,7 +106,18 @@ export async function startBrowserNode(options: BrowserNodeOptions) {
       server.once('error', reject);
       server.listen(port, options.host ?? '127.0.0.1', () => { server.off('error', reject); resolve(); });
     });
-    stops.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    stops.push(() => new Promise<void>((resolve, reject) => {
+      // Allow in-flight mutations to report their result. A hung upstream does
+      // not keep this node alive forever: disconnect that owner (never close
+      // Chromium) and let its existing unknown-effect response reach the peer.
+      const disconnect = setTimeout(() => { void disposeResources().catch(() => undefined); }, 5_000);
+      const force = setTimeout(() => server.closeAllConnections(), 8_000);
+      disconnect.unref(); force.unref();
+      server.close(error => {
+        clearTimeout(disconnect); clearTimeout(force);
+        if (error) reject(error); else resolve();
+      });
+    }));
     const found = server.address();
     if (!found || typeof found === 'string') throw new Error('Browser node failed to bind TCP');
     return { hostId, port: found.port, close };

@@ -66,9 +66,11 @@ export function verifyInstall(root = process.cwd()) {
   for (const dir of observed) assert(visited.has(dir), `Installed package is outside the resource dependency closure: ${dir}`);
   const entries = { resources: 'resource-node', browser: 'browser-node', computer: 'computer-node' };
   assert(Object.hasOwn(entries, runtime.role), 'Unexpected dedicated node role');
-  assert.equal(runtime.entrypoint ?? 'packages/web/server/resource-node.js', `packages/web/server/${entries[runtime.role]}.js`);
+  assert.equal(runtime.entrypoint, `packages/web/server/${entries[runtime.role]}.js`);
   assert.deepEqual(runtime.dependencies, read(path.join(root, 'packages/web/package.json')).dependencies);
-  for (const p of ['packages/web/dist', 'packages/web/bin', 'packages/web/server/index.js']) {
+  const otherEntries = Object.entries(entries).filter(([role]) => role !== runtime.role)
+    .map(([, name]) => `packages/web/server/${name}.js`);
+  for (const p of ['packages/web/dist', 'packages/web/bin', 'packages/web/server/index.js', ...otherEntries]) {
     assert(!fs.existsSync(path.join(root, p)), `Unexpected Host asset in resource node: ${p}`);
   }
   return { packages: visited.size - workspace.size, workspaces: workspace.size };
