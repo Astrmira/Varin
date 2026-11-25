@@ -44,6 +44,12 @@ async function fixture(options: { connect?: boolean; probeUnconfirmed?: boolean;
     if (params.command.action === 'bind') snapshot.conversation.sessionId = String(params.command.sessionId);
     if (params.command.action === 'child_list' || params.command.action === 'arrangement_pending') return [];
     if (params.command.action === 'read') return snapshot;
+    if (params.command.action === 'inspect_turn') return snapshot.turns.find(turn => turn.id === params.command.turnId);
+    if (params.command.action === 'queued_conversations') return [];
+    if (params.command.action === 'next_queued_turn') {
+      const turn = snapshot.turns.find(turn => turn.status === 'queued' && !turn.arrangementHoldReason && !turn.blockedReason);
+      return turn && !snapshot.conversation.activeTurn && !snapshot.conversation.needsReview ? { conversation: snapshot.conversation, turn } : null;
+    }
     if (params.command.action === 'connection_activity') return {
       hasTurns: snapshot.turns.length > 0,
       busy: Boolean(snapshot.conversation.activeTurn || snapshot.turns.some(turn => !['completed', 'failed', 'cancelled', 'interrupted'].includes(turn.status))),
@@ -772,7 +778,7 @@ it.each([false,true])('prepares project-only external children on the target own
     const c=params.command;actions.push(c);
     if(c.action==='settings')return {revision:1,defaultAgent:null,agents:[targetBinding.configuration]};
     if(c.action==='child_list')return [structuredClone(child)];
-    if(['cleanup_list','list','arrangement_pending'].includes(String(c.action)))return [];
+    if(['cleanup_list','queued_conversations','list','arrangement_pending'].includes(String(c.action)))return [];
     if(c.action==='read')return {conversation:{id:child.conversation_id,needsReview:false},turns:child.turn_id?[{id:child.turn_id,status:'completed'}]:[],items:[]};
     if(c.action==='child_source'){child={...child,source:c.source};return structuredClone(child);}
     if(c.action==='create')return c;

@@ -129,7 +129,10 @@ describe('shared settings read cache', () => {
       fsPromises: { ...fsPromises, readFile: ((...args: Parameters<typeof fsPromises.readFile>) => { reads++; return fsPromises.readFile(...args); }) as typeof fsPromises.readFile,
         stat: ((...args: Parameters<typeof fsPromises.stat>) => { stats++; return fsPromises.stat(...args); }) as typeof fsPromises.stat } };
     const first = createSettingsFileStore(options), second = createSettingsFileStore(options);
-    await first.read(); reads = 0; stats = 0;
+    assert.deepEqual(await first.read({ cache: false }), { nested: { value: 1 } });
+    await first.read();
+    assert.equal(reads, 2, 'a one-time load does not retain the serialized document');
+    reads = 0; stats = 0;
     for (let index = 0; index < 30; index++) {
       const value = await first.read(); (value.nested as { value: number }).value = 99;
       assert.deepEqual(second.readSync(), { nested: { value: 1 } });

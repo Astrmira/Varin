@@ -67,6 +67,9 @@ pub enum ExternalCommand {
     /// Trusted owner metadata, including tombstones; does not read Harness history.
     Inspect { id: String },
     ConnectionActivity { id: String },
+    QueuedConversations,
+    NextQueuedTurn { id: String },
+    InspectTurn { id: String, turn_id: String },
     UpdateReceipt { command: Box<ExternalCommand> },
     ArrangementPending,
     Defer { id: String, turn_id: String, reason: String },
@@ -419,6 +422,11 @@ mod tests {
         .unwrap();
         let a = &first["id"];
         let b = &second["id"];
+        let pending = json!({"action":"queued_conversations"});
+        let next = json!({"action":"next_queued_turn","id":"external:a"});
+        assert_eq!(call(&mut c, pending.clone()).unwrap(), json!(["external:a"]));
+        assert_eq!(&call(&mut c, next.clone()).unwrap()["turn"]["id"], a);
+        assert!(call(&mut c, json!({"action":"inspect_turn","id":"external:b","turnId":a})).is_err());
         assert!(
             call(
                 &mut c,
@@ -431,6 +439,8 @@ mod tests {
             json!({"action":"begin","id":"external:a","turnId":a}),
         )
         .unwrap();
+        assert_eq!(call(&mut c, pending.clone()).unwrap(), json!([]));
+        assert!(call(&mut c, next.clone()).unwrap().is_null());
         assert!(
             call(
                 &mut c,
@@ -443,6 +453,8 @@ mod tests {
             json!({"action":"observe","id":"external:a","turnId":a,"status":"completed"}),
         )
         .unwrap();
+        assert_eq!(call(&mut c, json!({"action":"inspect_turn","id":"external:a","turnId":a})).unwrap()["status"], "completed");
+        assert_eq!(&call(&mut c, next).unwrap()["turn"]["id"], b);
         assert!(
             call(
                 &mut c,
@@ -455,6 +467,8 @@ mod tests {
             json!({"action":"begin","id":"external:a","turnId":b}),
         )
         .unwrap();
+        call(&mut c, json!({"action":"observe","id":"external:a","turnId":b,"status":"completed"})).unwrap();
+        assert_eq!(call(&mut c, pending).unwrap(), json!([]));
     }
     #[test]
     fn external_completion_cannot_replace_the_original_native_turn_identity() {
@@ -822,6 +836,17 @@ pub(super) fn turn(db: &Connection, id: &str, turn_id: &str) -> Result<Value> {
     }
     Ok(v)
 }
+/// Queue order and arrangement holds are identical during discovery and admission.
+fn next_queued_turn(db: &Connection, id: &str) -> Result<Option<Value>> {
+    let mut query = db.prepare_cached(&format!("SELECT body FROM external_turns WHERE conversation_id=?1
+        AND {OPEN_TURN} AND json_extract(body,'$.status')='queued' AND json_extract(body,'$.blockedReason') IS NULL ORDER BY rowid"))?;
+    let mut rows = query.query([id])?;
+    while let Some(row) = rows.next()? {
+        let candidate: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        if followups::external::turn_hold(db, &candidate)?.is_none() { return Ok(Some(candidate)); }
+    }
+    Ok(None)
+}
 /// Shared short admission used by direct sends and durable arrangements. Content is already stored.
 pub(super) fn admit_turn(tx: &Transaction<'_>, id: &str, key: &str, input_ref: &Value, epoch: u64) -> Result<Value> {
     required(key)?;
@@ -975,6 +1000,25 @@ impl Catalog {
                 found
             }
             ExternalCommand::Inspect { id } => record::<Value>(&tx,"external_conversations",&id)?,
+            ExternalCommand::QueuedConversations => {
+                let mut query = tx.prepare(&format!("SELECT id FROM external_conversations
+                    WHERE id IN (SELECT conversation_id FROM external_turns WHERE {OPEN_TURN}
+                        AND json_extract(body,'$.status')='queued' AND json_extract(body,'$.blockedReason') IS NULL)
+                    AND json_extract(body,'$.deleted')=0 AND NOT coalesce(json_extract(body,'$.needsReview'),0)
+                    AND json_extract(body,'$.activeTurn') IS NULL"))?;
+                let ids = query.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                json!(ids)
+            }
+            ExternalCommand::NextQueuedTurn { id } => {
+                let conversation = conversation(&tx, &id)?;
+                if conversation["activeTurn"].is_null() && conversation["needsReview"] != true {
+                    next_queued_turn(&tx, &id)?.map_or(Value::Null, |turn| json!({"conversation":conversation,"turn":turn}))
+                } else { Value::Null }
+            }
+            ExternalCommand::InspectTurn { id, turn_id } => {
+                conversation(&tx, &id)?;
+                turn(&tx, &id, &turn_id)?
+            }
             ExternalCommand::ConnectionActivity { id } => {
                 let conversation = conversation(&tx, &id)?;
                 let (has_turns, open_turn, pending_child): (bool, bool, bool) = tx.query_row(
@@ -1485,14 +1529,8 @@ impl Catalog {
                         "external turn is already active or no longer queued".into(),
                     ));
                 }
-                let mut q=tx.prepare("SELECT body FROM external_turns WHERE conversation_id=?1 AND json_extract(body,'$.status')='queued' ORDER BY rowid")?;
-                let queued=q.query_map([&id],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
-                let mut first=None;
-                for raw in queued {
-                    let candidate:Value=serde_json::from_str(&raw)?;
-                    if candidate["blockedReason"].is_null() && followups::external::turn_hold(&tx,&candidate)?.is_none() {first=candidate["id"].as_str().map(str::to_owned);break;}
-                }
-                if first.as_deref() != Some(turn_id.as_str()) {
+                let first = next_queued_turn(&tx, &id)?;
+                if first.as_ref().and_then(|turn| turn["id"].as_str()) != Some(turn_id.as_str()) {
                     return Err(RuntimeError::Conflict(
                         "an earlier external input is queued".into(),
                     ));

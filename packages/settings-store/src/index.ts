@@ -16,7 +16,7 @@ export interface SettingsFileTransaction<Result> {
 
 export interface SettingsFileStore {
   readonly filePath: string;
-  read(): Promise<VarinSettingsDocument>;
+  read(options?: { cache?: boolean }): Promise<VarinSettingsDocument>;
   readSync(): VarinSettingsDocument;
   replace(settings: VarinSettingsDocument): Promise<VarinSettingsDocument>;
   transact<Result>(
@@ -144,7 +144,8 @@ export const createSettingsFileStore = ({
     }
   };
   const decode = (raw: string | null): VarinSettingsDocument => raw === null ? readDefault() : parseSettings(raw);
-  const read = async (): Promise<VarinSettingsDocument> => {
+  const read = async (options?: { cache?: boolean }): Promise<VarinSettingsDocument> => {
+    if (options?.cache === false) return decode(await load());
     // Watch notifications can lag behind completed writes (notably on macOS).
     // Verify identity on every read; only unchanged document text is reused.
     const next = await signature();
@@ -281,7 +282,6 @@ export const createSettingsFileStore = ({
       if (preserveMode) await fsPromises.chmod(temporaryPath, mode);
       await replaceFile(temporaryPath);
       invalidate();
-      cached.raw = raw;
     } finally {
       await fsPromises.rm(temporaryPath, { force: true });
     }

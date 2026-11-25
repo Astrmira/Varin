@@ -3179,7 +3179,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       await localKnowledgeEmbedder?.retire?.();
     },
   });
-  const unsubscribeKnowledgeEmbedding = settingsRuntime.subscribe(() => knowledgeVectors?.refreshAll());
+  const unsubscribeKnowledgeEmbedding = modelsService.settings.subscribeEmbedding(() => knowledgeVectors?.refreshAll());
   registerEmbeddingRequestRoutes(app, embeddingRequestSettings, uiAuthController.requireAuth);
   const storageService = createStorageService({
     hostId, name: os.hostname(), dataDirectory: VARIN_DATA_DIR,

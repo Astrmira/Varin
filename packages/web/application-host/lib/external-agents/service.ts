@@ -197,11 +197,11 @@ export class ExternalAgentsService {
     void this.reconcileChildren();
     void this.cleanupDeleted().catch((error) => this.deps.onError?.('external-cleanup', error));
     // Accepted, not-yet-started turns are safe to resume; interrupted deliveries are not replayed.
-    void this.list()
-      .then((all) => {
-        for (const c of all) this.advance(c.id);
+    void this.command<string[]>({ action: 'queued_conversations' })
+      .then((queued) => {
+        for (const id of queued) this.advance(id);
       })
-      .catch(() => {});
+      .catch(error => this.deps.onError?.('external-queue-recovery', error));
   }
   private reconcilingArrangements = false;
   private arrangementsDirty = false;
@@ -1356,31 +1356,27 @@ export class ExternalAgentsService {
     if (snapshot.conversation.deleted) throw new ExternalAgentError('conversation_deleted', 'This conversation was deleted');
     return this.requireAttachments().readExternal(snapshot.conversation, ref, signal);
   }
+  private nextQueuedTurn(id: string) {
+    return this.command<{ conversation: ExternalConversation; turn: ExternalTurn } | null>({ action: 'next_queued_turn', id });
+  }
+  private inspectTurn(id: string, turnId: string) {
+    return this.command<ExternalTurn>({ action: 'inspect_turn', id, turnId });
+  }
   private advance(id: string) {
     if (this.running.has(id) || this.stopping || this.retiring.has(id) || this.authenticating.has(id)) return;
     const work = this.drain(id).finally(async () => {
       if (this.running.get(id) !== work) return;
       this.running.delete(id);
-      if (!this.stopping) {
-        const snapshot = await this.read(id);
-        const next = snapshot.turns.find(t => t.status === 'queued' && !t.arrangementHoldReason && !t.blockedReason);
-        if (
-          !snapshot.conversation.activeTurn &&
-          !snapshot.conversation.needsReview &&
-          next && !next.arrangementHoldReason && !next.blockedReason
-        )
-          this.advance(id);
-      }
+      if (!this.stopping && await this.nextQueuedTurn(id)) this.advance(id);
     });
     this.running.set(id, work);
     void work.catch(() => this.notify(id));
   }
   private async drain(id: string) {
     while (!this.stopping) {
-      const snapshot = await this.read(id);
-      if (snapshot.conversation.needsReview || this.authenticating.has(id) || this.retiring.has(id)) return;
-      const turn = snapshot.turns.find((t) => t.status === 'queued' && !t.arrangementHoldReason && !t.blockedReason);
-      if (!turn || turn.arrangementHoldReason || turn.blockedReason || snapshot.conversation.activeTurn) return;
+      const next = await this.nextQueuedTurn(id);
+      if (!next || this.authenticating.has(id) || this.retiring.has(id)) return;
+      const { conversation, turn } = next;
       await this.command({ action: 'begin', id, turnId: turn.id });
       this.notify(id);
       let live: Live | undefined;
@@ -1486,10 +1482,10 @@ export class ExternalAgentsService {
           ...(input.attachmentImageReferences === undefined ? {} : { attachmentImageReferences: input.attachmentImageReferences }),
         });
         await flush();
-        if ((await this.read(id)).turns.find((t) => t.id === turn.id)?.status === 'stopping')
+        if ((await this.inspectTurn(id, turn.id)).status === 'stopping')
           throw new Error('External Agent startup cancelled');
         live = await this.connection(id, turn.arrangementLaunch ?? input._launch);
-        if ((await this.read(id)).turns.find((t) => t.id === turn.id)?.status === 'stopping')
+        if ((await this.inspectTurn(id, turn.id)).status === 'stopping')
           throw new Error('External Agent startup cancelled');
         if (input.images?.length && !live.connection.capabilities.images)
           throw new ExternalAgentError('images_unsupported', 'This Agent does not accept image input');
@@ -1498,7 +1494,7 @@ export class ExternalAgentsService {
         this.attachmentPreparations.set(id, preparation);
         let harnessInput: Awaited<ReturnType<typeof prepareHarnessInput>>;
         try {
-          harnessInput = await prepareHarnessInput({ ...admitted, attachments: [...(input.messages ?? []).flatMap(message => message.attachments ?? []), ...(input.attachments ?? [])] }, snapshot.conversation, live.connection.capabilities, live.attachments ?? this.attachments, preparation.controller.signal);
+          harnessInput = await prepareHarnessInput({ ...admitted, attachments: [...(input.messages ?? []).flatMap(message => message.attachments ?? []), ...(input.attachments ?? [])] }, conversation, live.connection.capabilities, live.attachments ?? this.attachments, preparation.controller.signal);
         } finally {
           if (this.attachmentPreparations.get(id) === preparation) this.attachmentPreparations.delete(id);
         }
@@ -1508,7 +1504,7 @@ export class ExternalAgentsService {
             if (dispatched) throw new Error('This external input has already been dispatched');
             if (this.connections.get(id)?.generation !== generation || live!.connection.failure)
               throw new Error('The external connection changed before delivery');
-            const current = (await this.read(id)).turns.find((t) => t.id === turn.id);
+            const current = await this.inspectTurn(id, turn.id);
             if (current?.status === 'stopping') throw new Error('External Agent startup cancelled');
             await this.command({ action: 'observe', id, turnId: turn.id, status: 'running' });
             dispatched = true;
@@ -1577,7 +1573,7 @@ export class ExternalAgentsService {
         });
       } catch (error) {
         await flush().catch(() => {});
-        const current = (await this.read(id)).turns.find((v) => v.id === turn.id);
+        const current = await this.inspectTurn(id, turn.id);
         const stoppedPreparation =
           !dispatched && current?.status === 'stopping' && !(error instanceof AggregateError);
         if (current && ended(current)) return;
