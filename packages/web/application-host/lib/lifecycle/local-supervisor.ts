@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { SupervisorJournal } from './supervisor-journal.js';
 import type { FollowupEventReceiveParams } from '@varin/protocol';
@@ -27,6 +28,25 @@ function ensureRunning(command: string[]): Promise<void> {
   });
 }
 
+/** Absolute wake deadlines can outlive a Node timer. Re-read the original
+ * revision periodically so another supervisor can replace this registration. */
+export async function waitForPublishedWake(
+  journal: Pick<SupervisorJournal, 'currentWake' | 'reconcileDueWake'>,
+  revision: number,
+  ensureReady: () => Promise<void>,
+  clock = { now: Date.now, wait: (ms: number) => sleep(ms) },
+): Promise<'stale' | 'waiting' | 'ready'> {
+  if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Invalid wake revision');
+  for (;;) {
+    const publication = await journal.currentWake();
+    if (publication?.revision !== revision) return 'stale';
+    if (publication.nextWakeAtMs === null) return 'waiting';
+    const now = clock.now();
+    if (publication.nextWakeAtMs <= now) return journal.reconcileDueWake(revision, now, ensureReady);
+    await clock.wait(Math.min(publication.nextWakeAtMs - now, 60_000));
+  }
+}
+
 async function main(argv: string[]): Promise<unknown> {
   const [directory, owner, action, ...args] = argv;
   if (!directory || !owner) throw new Error('Supervisor journal and owner are required');
@@ -39,6 +59,9 @@ async function main(argv: string[]): Promise<unknown> {
   if (action === 'status' && !args.length) return { wake: await journal.currentWake(), pending: await journal.hasPendingEvents() };
   if (action === 'wake-due' && args.length > 2 && /^\d+$/.test(args[0]!) && args[1] === '--') {
     return { wake: await journal.reconcileDueWake(Number(args[0]), Date.now(), () => ensureRunning(args.slice(2))) };
+  }
+  if (action === 'wait-due' && args.length > 2 && /^\d+$/.test(args[0]!) && args[1] === '--') {
+    return { wake: await waitForPublishedWake(journal, Number(args[0]), () => ensureRunning(args.slice(2))) };
   }
   if (action === 'wake-inbox' && args.length > 1 && args[0] === '--') {
     if (!await journal.hasPendingEvents()) return { wake: 'waiting' };

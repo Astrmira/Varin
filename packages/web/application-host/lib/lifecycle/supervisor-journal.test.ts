@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt } from '@varin/protocol';
 import { SupervisorJournal } from './supervisor-journal.js';
 import { startSupervisorInbox } from './supervisor-inbox.js';
+import { waitForPublishedWake } from './local-supervisor.js';
 
 const owner = 'stable-original-owner';
 const identity = { principalId: 'original-user', source: { extensionId: 'original.extension', sourceId: 'events', connectionId: 'connection', accountId: 'account' } };
@@ -80,6 +81,32 @@ it('recovers a durable wake publication and fences superseded wake notifications
   expect((await readdir(folder)).filter(file => file.startsWith('wake-ready'))).toEqual(['wake-ready-0000000000000042.json']);
   await expect(supervisor.publishWake({ revision: 41, nextWakeAtMs: 100 })).rejects.toThrow('Stale');
   await expect(supervisor.publishWake({ revision: 42, nextWakeAtMs: 201 })).rejects.toThrow('key conflict');
+}));
+
+it('keeps a 26 day deadline absolute while rejecting a replaced timer and recovering an already due wake', async () => inDirectory(async folder => {
+  const journal = await SupervisorJournal.open(folder, owner);
+  const due = 26 * 24 * 60 * 60 * 1000;
+  await journal.publishWake({ revision: 1, nextWakeAtMs: due });
+  const ensureReady = vi.fn(async () => {});
+  let now = 0;
+  const wait = vi.fn(async (ms: number) => {
+    expect(ms).toBe(60_000);
+    now += ms;
+    await journal.publishWake({ revision: 2, nextWakeAtMs: due });
+  });
+  expect(await waitForPublishedWake(journal, 1, ensureReady, { now: () => now, wait })).toBe('stale');
+  expect(wait).toHaveBeenCalledOnce();
+  expect(ensureReady).not.toHaveBeenCalled();
+
+  const recovered = await SupervisorJournal.open(folder, owner);
+  const finalWait = vi.fn(async (ms: number) => { now += ms; });
+  now = due - 2;
+  expect(await waitForPublishedWake(recovered, 2, ensureReady, { now: () => now, wait: finalWait })).toBe('ready');
+  expect(finalWait).toHaveBeenCalledExactlyOnceWith(2);
+  expect(ensureReady).toHaveBeenCalledOnce();
+  expect(await waitForPublishedWake(recovered, 2, ensureReady, { now: () => now, wait: finalWait })).toBe('ready');
+  expect(finalWait).toHaveBeenCalledOnce();
+  expect(ensureReady).toHaveBeenCalledTimes(2);
 }));
 
 it('watches foreground inboxes and leaves unverifiable acknowledgements queued', async () => inDirectory(async folder => {

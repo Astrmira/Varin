@@ -2,7 +2,7 @@
 
 Design proposal, 2026-11-25. Source baseline `0581422ca439d75c85b8aaf45b18ed4b63b29720`.
 
-Implemented first slices: [dormant native launch defaults](../../packages/web/application-host/lib/kernel/THREADS.md#dormant-launch-work-locations), passive Browser/Computer discovery and selected activation, worker/connection retention, the [resource-node package](../ops/cloud-deployment.md) and authenticated Host activity. Existing explicit project/native workspace preparation remains when needed to capture its admitted context. Separate native live-location child/script authority, independent managed Browser/Computer deployment, and durable ingress/wake handoff for automatic Host parking are not supplied by these slices. The activity view does not request parking or repurpose cancelling shutdown.
+Implemented: [dormant native launch defaults and scoped child file access](../../packages/web/application-host/lib/kernel/THREADS.md#dormant-launch-work-locations), passive Browser/Computer discovery and selected activation, worker/connection retention, independently locked [File, Browser and Computer roles](../ops/cloud-deployment.md), authenticated Host activity and an opt-in [local supervisor journal](../runtime.md). Existing explicit project/native workspace preparation remains when needed to capture its admitted context. Source-dependent script providers stay cold without an eligible physical Source; launching a script against a dormant default still needs its own Operation-scoped binding. The local supervisor accepts selected preauthenticated event pages, not arbitrary HTTP writes, and does not enable automatic Host parking.
 
 This proposal covers the open-source runtime, resource owners, clients and distribution. It follows the [resource optimization work](resource-optimization.md) and prepares reusable integration points for a separately operated hosted product. The behavior below is proposed unless identified as current implementation. Startup latency, retained memory and idle policy values require measurements on the resulting implementation.
 
@@ -208,6 +208,8 @@ Wake publication and subsequent changes need recovery after a crash. Use durable
 
 Open-source deployments can keep the Host online when they have no external wake supervisor. An ordinary sleeping Host cannot receive its own network request or run its own timer. Scheduled work and event listeners must retain a running owner until their actual delivery has been handed off.
 
+The default Compose Application Host runs as the foreground application with a restart policy. To park it without an immediate restart, the supervised deployment must keep its ingress/supervisor resident while the Host process exits, or use a deployment policy that distinguishes a park from a crash. Acceptance must observe an absent Host process before wake and preserve an authenticated submission already past the initial HTTP gate but not yet acknowledged by the Catalog.
+
 This step extends [shutdown](../../packages/web/application-host/lib/shutdown-runtime.ts), [admission drain](../../packages/web/application-host/lib/draining-admission.ts), [runtime ownership](../runtime.md), [scheduled tasks](../../packages/web/application-host/lib/scheduled-tasks/DOCUMENTATION.md) and [Bot lifecycle](../../packages/web/application-host/lib/bots/bot-lifecycle-runtime.ts).
 
 ## Independent roles and distribution
@@ -224,7 +226,7 @@ Provide deployable roles with exact dependency closures and compatible versioned
 
 A device may assemble several roles and share one physical browser or filesystem. Each role advertises its actual supported capabilities. Reuse the existing Host and resource-node assembly functions and extract capability-specific wiring as roles become deployable.
 
-First give `varin-node` an exact production dependency closure, lockfile/build verification and role-specific health checks. It currently removes the UI and main entrypoint from the application tree while retaining the shared production dependency set. Reproducible packaging must check the installed dependency graph as well as entrypoint files. Shared image layers can still contain useful common tools.
+Each dedicated role has its own production lockfile and verifies the installed dependency graph and entrypoint. Dedicated role readiness checks control-plane liveness, not whether Chromium, a platform desktop driver or an application is presently available. Shared image layers can still contain useful common tools.
 
 Add browser and computer role assembly from the existing services. A browser-only node carries its profile/transfer dependencies. Computer images or installers include the driver and applications required by that platform. Native file nodes include the selected FUSE/FSKit/macFUSE/WinFsp support and preserve its existing mount behavior. Full and Light Desktop keep their respective local-service and remote-client assembly.
 

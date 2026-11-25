@@ -32,15 +32,16 @@ export async function createNodeRoleKernel(dataDir: string, kernelPath?: string)
   return { hostId, kernel, version };
 }
 
-export function openNodeRoleAuth(dataDir: string) {
+type NodeRoleClients = ReturnType<typeof createRemoteClientAuthRuntime>;
+export function openNodeRoleAuth(dataDir: string): { clients: NodeRoleClients } {
   const principals = createPrincipalStore(path.join(dataDir, 'ui-principals.json'));
   const clients = createRemoteClientAuthRuntime({ crypto, fsPromises: fs, path,
     storePath: path.join(dataDir, 'remote-clients.json'), principals });
-  return { clients, principals };
+  return { clients };
 }
 
 export async function withNodeRoleState<T>(dataDir: string, kernelPath: string | undefined,
-  work: (clients: ReturnType<typeof openNodeRoleAuth>['clients']) => Promise<T>): Promise<T> {
+  work: (clients: NodeRoleClients) => Promise<T>): Promise<T> {
   const { kernel } = await createNodeRoleKernel(dataDir, kernelPath);
   try {
     await kernel.start();
@@ -91,7 +92,9 @@ export async function revokeNodeRoleClient(dataDir: string, kernelPath: string |
   });
 }
 
-export function nodeRoleBearerAuth(clients: ReturnType<typeof openNodeRoleAuth>['clients'], capability: string) {
+export function nodeRoleBearerAuth(clients: NodeRoleClients, capability: string): {
+  requireAuth: RequestHandler; clientId(request: Request): Promise<string | undefined>;
+} {
   const callers = new WeakMap<Request, string>();
   const requireAuth: RequestHandler = async (request, response, next) => {
     try {

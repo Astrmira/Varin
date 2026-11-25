@@ -107,6 +107,9 @@ supervisor to run under that same account:
   writes a ready receipt only when the supplied readiness command succeeds and
   the revision is still current. The outer supervisor supplies the timer and
   an idempotent command that waits for the same logical Host's readiness.
+  `wait-due REVISION -- EXECUTABLE ARG...` can instead wait on that absolute
+  deadline locally. It returns stale if the registration is superseded and
+  checks long deadlines in bounded intervals rather than scheduling one timer.
 - `accept PAGE_KEY < page.json` fsyncs an original Catalog event page before
   returning an acceptance receipt. `wake-inbox -- EXECUTABLE ARG...` lets the
   supervisor start or reconcile the original Host when accepted input is waiting.
