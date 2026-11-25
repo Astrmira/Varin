@@ -79,7 +79,12 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
       watchingAssets: calendar.watchingAssets,
     },
     retention: { observationStreams: observations, externalIngressActive: ingress, reasons: retentionReasons },
-    owners: {browser,computerOperations,dictation},
+    owners: {
+      browser: browser && {preparing:browser.preparing,activePageWrites:browser.activePageWrites,
+        waitingPageWrites:browser.waitingPageWrites,outstandingStopConfirmations:browser.outstandingStopConfirmations},
+      computerOperations,
+      dictation: dictation && {state:dictation.state,pendingRequests:dictation.pendingRequests,sessions:dictation.sessions,warm:dictation.warm},
+    },
     parking: { supported: false, eligible: false },
   } as const;
 };

@@ -19,6 +19,9 @@ it('serves authenticated, content-free owner activity even while shutting down',
     signal => projectHostActivity({
       draining: () => true, kernelEpoch: () => 'same', observationStreams: () => 2,
       externalIngressActive: () => true, admission, calendar,
+      browser: () => ({preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0,privatePage:'do not publish'}),
+      computerOperations: () => 1,
+      dictation: () => ({state:'retiring',pendingRequests:0,sessions:0,warm:false,privateTranscript:'do not publish'}),
     }, signal),
   );
   const unauthorized = await request(app).get(HOST_ACTIVITY_PATH).expect(401);
@@ -35,8 +38,11 @@ it('serves authenticated, content-free owner activity even while shutting down',
       observationStreams: 2, externalIngressActive: true,
       reasons: ['host-draining', 'catalog-local-compute', 'catalog-queued-work', 'calendar-active-occurrence',
         'calendar-pending-delivery', 'calendar-reconciliation', 'calendar-asset-watch', 'calendar-wake-not-transferred',
-        'http-observation-streams', 'external-ingress-active', 'owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'],
+        'http-observation-streams', 'external-ingress-active', 'browser-owner-activity', 'computer-owner-activity', 'dictation-owner-activity',
+        'owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'],
     },
+    owners: {browser:{preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0},
+      computerOperations:1,dictation:{state:'retiring',pendingRequests:0,sessions:0,warm:false}},
     parking: { supported: false, eligible: false },
   });
 });
@@ -54,6 +60,7 @@ it('keeps missing owner facts distinct from zero and never advertises parking', 
   const result = await projectHostActivity(owners, new AbortController().signal);
   expect(result.catalog).toBeNull();
   expect(result.calendar?.activeOccurrences).toBe(0);
+  expect(result.owners).toEqual({browser:null,computerOperations:null,dictation:null});
   expect(result.retention.reasons).toContain('catalog-admission-unavailable');
   expect(result.parking).toEqual({ supported: false, eligible: false });
   expect(JSON.stringify(result)).not.toContain('secret content');
