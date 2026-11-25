@@ -19,11 +19,15 @@ const kernelPath = process.env.VARIN_TEST_KERNEL_PATH;
 const liveTimeout = { interval: 100, timeout: 12_000 };
 
 async function localPage() {
+  const text = 'Local browser acceptance ' + randomUUID();
+  let served = 0;
   const server = http.createServer((request, response) => {
     if (request.url !== '/continuity') { response.writeHead(404).end(); return; }
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.setHeader('Content-Security-Policy', "default-src 'none'");
-    response.end('<!doctype html><title>Varin continuity fixture</title><p id="fixture">Local browser acceptance</p>');
+    response.setHeader('Cache-Control', 'no-store');
+    response.once('finish', () => { served++; });
+    response.end(`<!doctype html><meta charset="utf-8"><title>Varin continuity fixture</title><p id="fixture">${text}</p>`);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -32,7 +36,7 @@ async function localPage() {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Local page did not bind TCP');
   return {
-    url: 'http://127.0.0.1:' + address.port + '/continuity',
+    url: 'http://127.0.0.1:' + address.port + '/continuity', text, served: () => served,
     close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
   };
 }
@@ -42,7 +46,9 @@ async function chromium(binary: string, profile: string, home: string, port = 0)
   // profile, disables Chromium's sandbox, or contacts a remote test site.
   const child = spawn(binary, ['--headless', '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-component-update', '--disable-sync',
-    '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost',
+    // Chrome uses the literal IPv4 address here, not the localhost alias.
+    // Keep all other DNS lookups blocked and never route the fixture via a proxy.
+    '--no-proxy-server', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
     '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], {
     env: { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_CACHE_HOME: path.join(home, 'cache') },
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -140,12 +146,29 @@ it.skipIf(!executable)('preserves Chromium profile and process identity independ
       return { browserId, instanceId: resource.instanceId! };
     };
     const open = async (browser: BrowserResourceBinding) => {
-      const tab = await coordinator.use(browser, {}, owner => owner.open({ url: page!.url, retained: true }, {}), { writes: true });
+      const fixture = page!;
+      const previousResponses = fixture.served();
+      const tab = await coordinator.use(browser, {}, owner => owner.open({ url: fixture.url, retained: true }, {}), { writes: true });
       const binding = { ...browser, pageId: tab.pageId };
-      await expect.poll(async () => {
+      try {
+        // Target listing can carry the address-bar fallback title, including on
+        // navigation failure. Match actual frame/document text over the owner API.
+        await expect.poll(async () => {
+          try {
+            const observed = await coordinator.use(binding, {}, owner => owner.read({ pageId: tab.pageId, view: 'text' }, AbortSignal.timeout(2_000)));
+            return { url: observed.frames.find(frame => !frame.parentId)?.url,
+              hasDocument: observed.text?.includes(fixture.text) === true, served: fixture.served() > previousResponses };
+          } catch (error) {
+            return { observationError: error instanceof Error ? error.message : String(error), served: fixture.served() > previousResponses };
+          }
+        }, liveTimeout).toMatchObject({ url: fixture.url, hasDocument: true, served: true });
+      } catch (error) {
         const tabs = await coordinator.use(browser, {}, owner => owner.list()).catch(() => []);
-        return tabs.find(item => item.pageId === tab.pageId);
-      }, liveTimeout).toMatchObject({ url: page!.url, title: 'Varin continuity fixture' });
+        const target = tabs.find(item => item.pageId === tab.pageId);
+        throw new Error(`Fixture page did not load (local responses: ${fixture.served() - previousResponses}; target URL: ${target?.url}; target title: ${target?.title})`, { cause: error });
+      }
+      expect(await evaluate(binding, '({url: location.href, title: document.title, body: document.querySelector("#fixture")?.textContent})'))
+        .toEqual({ url: fixture.url, title: 'Varin continuity fixture', body: fixture.text });
       return binding;
     };
     const evaluate = async (binding: BrowserResourceBinding, script: string) => (
