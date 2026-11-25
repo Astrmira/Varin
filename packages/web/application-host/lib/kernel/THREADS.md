@@ -350,3 +350,11 @@ cannot discover devices, switch location, transfer files, or acquire command
 execution from that descriptor. Both the Catalog and Host check the original
 dispatch and recorded launch before binding. Child continuations and explicit
 project/fixed/native selections keep their existing behavior.
+
+The bundled script evaluator can also open an environment on an admitted
+ordinary Run's dormant local default. It first resolves the original saved
+directory and applies the same context-reissue check. The Catalog retains the
+physical Source on the `script_open` Operation before process dispatch; later
+cells, close and restart reconciliation address that original environment.
+The Run's default does not become a physical binding, and a managed dormant
+directory or delegated child cannot activate this local route.

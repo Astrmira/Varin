@@ -48,7 +48,7 @@ mod inference_commands;
 #[path = "agent_inference_generation.rs"]
 mod inference_generation_commands;
 #[path = "agent_managed_process.rs"]
-mod managed_process_commands;
+pub(crate) mod managed_process_commands;
 #[path = "agent_mcp_interactions.rs"]
 mod mcp_interaction_commands;
 #[path = "agent_mcp_resources.rs"]

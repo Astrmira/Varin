@@ -123,7 +123,8 @@ pub(crate) fn delegated(parent: &[ToolSchema]) -> Vec<ToolSchema> {
         .map(|definition| definition.schema.name).collect::<std::collections::BTreeSet<_>>();
     parent
         .iter()
-        .filter(|tool| !crate::work_locations::is_control(&tool.name) && !main_only.contains(&tool.name))
+        .filter(|tool| !crate::work_locations::is_control(&tool.name) && !main_only.contains(&tool.name)
+            && !crate::agent_runtime::managed_process_commands::dormant_script_tool(tool))
         .cloned()
         .collect()
 }

@@ -2015,7 +2015,7 @@
     "ManagedProcessTerminalParams": {"fields":{"operationId":{"type":"string"},"executionOwner":{"type":"ExecutorOwner"},"toolBinding":{"type":"unknown","optional":true},"callbacksStopped":{"type":"boolean"}}},
     "ManagedProcessCellParams": {"fields":{"operationId":{"type":"string"},"executionOwner":{"type":"ExecutorOwner"},"environmentId":{"type":"string"},"closing":{"type":"boolean"}}},
     "ManagedProcessAcceptParams": {"fields":{"operationId":{"type":"string"},"executionOwner":{"type":"ExecutorOwner"},"toolBinding":{"type":"unknown"}}},
-    "ManagedProcessBeginParams": {"fields":{"operationId":{"type":"string"},"executionOwner":{"type":"ExecutorOwner"},"node":{"type":"NodeBinding"}}},
+    "ManagedProcessBeginParams": {"fields":{"operationId":{"type":"string"},"executionOwner":{"type":"ExecutorOwner"},"node":{"type":"NodeBinding"},"preparedSource":{"type":"LaunchSource","optional":true}}},
     "ManagedProcess": {"raw":"export interface ManagedProcess { purpose: ManagedProcessKind; kernel_epoch: string | null; }","rustType":"varin_runtime::catalog::managed_process::ManagedProcess"},
     "ManagedProcessKind": {"raw":"export type ManagedProcessKind = {kind:'process_job'} | {kind:'script_environment';node:NodeBinding};","rustType":"varin_runtime::catalog::managed_process::ManagedProcessKind"},
     "NodeBinding": {"raw":"export interface NodeBinding { executable: string; worker_path: string; worker_identity: string; configuration_identity: string; }","rustType":"varin_runtime::catalog::managed_process::NodeBinding"},

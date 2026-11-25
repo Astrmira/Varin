@@ -1767,6 +1767,7 @@ export interface ManagedProcessBeginParams {
   operationId: string;
   executionOwner: ExecutorOwner;
   node: NodeBinding;
+  preparedSource?: LaunchSource;
 }
 
 export interface ManagedProcess { purpose: ManagedProcessKind; kernel_epoch: string | null; }

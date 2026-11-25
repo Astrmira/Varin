@@ -1177,6 +1177,7 @@ pub(crate) struct ManagedProcessBeginParams {
     pub(crate) operation_id: String,
     pub(crate) execution_owner: varin_runtime::ExecutorOwner,
     pub(crate) node: varin_runtime::catalog::managed_process::NodeBinding,
+    pub(crate) prepared_source: Option<LaunchSource>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
