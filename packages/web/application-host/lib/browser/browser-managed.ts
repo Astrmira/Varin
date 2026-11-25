@@ -124,6 +124,7 @@ export function managedBrowserThread(clientId: string, coordinatorHostId: string
 export function registerManagedBrowserRoutes(app: Express, options: {
   hostId: string; resources: BrowserResources; requireAuth: RequestHandler;
   settings?: BrowserSettingsOwner;
+  allowProbe?: boolean;
   clientId(request: Request): Promise<string | undefined>;
 }) {
   const principals = new WeakMap<Request, string>();
@@ -168,7 +169,7 @@ export function registerManagedBrowserRoutes(app: Express, options: {
     const settings = await options.settings.save(req.body.revision, req.body);
     res.json({ settings, resources: await options.resources.list({ localOnly: true }) });
   }));
-  app.post(`${base}/probe`, route(async (req, res) => { res.json(await probeBrowserConnection(req.body)); }));
+  if (options.allowProbe !== false) app.post(`${base}/probe`, route(async (req, res) => { res.json(await probeBrowserConnection(req.body)); }));
   app.post(`${base}/call`, route(async (req, res) => {
     const call = parseCall(req.body);
     const resource = (await options.resources.list({ localOnly: true })).find(item => item.browserId === call.browserId);

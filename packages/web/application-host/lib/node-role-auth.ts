@@ -8,7 +8,6 @@ import { createRemoteClientAuthRuntime } from './client-auth/remote-clients.js';
 import { assertDataRootMayStart } from './data-restore-guard.js';
 import { createKernelClient } from './kernel/kernel-client.js';
 import { createPrincipalStore } from './ui-auth/principals.js';
-import type { createUiAuth } from './ui-auth/ui-auth.js';
 import { canonicalizePathIdentity, isPathWithinRoot } from './workspace/path-safety.js';
 
 export function nodeRoleAbsolute(value: string | undefined, name: string): string {
@@ -92,13 +91,21 @@ export async function revokeNodeRoleClient(dataDir: string, kernelPath: string |
   });
 }
 
-export async function resolveNodeRoleClient(auth: ReturnType<typeof createUiAuth>, request: Request, capability: string) {
-  if (!/^Bearer /i.test(request.get('Authorization') ?? '')) return undefined;
-  const context = await auth.resolveAuthContext(request, null, { allowUrlToken: false });
-  if (context?.type !== 'client' || typeof context.clientId !== 'string' || !context.client?.capabilities.includes(capability)) return undefined;
-  return context.clientId;
+export function nodeRoleBearerAuth(clients: ReturnType<typeof openNodeRoleAuth>['clients'], capability: string) {
+  const callers = new WeakMap<Request, string>();
+  const requireAuth: RequestHandler = async (request, response, next) => {
+    try {
+      const authorization = request.headers.authorization;
+      const token = typeof authorization === 'string' ? /^Bearer ([^\s,]{1,1024})$/i.exec(authorization)?.[1] : undefined;
+      const verified = token ? await clients.authenticateBearerToken(token, request) : undefined;
+      if (!verified) { response.status(401).json({ error: 'A paired role credential is required' }); return; }
+      if (!verified.client.capabilities.includes(capability)) { response.status(403).json({ error: 'This role is not granted' }); return; }
+      callers.set(request, verified.clientId);
+      next();
+    } catch (error) { next(error); }
+  };
+  return { requireAuth, clientId: async (request: Request) => callers.get(request) };
 }
-
 
 /** Same authenticated receipt consumed by configured Host peers, without file or process routes. */
 export function registerNodeRoleIdentity(app: Express, options: {

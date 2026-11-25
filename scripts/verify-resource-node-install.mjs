@@ -64,7 +64,9 @@ export function verifyInstall(root = process.cwd()) {
   inspect(path.join(root, 'node_modules'));
   for (const dir of workspace) inspect(path.join(dir, 'node_modules'));
   for (const dir of observed) assert(visited.has(dir), `Installed package is outside the resource dependency closure: ${dir}`);
-  assert.equal(runtime.role, 'resources');
+  const entries = { resources: 'resource-node', browser: 'browser-node', computer: 'computer-node' };
+  assert(Object.hasOwn(entries, runtime.role), 'Unexpected dedicated node role');
+  assert.equal(runtime.entrypoint ?? 'packages/web/server/resource-node.js', `packages/web/server/${entries[runtime.role]}.js`);
   assert.deepEqual(runtime.dependencies, read(path.join(root, 'packages/web/package.json')).dependencies);
   for (const p of ['packages/web/dist', 'packages/web/bin', 'packages/web/server/index.js']) {
     assert(!fs.existsSync(path.join(root, p)), `Unexpected Host asset in resource node: ${p}`);
@@ -93,5 +95,10 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   // Resolve the real compiled module under TARGETPLATFORM, not a graph-only fixture.
   await verifyKernelBundle(root);
   const manifest = read(path.join(root, 'resource-node.json'));
+  if (manifest.role === 'computer') {
+    const platform = { linux: 'linux/driver-host.py', darwin: 'macos/Varin Computer.app/Contents/MacOS/VarinComputer',
+      win32: 'windows/VarinComputer.exe' }[process.platform];
+    assert(platform && fs.existsSync(path.join(root, 'packages/web/server/computer-driver', platform)), 'Missing platform Computer driver');
+  }
   await import(pathToFileURL(path.join(root, manifest.entrypoint)).href);
 }

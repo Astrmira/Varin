@@ -8,8 +8,12 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const root = path.resolve(import.meta.dirname, '..');
-const entrypoint = 'packages/web/server/resource-node.js';
-const lockPath = path.join(root, 'scripts/resource-node.bun.lock');
+const roleEntry = { resources: 'resource-node', browser: 'browser-node', computer: 'computer-node' };
+function selectRole(role) {
+  if (!Object.hasOwn(roleEntry, role)) throw new Error('Unknown dedicated node role');
+  const basename = roleEntry[role];
+  return { basename, entrypoint: `packages/web/server/${basename}.js`, lockPath: path.join(root, `scripts/${basename}.bun.lock`) };
+}
 const original = (relative) => path.join(root, relative);
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const writeJson = (file, json) => {
@@ -25,7 +29,7 @@ const run = (cwd, command, args) => {
   if (out.error || out.status !== 0) throw out.error ?? new Error(`${command} exited ${out.status}`);
 };
 
-export function collectResourceClosure(serverDir, ts) {
+export function collectResourceClosure(serverDir, ts, basename = 'resource-node') {
   const seen = new Set();
   const references = new Set();
   const assetFiles = new Set();
@@ -88,6 +92,8 @@ export function collectResourceClosure(serverDir, ts) {
             const asset = path.join(serverDir, target);
             // Kernel release assets are staged separately under packages/web/kernel.
             if (target.startsWith('../kernel/')) { /* packaged with the kernel */ }
+            else if (basename === 'computer-node' && filename === 'lib/computer/driver-host.js' &&
+              (target === 'computer-driver' || target === '../../computer-driver')) { /* target driver staged separately */ }
             else if (target.startsWith('..') || !fs.existsSync(asset)) throw new Error(`Unshippable node asset: ${filename} -> ${relative}`);
             else assetFiles.add(target);
           }
@@ -97,7 +103,7 @@ export function collectResourceClosure(serverDir, ts) {
     }
     walk(source);
   }
-  visit('resource-node.js');
+  visit(`${basename}.js`);
   const manifest = readJson(original('packages/web/package.json'));
   const dependencies = {};
   for (const name of references) {
@@ -107,7 +113,7 @@ export function collectResourceClosure(serverDir, ts) {
   return { files: [...seen, ...assetFiles].sort(), dependencies: sort(dependencies) };
 }
 
-function roleManifests(dependencies) {
+function roleManifests(dependencies, basename) {
   const manifest = readJson(original('package.json'));
   const host = readJson(original('packages/web/package.json'));
   const packages = new Map([['web', { name: host.name, version: host.version, type: 'module', private: true, dependencies }]]);
@@ -127,7 +133,7 @@ function roleManifests(dependencies) {
   return {
     packages,
     rootPackage: {
-      name: 'varin-resource-node', private: true, type: 'module', license: manifest.license,
+      name: `varin-${basename}`, private: true, type: 'module', license: manifest.license,
       version: manifest.version, packageManager: manifest.packageManager, engines: manifest.engines,
       workspaces: ['packages/*'], overrides: manifest.overrides, trustedDependencies: [],
       patchedDependencies: Object.fromEntries(['braces@3.0.3', 'picomatch@4.0.7']
@@ -162,7 +168,8 @@ export function validateResourceNodeLock(output) {
 
 // Refresh existing role metadata for dependency updates without compiling the Host.
 // Changes to the role import graph still need the artifact-driven --update-lock.
-export function checkResourceNodeLock({ update = false } = {}) {
+export function checkResourceNodeLock({ update = false, role = 'resources' } = {}) {
+  const { basename, lockPath } = selectRole(role);
   const canonical = readLock(lockPath);
   const host = readJson(original('packages/web/package.json'));
   const dependencies = {};
@@ -172,7 +179,7 @@ export function checkResourceNodeLock({ update = false } = {}) {
     }
     dependencies[name] = host.dependencies[name];
   }
-  const { packages, rootPackage } = roleManifests(sort(dependencies));
+  const { packages, rootPackage } = roleManifests(sort(dependencies), basename);
   const output = fs.mkdtempSync(path.join(tmpdir(), 'varin-resource-lock-'));
   try {
     writeJson(path.join(output, 'package.json'), rootPackage);
@@ -202,10 +209,11 @@ export function checkResourceNodeLock({ update = false } = {}) {
   }
 }
 
-export async function stageResourceNode({ source, output, update = false }) {
+export async function stageResourceNode({ source, output, update = false, role = 'resources' }) {
+  const { basename, entrypoint, lockPath } = selectRole(role);
   const ts = (await import('typescript')).default;
-  const closure = collectResourceClosure(path.join(source, 'packages/web/server'), ts);
-  const { packages, rootPackage } = roleManifests(closure.dependencies);
+  const closure = collectResourceClosure(path.join(source, 'packages/web/server'), ts, basename);
+  const { packages, rootPackage } = roleManifests(closure.dependencies, basename);
   if (fs.existsSync(output)) throw new Error('Resource-node output must be a new directory');
   writeJson(path.join(output, 'package.json'), rootPackage);
   const copy = (src, relative) => {
@@ -230,9 +238,10 @@ export async function stageResourceNode({ source, output, update = false }) {
     copy(path.join(source, relative), relative);
   }
   copy(path.join(source, 'packages/web/kernel'), 'packages/web/kernel');
+  if (role === 'computer') copy(path.join(source, 'packages/web/server/computer-driver'), 'packages/web/server/computer-driver');
   copy(original('scripts/verify-resource-node-install.mjs'), 'verify-resource-node-install.mjs');
   writeJson(path.join(output, 'resource-node.json'), {
-    schemaVersion: 1, role: 'resources', entrypoint,
+    schemaVersion: 1, role, entrypoint,
     workspaces: [...packages.keys()].sort(), dependencies: closure.dependencies,
   });
 
@@ -253,13 +262,17 @@ export async function stageResourceNode({ source, output, update = false }) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  const [source, output, flag] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const roleIdx = args.indexOf('--role');
+  const role = roleIdx === -1 ? 'resources' : args.splice(roleIdx, 2)[1];
+  selectRole(role);
+  const [source, output, flag, extra] = args;
   if ((source === '--check-lock' || source === '--update-lock-only') && !output) {
-    checkResourceNodeLock({ update: source === '--update-lock-only' });
+    checkResourceNodeLock({ update: source === '--update-lock-only', role });
   } else {
-    if (!source || !output || (flag && flag !== '--update-lock')) {
-      throw new Error('Usage: build-resource-node.mjs <built cloud runtime> <new output> [--update-lock], --check-lock, or --update-lock-only');
+    if (!source || !output || extra || (flag && flag !== '--update-lock')) {
+      throw new Error('Usage: build-resource-node.mjs <built cloud runtime> <new output> [--update-lock], --check-lock, or --update-lock-only [--role browser|computer]');
     }
-    await stageResourceNode({ source: path.resolve(source), output: path.resolve(output), update: flag === '--update-lock' });
+    await stageResourceNode({ source: path.resolve(source), output: path.resolve(output), update: flag === '--update-lock', role });
   }
 }

@@ -181,6 +181,21 @@ jobs:
           EXPECTED_RELEASE_ID: image-${{ inputs.source_sha || github.sha }}
         run: node scripts/smoke-container-resource-node.mjs "$IMAGE_REF" "$EXPECTED_RELEASE_ID"
 
+      - name: Smoke exact Browser and Computer role images
+        if: ${{ !cancelled() && steps.images.outcome == 'success' && (steps.images.outputs.browser_node != '' || steps.images.outputs.computer_node != '') }}
+        working-directory: tooling
+        env:
+          BROWSER_IMAGE: ${{ steps.images.outputs.browser_node }}
+          COMPUTER_IMAGE: ${{ steps.images.outputs.computer_node }}
+          EXPECTED_RELEASE_ID: image-${{ inputs.source_sha || github.sha }}
+          MULTI_PLATFORM: ${{ inputs.multi_platform }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            if [ "$platform" = 'linux/arm64' ] && [ "$MULTI_PLATFORM" != 'true' ]; then continue; fi
+            if [ -n "$BROWSER_IMAGE" ]; then node scripts/smoke-container-service-node.mjs browser "$BROWSER_IMAGE" "$EXPECTED_RELEASE_ID" "$platform"; fi
+            if [ -n "$COMPUTER_IMAGE" ]; then node scripts/smoke-container-service-node.mjs computer "$COMPUTER_IMAGE" "$EXPECTED_RELEASE_ID" "$platform"; fi
+          done
+
       - name: Smoke the exact toolbelt image
         if: ${{ !cancelled() && inputs.toolbelt && steps.images.outcome == 'success' }}
         shell: bash

@@ -114,3 +114,33 @@ When production dependencies or overrides change, refresh and review the dedicat
 ```bash
 bun run update:cloud-runtime-lock
 ```
+
+### Dedicated Browser control plane
+
+Build the separate Linux container with `docker build --target browser-node` using
+the same pinned runtime base and source inputs as the other image targets. This image
+runs only the authenticated managed Browser API and its local durable identity/auth
+state. It does not include Chromium, the Application Host, or an Electron renderer.
+Provision a supported Chromium CDP process (and its own persistent profile volume)
+separately, on private networking. Do not publish the upstream CDP port.
+
+- Set `VARIN_BROWSER_CDP_ENDPOINT` to the provisioned HTTP(S) or WebSocket address.
+  An operator may instead provision `browser-node-settings.json` in the private node
+  state directory, with the standard Browser connections under `browser`.
+- Keep `VARIN_DATA_DIR` on its own persistent volume. For Browser file transfer, set
+  `VARIN_BROWSER_CDP_SCRATCH_DIRECTORY` and mount its directory at the **same absolute
+  path** in both services. Without a shared scratch volume the CDP provider deliberately
+  does not advertise upload/download. Keep the Chromium profile on its separate volume.
+- Run the image's offline `pair --output /private/client.json` command with the state
+  volume mounted and the serving Browser container stopped. Keep the generated file on a
+  private mount outside the state and scratch trees. Configure the node URL/token in
+  the coordinator's existing trusted Host connections, then discover and acquire its
+  Browser resource. `revoke CLIENT_ID` is also an offline command.
+- `/health` reports ready control-plane state without dialing or starting a browser.
+  The coordinator's authenticated Acquire opens the actual CDP connection. Its live
+  instance identity derives from the Chrome debugger session, not the persistent node ID.
+  Node and browser restarts can therefore preserve different parts of the binding.
+- Configuration and probes on this role are local operator concerns: a paired Browser
+  peer cannot ask the service to connect to arbitrary endpoints or read upstream headers.
+  Protect the coordinator connection with the same private-network or HTTPS ingress
+  requirements as a File and command node.

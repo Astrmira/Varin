@@ -123,6 +123,52 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
 ENTRYPOINT ["node", "packages/web/server/resource-node.js"]
 CMD []
 
+FROM builder AS browser-node-files
+RUN node scripts/build-resource-node.mjs --role browser /app/artifacts/cloud-runtime /app/artifacts/browser-node
+
+FROM ${RUNTIME_BASE_IMAGE} AS browser-node
+WORKDIR /home/varin/app
+ARG VARIN_SOURCE_REVISION
+LABEL io.varin.image.role="browser"
+ENV HOME=/home/varin \
+  NODE_ENV=production \
+  VARIN_DATA_DIR=/home/varin/.config/varin \
+  VARIN_HOST=0.0.0.0 \
+  VARIN_PORT=3000 \
+  VARIN_RELEASE_ID=image-${VARIN_SOURCE_REVISION}
+COPY --from=browser-node-files --chown=varin:varin /app/artifacts/browser-node/ ./
+RUN --mount=type=cache,target=/home/varin/.cache/bun,uid=1000,gid=1000 \
+  bun install --production --frozen-lockfile --cache-dir=/home/varin/.cache/bun \
+  && node verify-resource-node-install.mjs
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + process.env.VARIN_PORT + '/health', { signal: AbortSignal.timeout(4000) }).then(async r => { if (!r.ok || (await r.json()).role !== 'browser') process.exitCode = 1; }).catch(() => { process.exitCode = 1; })"]
+ENTRYPOINT ["node", "packages/web/server/browser-node.js"]
+CMD []
+
+FROM builder AS computer-node-files
+RUN node scripts/build-resource-node.mjs --role computer /app/artifacts/cloud-runtime /app/artifacts/computer-node
+
+FROM ${RUNTIME_BASE_IMAGE} AS computer-node
+WORKDIR /home/varin/app
+ARG VARIN_SOURCE_REVISION
+LABEL io.varin.image.role="computer"
+ENV HOME=/home/varin \
+  NODE_ENV=production \
+  VARIN_DATA_DIR=/home/varin/.config/varin \
+  VARIN_HOST=0.0.0.0 \
+  VARIN_PORT=3000 \
+  VARIN_RELEASE_ID=image-${VARIN_SOURCE_REVISION}
+COPY --from=computer-node-files --chown=varin:varin /app/artifacts/computer-node/ ./
+RUN --mount=type=cache,target=/home/varin/.cache/bun,uid=1000,gid=1000 \
+  bun install --production --frozen-lockfile --cache-dir=/home/varin/.cache/bun \
+  && node verify-resource-node-install.mjs
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + process.env.VARIN_PORT + '/health', { signal: AbortSignal.timeout(4000) }).then(async r => { if (!r.ok || (await r.json()).role !== 'computer') process.exitCode = 1; }).catch(() => { process.exitCode = 1; })"]
+ENTRYPOINT ["node", "packages/web/server/computer-node.js"]
+CMD []
+
 # This stage runs on TARGETPLATFORM. Installing the canonical runtime tree here
 # ensures native production dependencies match the image architecture instead
 # of the builder architecture.
