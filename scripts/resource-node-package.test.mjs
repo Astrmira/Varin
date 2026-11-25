@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
 import ts from 'typescript';
@@ -33,6 +34,35 @@ test('resource role follows imports from its emitted entry only and fails closed
   assert.throws(() => collectResourceClosure(root, ts), /not declared/);
   write('owned.js', "import './missing.js';");
   assert.throws(() => collectResourceClosure(root, ts), /Unshippable/);
+});
+
+test('Node and the Bun build interpreter trace the same compiled Node role imports', t => {
+  const { root, write } = fixture(t);
+  const builder = new URL('./build-resource-node.mjs', import.meta.url).href;
+  const compile = (name, source) => write(`${name}/resource-node.js`, ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
+  }).outputText);
+  compile('valid', `import 'node:fs'; import 'ws'; import 'undici'; const sqlite = () => import('node:sqlite');`);
+  const invalid = ['bun:sqlite', 'node:ws', 'node:undici'];
+  invalid.forEach((name, index) => compile('invalid' + index, `import('${name}');`));
+  const script = `import path from 'node:path'; import ts from 'typescript';
+    import {collectResourceClosure} from ${JSON.stringify(builder)};
+    const trace = folder => collectResourceClosure(path.join(${JSON.stringify(root)}, folder), ts).dependencies;
+    const valid = Object.keys(trace('valid'));
+    const failures = Array.from({ length: ${invalid.length} }, (_, i) => {
+      try { trace('invalid' + i); return null; } catch (error) { return error.message; }
+    });
+    console.log(JSON.stringify({valid, failures}));`;
+  const findBun = spawnSync('bun', ['--version'], { encoding: 'utf8' });
+  if (findBun.error?.code === 'ENOENT') { t.skip('Bun build interpreter is unavailable'); return; }
+  assert.equal(findBun.status, 0, findBun.stderr);
+  for (const executable of [process.execPath, 'bun']) {
+    const reply = spawnSync(executable, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    assert.equal(reply.status, 0, reply.stderr);
+    assert.deepEqual(JSON.parse(reply.stdout), {
+      valid: ['undici', 'ws'], failures: invalid.map(name => 'Unsupported resource-node import: resource-node.js -> ' + name),
+    });
+  }
 });
 
 test('committed resolution locks match their own role manifests', () => {
