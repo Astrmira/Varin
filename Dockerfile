@@ -98,14 +98,9 @@ RUN VARIN_SOURCE_REVISION="${VARIN_SOURCE_REVISION}" \
   VARIN_TARGET_ARCH="${TARGETARCH}" \
   bun run build:cloud-runtime -- --output /app/artifacts/cloud-runtime --no-archive --prepared-frontend
 
-# Select the resource-only executable from the same versioned Host/kernel build.
-# The full frontend, Agent entrypoint and Application CLI do not enter the
-# node image. For now both roles share the canonical production dependency lock.
+# Compile once, then stage the closed resource import/dependency graph and its own lock.
 FROM builder AS resource-node-files
-RUN set -eu; \
-  cd /app/artifacts/cloud-runtime; \
-  test -f packages/web/server/resource-node.js; \
-  rm -rf packages/web/dist packages/web/bin packages/web/server/index.js verify-services.mjs
+RUN node scripts/build-resource-node.mjs /app/artifacts/cloud-runtime /app/artifacts/resource-node
 
 FROM ${RUNTIME_BASE_IMAGE} AS resource-node
 WORKDIR /home/varin/app
@@ -118,15 +113,13 @@ ENV HOME=/home/varin \
   VARIN_HOST=0.0.0.0 \
   VARIN_PORT=3000 \
   VARIN_RELEASE_ID=image-${VARIN_SOURCE_REVISION}
-COPY --from=resource-node-files --chown=varin:varin /app/artifacts/cloud-runtime/ ./
+COPY --from=resource-node-files --chown=varin:varin /app/artifacts/resource-node/ ./
 RUN --mount=type=cache,target=/home/varin/.cache/bun,uid=1000,gid=1000 \
   bun install --production --frozen-lockfile --cache-dir=/home/varin/.cache/bun \
-  && test -f packages/web/server/resource-node.js \
-  && test ! -e packages/web/dist \
-  && test ! -e packages/web/server/index.js
+  && node verify-resource-node-install.mjs
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
-  CMD curl --fail --silent --show-error http://127.0.0.1:3000/health || exit 1
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + process.env.VARIN_PORT + '/health', { signal: AbortSignal.timeout(4000) }).then(async r => { if (!r.ok || (await r.json()).role !== 'resources') process.exitCode = 1; }).catch(() => { process.exitCode = 1; })"]
 ENTRYPOINT ["node", "packages/web/server/resource-node.js"]
 CMD []
 

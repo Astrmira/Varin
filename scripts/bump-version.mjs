@@ -41,6 +41,7 @@ syncWorkspaceLockVersions(path.join(ROOT, 'bun.lock'), [
   workspace('packages/electron'), workspace('packages/ui'), workspace('packages/web'),
 ]);
 syncWorkspaceLockVersions(path.join(ROOT, 'scripts/cloud-runtime.bun.lock'), [workspace('packages/web')]);
-console.log('  bun.lock and scripts/cloud-runtime.bun.lock: workspace versions synchronized');
+syncWorkspaceLockVersions(path.join(ROOT, 'scripts/resource-node.bun.lock'), [workspace('packages/web')]);
+console.log('  bun.lock and role runtime locks: workspace versions synchronized');
 
 console.log('\nVersion bump complete. Review changes, then commit and tag.');
