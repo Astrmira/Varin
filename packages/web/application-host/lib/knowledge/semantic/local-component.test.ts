@@ -202,6 +202,8 @@ describe("local semantic component manager", () => {
       expect(previous?.root).toBeDefined();
       const installing = manager.install();
       await fetching;
+      expect(manager.install()).toBe(installing);
+      expect(() => manager.importArchive(original)).toThrow('Another local semantic component');
       manager.cancel();
       await installing;
       expect(manager.status()).toMatchObject({ status: "ready", error: expect.stringContaining("cancelled") });

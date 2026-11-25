@@ -15,11 +15,15 @@ it('retires removed SPA nodes without breaking surviving IDs, other frames, or f
   let id = 0;
   const refs = new BrowserFrameReferences<object, string>(() => String(id++));
   const main = {}, child = {};
+  refs.observeDocument(main, 'document-a');
   const a = refs.record(main, 'a', 'current', true), b = refs.record(main, 'b', 'obsolete', true);
   const detailed = refs.record(main, 'c', 'hidden label', false), nested = refs.record(child, 'a', 'child', true);
+  refs.observeDocument(main, 'document-a'); // hash / pushState navigation
   expect(refs.record(main, 'a', 'new snapshot same element', true)).toBe(a);
   refs.finish(main, new Set(['a']), false);
   expect(refs.get(b)).toBeUndefined(); expect(refs.get(detailed)).toBeDefined(); expect(refs.get(nested)?.node).toBe('child');
   refs.finish(main, new Set(['a']), true); expect(refs.get(detailed)).toBeUndefined();
   refs.retire(child); expect(refs.get(nested)).toBeUndefined(); expect(refs.get(a)?.node).toContain('same element');
+  refs.observeDocument(main, 'document-b');
+  expect(refs.get(a)).toBeUndefined();
 });

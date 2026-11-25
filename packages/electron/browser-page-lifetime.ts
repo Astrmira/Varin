@@ -26,7 +26,13 @@ export class BrowserPageActivity {
 export class BrowserFrameReferences<F extends object, N> {
   private ids = new Map<string, { frame: F; key: string; node: N; interesting: boolean }>();
   private byFrame = new Map<F, Map<string, string>>();
+  private documents = new WeakMap<F, string>();
   constructor(private readonly newId: () => string) {}
+  observeDocument(frame: F, loaderId: string) {
+    if (this.documents.get(frame) === loaderId) return;
+    this.retire(frame);
+    this.documents.set(frame, loaderId);
+  }
   get(ref: string) { return this.ids.get(ref); }
   record(frame: F, key: string, node: N, interesting: boolean) {
     let index = this.byFrame.get(frame);
@@ -47,5 +53,6 @@ export class BrowserFrameReferences<F extends object, N> {
   retire(frame: F) {
     for (const ref of this.byFrame.get(frame)?.values() ?? []) this.ids.delete(ref);
     this.byFrame.delete(frame);
+    this.documents.delete(frame);
   }
 }

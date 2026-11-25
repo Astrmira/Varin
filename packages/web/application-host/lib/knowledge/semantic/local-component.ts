@@ -31,6 +31,10 @@ interface LocalSemanticComponentManagerOptions {
   onEnabled?: () => void | Promise<void>;
 }
 
+export class ComponentInstallConflict extends Error {
+  constructor() { super("Another local semantic component is being installed. Wait for it to finish or cancel it before replacing it."); }
+}
+
 export interface LocalSemanticComponentManager {
   status(): LocalSemanticStatus;
   install(url?: string): Promise<void>;
@@ -254,8 +258,7 @@ export function createLocalSemanticComponentManager(
     : existsSync(activePathFor(options.dataDir))
       ? { status: "failed", error: "The installed local semantic component pointer or manifest is unreadable or unsupported. The current Host requires manifest format 4 and worker protocol 1. Rebuild and import it with the current component builder." }
       : { status: "not-installed" };
-  let controller: AbortController | null = null;
-  let running: Promise<void> | null = null;
+  let running: { source: { url?: string; file?: string }; controller: AbortController; task: Promise<void> } | null = null;
   let disposed = false;
 
   const setStatus = (next: LocalSemanticStatus): void => {
@@ -360,15 +363,17 @@ export function createLocalSemanticComponentManager(
 
   const begin = (source: { url?: string; file?: string }): Promise<void> => {
     if (disposed) return Promise.resolve();
-    if (running) return running;
+    if (running) {
+      if (source.url === running.source.url && source.file === running.source.file && !running.controller.signal.aborted) return running.task;
+      throw new ComponentInstallConflict();
+    }
     const installedFields = preserveInstalledFields();
-    controller = new AbortController();
+    const controller = new AbortController();
     setStatus({ status: "installing", stage: "downloading", ...installedFields });
     const task = runInstall(source, controller.signal, installedFields).finally(() => {
-      if (running === task) running = null;
-      controller = null;
+      running = null;
     });
-    running = task;
+    running = { source, controller, task };
     return task;
   };
 
@@ -377,13 +382,13 @@ export function createLocalSemanticComponentManager(
     install: (url = componentUrl(options.version, platform, arch)) => begin({ url }),
     importArchive: (file) => begin({ file }),
     cancel: () => {
-      controller?.abort();
+      running?.controller.abort();
       return { ...currentStatus };
     },
     dispose: async () => {
       disposed = true;
-      controller?.abort();
-      await running;
+      running?.controller.abort();
+      await running?.task;
     },
   };
 }

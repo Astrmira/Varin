@@ -111,7 +111,6 @@ export function createLocalSemanticEmbedder(options: {
         activeWorker.on("exit", () => {
           if (worker !== activeWorker && !disposed) return; // Retired idle generation (no requests).
           const error = workerFailure ?? new Error("Local encoder worker exited.");
-          workerFailure = error;
           reject(error);
           for (const request of requests.values()) {
             request.cleanup();
@@ -120,6 +119,10 @@ export function createLocalSemanticEmbedder(options: {
               ...(request.usageBasis ? { usageBasis: request.usageBasis } : {}), error: error.message });
           }
           requests.clear();
+          worker = null;
+          extractor = null;
+          runBatch = undefined;
+          workerFailure = null;
         });
         activeWorker.on("message", (message: LocalEmbeddingSettlement & { type?: string; protocol?: number; id?: number;
           durationMs?: number; cpuMs?: number; threads?: number; loadMs?: number }) => {

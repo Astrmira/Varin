@@ -53,7 +53,9 @@ async function extractTarArchive(archivePath: string, destDir: string): Promise<
   await mkdir(destDir, { recursive: true });
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('tar', ['xf', archivePath, '-C', destDir], {
+    // GNU tar treats the colon in a Windows drive-qualified archive name as a remote host.
+    const child = spawn('tar', ['xf', path.relative(destDir, archivePath)], {
+      cwd: destDir,
       stdio: 'ignore',
       windowsHide: true,
     });

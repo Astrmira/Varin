@@ -62,6 +62,19 @@ describe('real local encoder queue and physical settlement', () => {
     await f.encoder.dispose!();
     expect(await active).toMatchObject({ requestStarted: true, completed: false, usage: { measurement: 'estimated', inputTokens: 4 } });
   });
+  it('settles a crashed worker once and serves the next request on a fresh worker', async () => {
+    const f = await fixture();
+    const started = new Promise<Worker>(resolve => process.once('worker', resolve));
+    const pending = f.encoder.localExecution!.batch(['HOLD_FORWARD original'], {
+      signal: new AbortController().signal, beforeDispatch: async () => {}, priority: 'foreground',
+    });
+    const worker = await started;
+    await waitUntil(async () => (await f.calls()).length === 1);
+    await worker.terminate();
+    expect(await pending).toMatchObject({ requestStarted: true, completed: false });
+    expect(await f.encoder.embed(['new request'])).toHaveLength(1);
+    expect(await f.calls()).toEqual([['HOLD_FORWARD original'], ['new request']]);
+  });
   it('retains observed input estimates when the actual worker exits after encoder entry', async () => {
     const f = await fixture();
     const result = await f.encoder.localExecution!.batch(['EXIT_FORWARD original'], { signal: new AbortController().signal, beforeDispatch: async () => {}, priority: 'foreground' });

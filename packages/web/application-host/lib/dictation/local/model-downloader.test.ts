@@ -15,7 +15,7 @@ it('publishes a real staged speech model, recovers from an interrupted transfer,
     await mkdir(join(source, spec.extractedDir), { recursive: true });
     for (const file of spec.requiredFiles) await writeFile(join(source, spec.extractedDir, file), 'fixture');
     const archive = join(root, 'fixture.tar.bz2');
-    const bundled = spawnSync('tar', ['cjf', archive, '-C', source, spec.extractedDir], { encoding: 'utf8' });
+    const bundled = spawnSync('tar', ['cjf', '../fixture.tar.bz2', spec.extractedDir], { cwd: source, encoding: 'utf8' });
     expect(bundled.error ?? bundled.status, bundled.stderr).toBe(0);
     const bytes = await readFile(archive);
     const fetcher = vi.fn()

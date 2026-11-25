@@ -111,7 +111,8 @@ const pdfAssets = (): { cMapUrl: string; standardFontDataUrl: string; wasmUrl: s
   const packageRoot = join(dirname(require.resolve("pdfjs-dist/legacy/build/pdf.mjs")), "..", "..");
   const unpackedRoot = packageRoot.replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
   const root = existsSync(join(unpackedRoot, "standard_fonts")) ? unpackedRoot : packageRoot;
-  const assetUrl = (directory: string) => pathToFileURL(join(root, directory) + sep).href;
+  // PDF.js's Node binary-data factory passes this string straight to fs.readFile.
+  const assetUrl = (directory: string) => join(root, directory).split(sep).join("/") + "/";
   return { cMapUrl: assetUrl("cmaps"), standardFontDataUrl: assetUrl("standard_fonts"),
     wasmUrl: assetUrl("wasm"), iccUrl: assetUrl("iccs") };
 };

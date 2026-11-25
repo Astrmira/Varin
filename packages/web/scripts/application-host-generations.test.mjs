@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
-import test from 'node:test';
+import { test } from 'vitest';
 
 const wait = async (predicate) => {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -48,6 +48,7 @@ test('real dev/build launchers use the correct owner while reclaiming an exited 
     write('packages/computer-driver/macos/build-helper.mjs', 'export const buildMacComputerHelper = () => {};');
     write('packages/computer-driver/linux/driver', 'stub');
     write('packages/browser-connector/extension/manifest.json', '{}');
+    write('node_modules/typescript/package.json', '{"type":"module"}');
     write('node_modules/typescript/lib/tsc.js', `
       import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
       const dir = process.argv[process.argv.indexOf('--outDir') + 1];

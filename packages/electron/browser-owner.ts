@@ -11,6 +11,8 @@ import { ElectronPageTransport } from './browser-transport.js';
 import { captureBrowserPage, createCaptureNetworkFence } from './browser-web-capture.js';
 
 type CoordinateObservation = { navigation: number; viewport: string; scroll: string };
+// Puppeteer's CDP AX nodes use the frame loader to identify their document.
+const loaderId = (frame: Frame) => (frame as Frame & { _loaderId: string })._loaderId;
 type Download = { state: BrowserDownload; item: DownloadItem; file: string; directory: string };
 type OwnedPage = {
   id: string; view: WebContentsView; browser: Browser; page: Page; threads: Set<string>; retained: boolean;
@@ -118,7 +120,7 @@ export class ElectronBrowserOwner implements BrowserOwner {
         view.webContents.on('before-input-event', (_event, input) => { if (input.type === 'keyDown') userInput(); });
         view.webContents.on('before-mouse-event', (_event, input) => { if (input.type === 'mouseDown' || input.type === 'mouseWheel') userInput(); });
         page.on('framenavigated', frame => {
-          entry.refs.retire(frame); entry.navigation++; entry.observations.clear(); changed();
+          entry.refs.observeDocument(frame, loaderId(frame)); entry.navigation++; entry.observations.clear(); changed();
         });
         page.on('framedetached', frame => entry.refs.retire(frame));
         page.on('dialog', dialog => { if (entry.captureOnly) { void dialog.dismiss().catch(() => undefined); return; } entry.dialog = dialog; changed(); this.emit({ kind: 'dialog', pageId: id, type: dialog.type(), message: dialog.message(), defaultPrompt: dialog.defaultValue() }); });
@@ -319,6 +321,8 @@ export class ElectronBrowserOwner implements BrowserOwner {
     for (const frame of selectedFrames) {
       signal?.throwIfAborted();
       if (frame.detached) continue;
+      const documentId = loaderId(frame);
+      entry.refs.observeDocument(frame, documentId);
       const root = input.ref ? await this.element(entry, input.ref) : undefined;
       try {
         // Puppeteer's page snapshot uses this same per-frame accessibility owner.
@@ -340,8 +344,8 @@ export class ElectronBrowserOwner implements BrowserOwner {
             ...(node.description ? { description: node.description } : {}), level: node.level ?? depth, ...(Object.keys(state).length ? { state } : {}) });
           for (const child of node.children ?? []) walk(child, depth + 1);
         };
-        if (tree && !frame.detached) {
-          walk(tree, 0);
+        if (!frame.detached && loaderId(frame) === documentId) {
+          if (tree) walk(tree, 0);
           if (!input.ref) entry.refs.finish(frame, seen, input.view === 'structure');
         }
       } catch (error) {
