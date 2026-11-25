@@ -89,6 +89,46 @@ unsupported. Do not use the cancelling shutdown API to implement an idle park.
 The durable ingress and wake protocol must first prove that accepted input and
 scheduler responsibility survive a stopped Host.
 
+### Opt-in local supervisor handoff (POSIX)
+
+`VARIN_LOCAL_SUPERVISOR=1` enables a filesystem inbox at
+`$VARIN_DATA_DIR/supervisor-wake`. The journal is private to the Host OS account;
+there is no new network ingress. A built Host includes
+`server/lib/lifecycle/local-supervisor.js` for a separately managed local
+supervisor to run under that same account:
+
+- `node local-supervisor.js DIRECTORY OWNER status` reports the current wake
+  revision and whether accepted input is pending. `OWNER` is the original stable
+  Host identity stored in the journal's private `owner.json`.
+- `publish REVISION AT_MS` records the original wake owner's monotonic revision
+  and chosen time, or `publish REVISION none` for a newer cancellation.
+  Do not synthesize a revision from a polled projection.
+- `wake-due REVISION -- EXECUTABLE ARG...` reconciles a due registration and
+  writes a ready receipt only when the supplied readiness command succeeds and
+  the revision is still current. The outer supervisor supplies the timer and
+  an idempotent command that waits for the same logical Host's readiness.
+- `accept PAGE_KEY < page.json` fsyncs an original Catalog event page before
+  returning an acceptance receipt. `wake-inbox -- EXECUTABLE ARG...` lets the
+  supervisor start or reconcile the original Host when accepted input is waiting.
+
+The supervisor must already own the selected event feed and supply its original
+authenticated Catalog source identity, event IDs and expected/next cursors.
+Do not run another producer for the same cursor. Host replay passes the page
+through the original Catalog event-receive command (including its active-source
+and deduplication checks), and verifies the returned identity and checkpoint.
+Conflicts or invalid acknowledgements leave the accepted page pending. The
+journal keeps an acknowledged copy privately because ordinary Catalog WAL
+receipts do not promise power-loss durability. This increment has no automatic
+archive compaction or recovery from a storage rollback; budget disk space and
+keep this directory private. On a process crash before acknowledgement, the
+same pending page is delivered again under its original keys.
+
+This does **not** switch automatic parking on or transfer Calendar scheduling.
+There is no Park command and no supervisor path is invoked automatically to
+stop the Host. Incomplete owner coverage, external scheduler publication and
+lossless close are still blockers. On filesystems without supported directory
+sync or on Windows, do not enable the local supervisor journal.
+
 ## Graceful Shutdown & Cold Backup
 
 - Host shutdown immediately enters `draining` (revoking readiness and rejecting new executions while allowing reads, cancels, and receipt cleanup) under a single monotonic `VARIN_SHUTDOWN_TIMEOUT_MS` deadline (default 10s; exit code 143 on graceful SIGTERM, 1 on incomplete drain without closing active DB writers early).

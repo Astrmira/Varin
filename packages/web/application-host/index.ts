@@ -380,6 +380,8 @@ import { clearAppImageArgv0FromProcessEnv } from './lib/platform/inherited-env.j
 import { pathLooksUserConfigured, mergePathValues } from './lib/platform/path-utils.js';
 import { createProjectDirectoryRuntime } from './lib/platform/project-directory-runtime.js';
 import { projectHostActivity, registerHostActivityRoute } from './lib/lifecycle/host-activity.js';
+import { startSupervisorInbox } from './lib/lifecycle/supervisor-inbox.js';
+import { SupervisorJournal } from './lib/lifecycle/supervisor-journal.js';
 import { registerVarinRoutes } from './lib/platform/varin-routes.js';
 import { createPlatformRoutesRuntime } from './lib/platform/routes-runtime.js';
 import { runCliEntryIfMain } from './lib/platform/cli-entry-runtime.js';
@@ -3334,6 +3336,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     console.warn('[Varin Extensions] Host reconciliation failed:', error?.message || error);
   });
   const unregisterWorkbenchLayoutService = await registerBuiltinWorkbenchLayoutService(extensionRuntime);
+  // Explicit trusted OS-local handoff. Never opens a network event-ingress API
+  // or takes over a Catalog source owner.
+  const supervisorInbox = process.env.VARIN_LOCAL_SUPERVISOR === '1'
+    ? startSupervisorInbox(await SupervisorJournal.open(path.join(VARIN_DATA_DIR, 'supervisor-wake'), hostId),
+      (page, signal) => agentRuntime.receivePluginEvents(page, signal),
+      () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'))
+    : undefined;
   pluginEventSources.start();
   pluginEventTransport.start();
   botLifecycleRuntime = createBotLifecycleRuntime({
@@ -3641,6 +3650,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       previewProxyRuntime.beginDraining();
       stopTask = (async () => {
         const shutdown = createShutdownCollector({ deadline, stopOnFailure: true });
+        await shutdown.run('supervisorInbox.close', () => supervisorInbox?.close());
         await shutdown.run('externalIngress.close', async () => {
           unsubscribeExternalIngressRevocation();
           await externalIngress?.close();
