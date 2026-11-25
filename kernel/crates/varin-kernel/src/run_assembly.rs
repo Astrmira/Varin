@@ -320,17 +320,23 @@ impl RunAssembly {
                     })
                 })
                 .transpose()?;
+            let lazy_work_location = selected.lazy_work_location.map(crate::work_locations::lazy_location).transpose()?;
+            if lazy_work_location.is_some() && (!host_authority || is_child || source.is_some()
+                || !kinds.contains(&crate::tools::ToolKind::FileRead)
+                || kinds.iter().any(|kind| !crate::work_locations::lazy_tool(kind.name()))) {
+                return Err(KernelError::Authorization("lazy work requires owner-controlled native root, routed tools and no concrete source".into()));
+            }
             if !is_child && host_authority && kinds.contains(&crate::tools::ToolKind::FileRead)
-                && crate::work_locations::eligible(source.as_ref()) {
-                crate::work_locations::add_schemas(&mut start.binding.tools);
+                && (crate::work_locations::eligible(source.as_ref()) || lazy_work_location.is_some()) {
+                crate::work_locations::add_location_schemas(&mut start.binding.tools, lazy_work_location.is_some());
             }
             if !host_authority && source.is_some() { return Err(KernelError::Authorization("Member work cannot acquire Host resources".into())); }
-            if source.is_none() && kinds.iter().any(|kind| *kind!=crate::tools::ToolKind::FileRead) {
+            if source.is_none() && lazy_work_location.is_none() && kinds.iter().any(|kind| *kind!=crate::tools::ToolKind::FileRead) {
                 return Err(KernelError::Protocol(
                     "selected tools require a source owner".into(),
                 ));
             }
-            if source.is_none() {
+            if source.is_none() && lazy_work_location.is_none() {
                 start.binding.tool_schema_generation = 0;
             }
             let mut selection = varin_runtime::catalog::launches::LaunchSelection::from_binding(
@@ -338,6 +344,7 @@ impl RunAssembly {
                 start.policy.identity(),
                 source,
             );
+            selection.lazy_work_location = lazy_work_location;
             selection.credential_scope = selected_credential_scope;
             selection.child_dispatch = selected.child_dispatch;
             check_cancelled()?;
@@ -355,6 +362,20 @@ impl RunAssembly {
                 .map_err(domain)?;
             let intent = read.load().map_err(domain)?;
             return Ok(PreparedLaunch::Selection(serde_json::to_value(intent)?));
+        }
+        let saved_launch = runtime
+            .catalog()
+            .lock()
+            .map_err(|_| KernelError::Storage("catalog owner failed".into()))?
+            .capture_launch(&p.run_id)
+            .map_err(domain)?;
+        let saved_launch = saved_launch
+            .map(|read| read.load())
+            .transpose()
+            .map_err(domain)?;
+        let lazy_work_location = saved_launch.as_ref().and_then(|launch| launch.selection.lazy_work_location.clone());
+        if lazy_work_location.is_some() && (!host_authority || is_child || is_context_job || tool_binding.is_some()) {
+            return Err(KernelError::Authorization("lazy launch must retain its original owner-controlled root scope".into()));
         }
         let mut launch_source = None;
         let mut declarations = Vec::new();
@@ -394,9 +415,17 @@ impl RunAssembly {
         }
         if !is_context_job {
             let path_read = declarations.iter().any(|declaration| declaration.schema.name == "file_read");
-            if path_read && !is_child && host_authority && crate::work_locations::eligible(launch_source.as_ref()) {
-                crate::work_locations::route_declarations(&mut declarations, p.run_id.clone(), launch_source.as_ref().unwrap().clone(),
-                    runtime.catalog(), resources.clone().with_journal_catalog(runtime.catalog()));
+            if !is_child && host_authority && (path_read && crate::work_locations::eligible(launch_source.as_ref()) || lazy_work_location.is_some()) {
+                let lazy_schemas = if let Some(launch) = saved_launch.as_ref().filter(|_| lazy_work_location.is_some()) {
+                    let kinds = crate::tools::ToolKind::all().filter(|kind| {
+                        crate::work_locations::alternate_tool(kind.name())
+                            && launch.selection.tools.iter().any(|tool| tool.name == kind.name())
+                    }).collect();
+                    crate::tools::KernelToolExecutor::selected_schemas(&kinds)
+                } else { Vec::new() };
+                crate::work_locations::route_declarations(&mut declarations, p.run_id.clone(), launch_source.clone(),
+                    lazy_work_location.clone(), lazy_schemas, runtime.catalog(),
+                    resources.clone().with_journal_catalog(runtime.catalog()));
             }
             let existing=declarations.iter().position(|declaration|declaration.schema.name=="file_read").map(|index|declarations.remove(index));
             let reader = crate::attachment_reads::declaration(existing,runtime.catalog(),self.resource.clone());
@@ -440,6 +469,10 @@ impl RunAssembly {
                     source,
                     resources.clone(),
                 ));
+            } else if let Some(launch) = saved_launch.as_ref().filter(|_| lazy_work_location.is_some()) {
+                declarations.extend(crate::process_wait::lazy_declarations(
+                    &launch.selection.tools, p.run_id.clone(), runtime.catalog(), resources.clone(),
+                ));
             }
             declarations.push(crate::memory::declaration(
                 runtime.catalog(),
@@ -454,16 +487,6 @@ impl RunAssembly {
                 plan_bridge.clone(),
             ));
         }
-        let saved_launch = runtime
-            .catalog()
-            .lock()
-            .map_err(|_| KernelError::Storage("catalog owner failed".into()))?
-            .capture_launch(&p.run_id)
-            .map_err(domain)?;
-        let saved_launch = saved_launch
-            .map(|read| read.load())
-            .transpose()
-            .map_err(domain)?;
         if is_child {
             let admitted = &saved_launch
                 .as_ref()
@@ -588,6 +611,7 @@ impl RunAssembly {
                 if custom_driver { policy_launch.as_ref().expect("custom driver has an original launch").metadata.selection.policy.clone() } else { start.policy.identity() },
                 launch_source,
             );
+            selection.lazy_work_location = lazy_work_location;
             selection.driver = driver_selection;
             selection.driver_models = driver_models;
 

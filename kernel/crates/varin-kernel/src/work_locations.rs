@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use varin_runtime::{
     catalog::{
-        launches::{SourceResourceOwner, SourceSelection},
+        launches::{LazyWorkLocation, SourceResourceOwner, SourceSelection},
         model_references::ReferenceKind,
     },
     composition::tools::ToolDeclaration,
@@ -31,6 +31,9 @@ pub(crate) fn grant_capabilities(name: &str) -> Option<&'static [&'static str]> 
         "process_spawn" => Some(&["storage.read", "storage.write", "process"]),
         _ => None,
     }
+}
+pub(crate) fn lazy_tool(name: &str) -> bool {
+    alternate_tool(name) || matches!(name, "process_inspect" | "process_read")
 }
 fn routed_schema(mut original: ToolSchema) -> ToolSchema {
     if original.name == "file_read" {
@@ -69,6 +72,13 @@ pub(crate) fn schema() -> ToolSchema {
         "Find work locations by name, device or path. To resolve an unsaved directory, pass a returned device reference and a path on that device. Pass a location to a resource tool for this request or to work_location_switch for the next run.".into(),
         schema:json!({"type":"object","additionalProperties":false,"properties":{"query":{"type":"string"},"device":{"type":"string"},"path":{"type":"string"}},"dependentRequired":{"device":["path"],"path":["device"]}}),
         output_schema:None, requirements:None, metadata:None }
+}
+fn discovery_schema() -> ToolSchema {
+    let mut schema = schema();
+    schema.version = "2".into();
+    schema.description.push_str(" Use refresh:true to discover unobserved devices.");
+    schema.schema["properties"]["refresh"] = json!({"type":"boolean"});
+    schema
 }
 pub(crate) fn switch_schema() -> ToolSchema {
     ToolSchema {
@@ -114,18 +124,54 @@ pub(crate) fn wraps_native(routed: &ToolSchema, native: &ToolSchema) -> bool {
         && *routed == routed_schema(native.clone())
 }
 pub(crate) fn add_schemas(tools: &mut Vec<ToolSchema>) {
+    add_location_schemas(tools, false);
+}
+pub(crate) fn add_location_schemas(tools: &mut Vec<ToolSchema>, lazy: bool) {
     if !tools.iter().any(|tool| tool.name == "file_read") {
         return;
     }
     for tool in tools.iter_mut().filter(|tool| alternate_tool(&tool.name)) {
-        *tool = routed_schema(tool.clone());
+        *tool = route_schema(tool.clone(), lazy);
     }
-    tools.push(schema());
+    if lazy {
+        for schema in tools.iter_mut().filter(|t| matches!(t.name.as_str(), "process_inspect" | "process_read")) {
+            schema.requirements = None;
+        }
+    }
+    tools.push(if lazy { discovery_schema() } else { schema() });
     tools.push(switch_schema());
     if tools.iter().any(|tool| tool.name == "file_write") {
         tools.push(transfer_schema());
     }
     tools.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+fn route_schema(native: ToolSchema, lazy: bool) -> ToolSchema {
+    let mut routed = routed_schema(native);
+    // The outer declaration resolves a physical tool before it runs. Keep the
+    // original requirement on the exact inner executor selected after binding.
+    if lazy {
+        routed.requirements = None;
+        let context = json!({
+            "type":"string", "minLength":1,
+            "description":"Opaque context revision returned by the default resource. Include it on a retry after reading the returned instructions."
+        });
+        if routed.schema.get("properties").is_some() {
+            routed.schema["properties"]["resource_context"] = context;
+        } else {
+            routed.schema["oneOf"][0]["properties"]["resource_context"] = context;
+        }
+    }
+    routed
+}
+pub(crate) fn lazy_location(input: crate::protocol_generated::LazyWorkLocationParams) -> Result<LazyWorkLocation, crate::error::KernelError> {
+    let location = LazyWorkLocation {
+        resource_owner: input.resource_owner,
+        path: input.path,
+        workspace_id: input.workspace_id,
+    };
+    location.validate().map_err(|error| crate::error::KernelError::Protocol(error.to_string()))?;
+    Ok(location)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +210,8 @@ struct Device {
 #[serde(deny_unknown_fields)]
 struct Search {
     query: Option<String>,
+    #[serde(default)]
+    refresh: bool,
     device: Option<String>,
     path: Option<String>,
 }
@@ -189,7 +237,8 @@ struct Transfer {
 
 struct Owner {
     run_id: String,
-    default: SourceSelection,
+    default: Option<SourceSelection>,
+    lazy: Option<LazyWorkLocation>,
     catalog: Arc<Mutex<Catalog>>,
     resources: KernelResourceClient,
 }
@@ -217,11 +266,10 @@ impl Owner {
                 .map_err(denied)?
                 .is_some()
             || c.is_context_job(&run.id).map_err(denied)?
-            || c.launch_metadata(&run.id)
-                .map_err(denied)?
-                .and_then(|l| l.selection.source)
-                .as_ref()
-                != Some(&self.default)
+            || !c.launch_metadata(&run.id).map_err(denied)?.is_some_and(|l| {
+                l.selection.source == self.default
+                    && l.selection.lazy_work_location == self.lazy
+            })
         {
             return Err(denied(
                 "Location selection is unavailable for this task or source",
@@ -240,6 +288,9 @@ impl Owner {
         let thread = self.scope(ctx, cancel)?;
         let search: Search = serde_json::from_value(call.arguments.clone()).map_err(denied)?;
         let mut query = json!({"kind":"work_locations","runId":ctx.run_id,"threadId":thread,"callId":call.call_id,"origin":ctx.origin});
+        if search.refresh && call.schema_version == "2" {
+            query["refresh"] = json!(true);
+        }
         if let Some(q) = search.query {
             query["query"] = json!(q);
         }
@@ -399,23 +450,27 @@ fn device_owner(run: &str) -> String {
 pub(crate) fn route_declarations(
     declarations: &mut Vec<ToolDeclaration>,
     run_id: String,
-    default: SourceSelection,
+    default: Option<SourceSelection>,
+    lazy: Option<LazyWorkLocation>,
+    lazy_native_schemas: Vec<ToolSchema>,
     catalog: Arc<Mutex<Catalog>>,
     resources: KernelResourceClient,
 ) {
     let owner = Arc::new(Owner {
         run_id,
         default,
+        lazy,
         catalog,
         resources,
     });
     let mut routed = Vec::new();
     for declaration in std::mem::take(declarations) {
         if alternate_tool(&declaration.schema.name) {
-            let schema = routed_schema(declaration.schema.clone());
+            let schema = route_schema(declaration.schema.clone(), false);
             let router = Router {
                 schema: schema.clone(),
-                native: declaration,
+                native_schema: declaration.schema,
+                native: Some(declaration.implementation),
                 owner: owner.clone(),
             };
             routed.push(ToolDeclaration::new(schema, Arc::new(router)));
@@ -423,7 +478,13 @@ pub(crate) fn route_declarations(
             routed.push(declaration);
         }
     }
-    routed.push(ToolDeclaration::new(self::schema(), owner.clone()));
+    for native_schema in lazy_native_schemas {
+        let schema = route_schema(native_schema.clone(), true);
+        let router = Router { schema: schema.clone(), native_schema, native: None, owner: owner.clone() };
+        routed.push(ToolDeclaration::new(schema, Arc::new(router)));
+    }
+    let discovery = if owner.lazy.is_some() { discovery_schema() } else { schema() };
+    routed.push(ToolDeclaration::new(discovery, owner.clone()));
     routed.push(ToolDeclaration::new(switch_schema(), owner.clone()));
     if routed.iter().any(|tool| tool.schema.name == "file_write") {
         routed.push(ToolDeclaration::new(transfer_schema(), owner));
@@ -446,14 +507,15 @@ impl ToolExecutor for Owner {
         _: &CancellationToken,
     ) -> Result<ToolContract, ExecutionError> {
         let expected = match c.name.as_str() {
-            NAME => schema(),
+            NAME if c.schema_version == "1" => schema(),
+            NAME => discovery_schema(),
             SWITCH => switch_schema(),
             TRANSFER => transfer_schema(),
             _ => return Err(denied("Unknown workspace tool")),
         };
         if c.schema_version != expected.version
             || !f.tools.contains(&expected)
-            || f.source.as_ref() != Some(&self.default)
+            || f.source != self.default
             || !matches!(f.origin, ToolOrigin::ModelStep { .. })
         {
             return Err(denied("Work locations are not selected for this request"));
@@ -527,13 +589,15 @@ impl ToolExecutor for Owner {
 }
 struct Router {
     schema: ToolSchema,
-    native: ToolDeclaration,
+    native_schema: ToolSchema,
+    native: Option<Arc<dyn ToolExecutor>>,
     owner: Arc<Owner>,
 }
 struct Alternate {
     expected: Option<SourceSelection>,
     owner: Arc<Owner>,
     location: Option<String>,
+    resource_context: Option<String>,
     call: ToolCall,
     frozen: FrozenToolContext,
 }
@@ -616,7 +680,7 @@ impl ToolExecutor for Router {
         if c.name != self.schema.name
             || c.schema_version != self.schema.version
             || !f.tools.contains(&self.schema)
-            || f.source.as_ref() != Some(&self.owner.default)
+            || f.source != self.owner.default
         {
             return Err(denied("Workspace tool differs from its frozen request"));
         }
@@ -624,13 +688,18 @@ impl ToolExecutor for Router {
         let mut frozen = f.clone();
         // Delegate to the exact retained native v2 tool. Targets, including
         // older full Hosts, never receive the coordinator selector or this outer schema version.
-        call.schema_version = self.native.schema.version.clone();
+        call.schema_version = self.native_schema.version.clone();
         let schemas = Arc::make_mut(&mut frozen.tools);
-        *schemas.iter_mut().find(|s| *s == &self.schema).unwrap() = self.native.schema.clone();
+        *schemas.iter_mut().find(|s| *s == &self.schema).unwrap() = self.native_schema.clone();
         let location = call
             .arguments
             .as_object_mut()
             .and_then(|args| args.remove("location"));
+        let resource_context = call.arguments.as_object_mut()
+            .and_then(|args| args.remove("resource_context"))
+            .map(|value| value.as_str().filter(|s| !s.is_empty() && s.len() <= 512)
+                .map(str::to_owned).ok_or_else(|| denied("Invalid resource context revision")))
+            .transpose()?;
         let original = call.arguments["ref"]
             .as_str()
             .map(|reference| {
@@ -652,12 +721,22 @@ impl ToolExecutor for Router {
             Some((Some(location.to_owned()), original))
         } else if original
             .as_ref()
-            .is_some_and(|source| source != &self.owner.default && eligible(Some(source)))
+            .is_some_and(|source| Some(source) != self.owner.default.as_ref() && eligible(Some(source)))
         {
             Some((None, original))
+        } else if self.owner.lazy.is_some() {
+            if original.is_some() {
+                return Err(denied("The file reference does not name an available live location"));
+            }
+            Some((None, None))
         } else {
             None
         };
+        if resource_context.is_some() && (self.owner.lazy.is_none()
+            || !matches!(&selection, Some((None, None))))
+        {
+            return Err(denied("Resource context only applies to the recorded default"));
+        }
         let (default, alternate) = if let Some((location, expected)) = selection {
             if !matches!(f.origin, ToolOrigin::ModelStep { .. }) {
                 return Err(denied(
@@ -670,6 +749,7 @@ impl ToolExecutor for Router {
                     owner: self.owner.clone(),
                     location,
                     expected,
+                    resource_context,
                     call,
                     frozen,
                 }),
@@ -678,8 +758,8 @@ impl ToolExecutor for Router {
             (
                 Some(
                     self.native
-                        .implementation
                         .clone()
+                        .ok_or_else(|| denied("No prepared default location"))?
                         .bind_call(&call, &frozen, t)?,
                 ),
                 None,
@@ -690,7 +770,7 @@ impl ToolExecutor for Router {
             alternate,
             prepared: OnceLock::new(),
             lease: OnceLock::new(),
-            native_version: self.native.schema.version.clone(),
+            native_version: self.native_schema.version.clone(),
         }))
     }
     fn plan(
@@ -843,39 +923,57 @@ impl Routed {
             operation_id: a.frozen.origin.operation_id(&a.call.call_id),
         };
         let thread = a.owner.scope(&ctx, t)?;
-        let key: Key = if let Some(location) = &a.location {
+        let mut query = json!({"kind":"work_location_bind","runId":ctx.run_id,"threadId":thread,
+            "operationId":ctx.operation_id,"origin":ctx.origin,"callId":a.call.call_id,"tool":a.call.name});
+        let key = if let Some(location) = &a.location {
             let catalog = a.owner.catalog.lock().map_err(denied)?;
-            a.owner.current_key(&catalog, location)?
-        } else {
-            let source = a
-                .expected
-                .as_ref()
-                .ok_or_else(|| denied("File reference has no original source"))?;
-            let root = source
-                .live_root
-                .as_ref()
+            Some(a.owner.current_key(&catalog, location)?)
+        } else if let Some(source) = &a.expected {
+            let root = source.live_root.as_ref()
                 .ok_or_else(|| denied("File reference has no live root"))?;
-            Key {
+            Some(Key {
                 id: None,
                 resource_owner: source.resource_owner.clone(),
                 workspace_id: Some(source.workspace_id.clone()),
                 path: root.canonical_root.clone(),
+            })
+        } else {
+            if a.owner.lazy.is_none() {
+                return Err(denied("No recorded default location"));
             }
+            None
         };
-        let query = json!({"kind":"work_location_bind","runId":ctx.run_id,"threadId":thread,"operationId":ctx.operation_id,
-            "origin":ctx.origin,"callId":a.call.call_id,"tool":a.call.name,"key":key});
+        if let Some(key) = &key {
+            query["key"] = serde_json::to_value(key).map_err(denied)?;
+        } else {
+            query["default"] = json!(true);
+            if let Some(revision) = &a.resource_context {
+                query["resourceContext"] = json!(revision);
+            }
+        }
+        let (resource_owner, workspace_id) = key.as_ref().map(|k| (&k.resource_owner, &k.workspace_id))
+            .or_else(|| a.owner.lazy.as_ref().map(|k| (&k.resource_owner, &k.workspace_id)))
+            .ok_or_else(|| denied("No location selected"))?;
         let result = a.owner.resources.source_query(query, t)?;
+        if key.is_none() && result["kind"] == "work_location_context_required" {
+            let revision = result["revision"].as_str().filter(|s| !s.is_empty() && s.len() <= 512)
+                .ok_or_else(|| denied("Default resource returned an invalid context revision"))?;
+            let instructions = result.get("instructions")
+                .filter(|v| v.is_string() || v.is_array())
+                .ok_or_else(|| denied("Default resource returned invalid instructions"))?;
+            return Err(ExecutionError::new(
+                "work_location_context_required",
+                "No work was dispatched. Read the location instructions and retry with resource_context set to the returned revision.",
+            ).with_details(json!({"resource_context":revision,"instructions":instructions})));
+        }
         self.lease.set(ReadLease{resources:a.owner.resources.clone(),release:json!({"kind":"work_location_release","runId":ctx.run_id,"threadId":thread,"operationId":ctx.operation_id,"binding":result.clone()})}).map_err(|_|denied("Read was already prepared"))?;
         let binding: ToolBinding = serde_json::from_value(result).map_err(denied)?;
         let source = binding.source_selection().map_err(denied)?;
         if !eligible(Some(&source))
             || binding.run_id != ctx.run_id
             || binding.thread_id != thread
-            || binding.resource_owner != key.resource_owner
-            || key
-                .workspace_id
-                .as_ref()
-                .is_some_and(|ws| ws != &binding.workspace_id)
+            || &binding.resource_owner != resource_owner
+            || workspace_id.as_ref().is_some_and(|ws| ws != &binding.workspace_id)
             || binding
                 .enabled_tools
                 .iter()

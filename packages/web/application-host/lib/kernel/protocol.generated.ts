@@ -3266,7 +3266,20 @@ export interface AgentSelection {
   tools: string[] | null;
 }
 
+export interface LazyWorkLocationParams {
+  resourceOwner: SourceResourceOwner;
+  path: string;
+  workspaceId?: string;
+}
+
+export interface LazyWorkLocation {
+  resource_owner: SourceResourceOwner;
+  path: string;
+  workspace_id?: string;
+}
+
 export interface SubmitLaunch {
+  lazyWorkLocation?: LazyWorkLocationParams;
   agent?: AgentSelection;
   inheritSource?: boolean;
   source: LaunchSourceParams | null;
@@ -3377,6 +3390,7 @@ export interface LaunchSourceParams {
 }
 
 export interface LaunchSelectParams {
+  lazyWorkLocation?: LazyWorkLocationParams;
   runId: string;
   source: LaunchSourceParams | null;
   enabledTools: string[];
@@ -3696,6 +3710,7 @@ export interface ToolReadyParams {
 }
 
 export interface LaunchSelection {
+  lazy_work_location?: LazyWorkLocation;
   driver: DriverSelection;
   driver_models: PolicyModelCapability[];
   agent?: AgentSelection;

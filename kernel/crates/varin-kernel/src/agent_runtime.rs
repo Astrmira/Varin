@@ -3059,6 +3059,7 @@ fn prepare_context_job_mode(
             tool_schema_generation: 0,
             tools: Vec::new(),
             policy: varin_runtime::context_job::policy_identity(),
+            lazy_work_location: None,
             source: None,
         }
     };

@@ -760,6 +760,7 @@ impl ToolExecutor for CollaborationTools {
                         tool_schema_generation: resolved.tool_schema_generation,
                         tools: schemas,
                         policy: crate::observations::default_policy_identity(),
+                        lazy_work_location: None,
                         source: handoff.as_ref().map(|handoff| handoff.source.clone()),
                     };
                     let preparation = self
