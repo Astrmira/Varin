@@ -379,6 +379,7 @@ import { resolveVarinDataDir } from './lib/platform/data-paths.js';
 import { clearAppImageArgv0FromProcessEnv } from './lib/platform/inherited-env.js';
 import { pathLooksUserConfigured, mergePathValues } from './lib/platform/path-utils.js';
 import { createProjectDirectoryRuntime } from './lib/platform/project-directory-runtime.js';
+import { projectHostActivity, registerHostActivityRoute } from './lib/lifecycle/host-activity.js';
 import { registerVarinRoutes } from './lib/platform/varin-routes.js';
 import { createPlatformRoutesRuntime } from './lib/platform/routes-runtime.js';
 import { runCliEntryIfMain } from './lib/platform/cli-entry-runtime.js';
@@ -3429,6 +3430,19 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   relayServiceInstance = relayService;
   relayService.registerRoutes(app);
+  const getHostActivity = (signal: AbortSignal) => projectHostActivity({
+    kernelEpoch: () => kernelClient.isReady ? kernelClient.kernelEpoch : null,
+    draining: () => isShuttingDown,
+    observationStreams: httpObservationDrain.count,
+    externalIngressActive: () => Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled),
+    admission: async (ownerSignal) => (await agentRuntime.status(ownerSignal)).admission,
+    calendar: scheduledTasksRuntime.getActivity,
+  }, signal);
+  registerHostActivityRoute(app, uiAuthController.requireAuth, async request => {
+    const auth = await uiAuthController!.resolveRequestAuth(request, { allowUrlToken: false });
+    return typeof auth?.principalId === 'string' && await hostPrincipals().isOwner(auth.principalId);
+  }, getHostActivity);
+
 
   await platformRoutesRuntime.registerRoutes(app, {
     onProjectGitDispatcher: dispatch => { projectGitDispatcher = dispatch; },
@@ -3604,6 +3618,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     },
     setExternalIngressEnabled,
     getTunnelUrl: () => tunnelService.getPublicUrl(),
+    getHostActivity: (signal = AbortSignal.timeout(2000)) => getHostActivity(signal),
     getQuitRiskStatus: async () => ({
       tunnel: { active: Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled) },
       scheduledTasks: await scheduledTasksRuntime.getStatus(),

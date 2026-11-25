@@ -25,7 +25,7 @@ const threadStops = new Set([
 // Some GET routes consume login tokens, create sessions/keys or initialize
 // services. Admit known read/observation routes, rather than trusting the verb.
 const reads = new Set([
-  '/live', '/health', '/api/version', '/api/system/info', '/api/config/settings', '/api/config/themes',
+  '/live', '/health', '/api/version', '/api/system/info', '/api/system/lifecycle', '/api/config/settings', '/api/config/themes',
   '/api/terminal/processes', '/api/terminal/shells', '/api/model-text', '/api/harness/local-semantic',
   '/api/varin/scheduled-tasks/status', '/api/varin/tunnel/status', '/api/varin/relay/status',
   '/api/varin/extensions/v1/host-state', '/api/varin/extensions/v1/catalog',
@@ -93,7 +93,7 @@ export const createDrainingAdmission = (isDraining: () => boolean): RequestHandl
 /** Observation HTTP responses outlive their events. Retain them during owner
  * drain, then end only these observers before server.close. This is not an
  * executor stop and does not release original work or its storage leases. */
-export const createHttpObservationDrain = (): { middleware: RequestHandler; close(): void } => {
+export const createHttpObservationDrain = (): { middleware: RequestHandler; count(): number; close(): void } => {
   const responses = new Set<import('express').Response>();
   let closed = false;
   const middleware: RequestHandler = (request, response, next) => {
@@ -105,7 +105,7 @@ export const createHttpObservationDrain = (): { middleware: RequestHandler; clos
     response.once('finish', remove); response.once('close', remove);
     next();
   };
-  return { middleware, close: () => {
+  return { middleware, count: () => responses.size, close: () => {
     closed = true;
     for (const response of responses) response.end();
     responses.clear();

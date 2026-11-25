@@ -69,6 +69,22 @@ Authoritative schema & code: [kernel/protocol/schema.json](../kernel/protocol/sc
 - **Usage ledger**: `runtime.usage.summary` reads content-free per-request billing records frozen at dispatch (retained after conversation deletion; priced from custom or models.dev snapshots in USD; pushed via `usage.updated`). External harnesses report their own turn/cumulative stats separately.
 - **Image tools** ([image-runtime.ts](../packages/web/application-host/lib/kernel/image-runtime.ts)): `image_generate` and `image_edit` bind explicitly configured image models (never implicitly inheriting chat models), store outputs as media resources, and preserve raw provider usage units.
 
+## Host activity and parking
+
+An authenticated Host owner can read the content-free activity projection at
+`GET /api/system/lifecycle`; an embedding supervisor can read the same facts
+from `getHostActivity()`. The read remains available during drain. It reports
+Catalog admission counts, Calendar preparation and pending delivery, the next
+projected Calendar wake, Calendar asset watchers, HTTP observations and active
+external ingress. An unavailable owner is reported separately from a known
+zero. This is an observation, not an atomic handoff receipt or permission to stop.
+
+The Host stays online. Follow-up, timed waits, other owner retention and external
+wake acknowledgement are not covered by this projection; parking remains
+unsupported. Do not use the cancelling shutdown API to implement an idle park.
+The durable ingress and wake protocol must first prove that accepted input and
+scheduler responsibility survive a stopped Host.
+
 ## Graceful Shutdown & Cold Backup
 
 - Host shutdown immediately enters `draining` (revoking readiness and rejecting new executions while allowing reads, cancels, and receipt cleanup) under a single monotonic `VARIN_SHUTDOWN_TIMEOUT_MS` deadline (default 10s; exit code 143 on graceful SIGTERM, 1 on incomplete drain without closing active DB writers early).
