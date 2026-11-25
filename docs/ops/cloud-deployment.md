@@ -145,6 +145,22 @@ separately, on private networking. Do not publish the upstream CDP port.
   Protect the coordinator connection with the same private-network or HTTPS ingress
   requirements as a File and command node.
 
+For an opt-in positive Browser integration check, use a local Chromium executable
+and the matching release kernel on a machine that allows their native sockets
+and process sandboxing. The test creates an isolated profile and loopback page;
+it does not use a personal browser profile or an external website:
+
+```sh
+VARIN_TEST_BROWSER_CHROMIUM=/absolute/path/to/chromium \
+VARIN_TEST_KERNEL_PATH=/absolute/path/to/varin-kernel \
+  node node_modules/vitest/vitest.mjs run --config packages/web/vitest.kernel.config.ts browser-node-chromium.native.test.ts
+```
+
+This is separate from the default CI role smoke. It exercises the regular
+coordinator and Browser node APIs, not a CDP stub: the Browser role may restart
+without replacing its Chromium process or tab, and restarting Chromium keeps
+the disk profile but invalidates the previously bound live instance.
+
 ### Dedicated Computer control plane
 
 The Linux `computer-node` build target packages the existing platform driver alongside
