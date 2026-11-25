@@ -204,10 +204,47 @@ describe('model location admission',()=>{
     await vi.waitFor(()=>expect(f.directory.resolve).toHaveBeenCalledTimes(2));
     expect(f.prepare).toHaveBeenCalledOnce();
     first.abort();
-    expect((await firstResult).name).toBe('AbortError');
+    expect(await firstResult).toMatchObject({name:'AbortError'});
     finish();
     await expect(other).resolves.toMatchObject({grantId:'read-only'});
     expect(f.prepare).toHaveBeenCalledOnce();
     expect(f.client.bind).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({operationId:otherOperation}));
   });
+});
+
+it('prepares only the dormant script Operation’s recorded local default; returns changed instructions before any grant', async () => {
+  let instructions = 'Use the original project source';
+  const ref = {domainId:'project',viewId:'snapshot',path:'AGENTS.md',canonicalId:'/logs/AGENTS.md',version:'v1'};
+  const capture = vi.fn(async () => ({system:null,appendSystem:null,instructions:[{origin:'project',kind:'project-instruction',appliesTo:'src',reference:ref}],capturedFiles:[{reference:ref,content:instructions}]}));
+  const f = fixture(capture as unknown as Parameters<typeof createModelWorkLocations>[0]['captureLocationContext']);
+  Object.assign(f.launch.selection, {source:null,lazy_work_location:{resource_owner:local,path:'/logs',workspace_id:'logs'},
+    extension_bindings:[{extensionId:'varin.builtin.scripts',serviceId:'varin.script.open',configurationIdentity:'deferred-local-script-v1',tool:{name:'script_open'}}]});
+  f.directory.resolve.mockResolvedValue({resourceOwner:local as never,workspaceId:'logs',path:'/logs'});
+  const live = {...source,resourceOwner:local,liveRoot:{...root,hostId:'local-owner'},tools:['file_read','process_spawn']};
+  f.prepare.mockResolvedValue({source:live as never,path:'/logs'});
+  const executorOwner = {kind:'external' as const,identity:'script',epoch:'epoch'};
+  const op = {id:'req:tool:script',run_id:'run',phase:'running',executor:'script_open',execution_owner:executorOwner};
+  f.runtime.operation.mockResolvedValue(op);
+  const authority = {runId:'run',threadId:'thread',operationId:op.id,invocationId:'invocation',callId:'script',
+    origin:{kind:'model_step' as const,request_id:'req'},source:null,executorOwner,
+    operation:'effect' as const,completion:'job' as const,toolName:'script_open',configurationIdentity:'deferred-local-script-v1',arguments:{cwd:'src'}};
+  const first = await f.work.prepareScriptDefault(authority,undefined,signal);
+  expect(first).toMatchObject({kind:'work_location_context_required'});
+  if (first.kind !== 'work_location_context_required') throw new Error('Expected context');
+  expect(first.instructions).toContain(instructions);
+  expect(capture).toHaveBeenCalledWith(expect.anything(),expect.anything(),expect.anything(),['src']);
+  instructions = 'Use the new project instructions';
+  const next = await f.work.prepareScriptDefault(authority,first.revision,signal);
+  expect(next).toMatchObject({kind:'work_location_context_required'});
+  if (next.kind !== 'work_location_context_required') throw new Error('Expected revision');
+  expect(next.revision).not.toBe(first.revision);
+  expect(await f.work.prepareScriptDefault(authority,next.revision,signal)).toEqual({kind:'source',source:resourceSource(live)});
+  expect(f.kernel.issueGrant).not.toHaveBeenCalled();
+  expect(f.client.bind).not.toHaveBeenCalled();
+  f.directory.resolve.mockResolvedValueOnce({resourceOwner:local as never,workspaceId:'logs',path:'/symlink-target'});
+  await expect(f.work.prepareScriptDefault(authority,next.revision,signal)).rejects.toMatchObject({code:'source_changed'});
+  f.runtime.operation.mockResolvedValue({...op,execution_owner:{...executorOwner,epoch:'stale'}});
+  const probes = f.directory.resolve.mock.calls.length;
+  await expect(f.work.prepareScriptDefault(authority,next.revision,signal)).rejects.toMatchObject({code:'source_authority_denied'});
+  expect(f.directory.resolve.mock.calls.length).toBe(probes);
 });

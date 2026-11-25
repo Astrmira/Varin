@@ -2150,7 +2150,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     if (!officeRuntimeOwner.current) throw new Error('Office tool preparation is unavailable');
     if (!browserRuntimeOwner.current) throw new Error('Browser tool preparation is unavailable');
     let configuration = await computerRuntimeOwner.current.prepareConfiguration(run, required);
-    configuration = await scriptRuntimeOwner.current.prepareConfiguration(configuration, run.source, required);
+    configuration = await scriptRuntimeOwner.current.prepareConfiguration(configuration, run.source, required, run.lazyWorkLocation);
     configuration = await webRuntimeOwner.current.prepareConfiguration(run, required, configuration);
     configuration = await researchDiscoveryOwner.current.prepareConfiguration(run, required, configuration);
     configuration = await imageRuntimeOwner.current.prepareConfiguration(run, required, configuration);
@@ -2797,7 +2797,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     onError: error => console.warn('[Calendar] preparation or asset synchronization requires attention:', calendarErrorCode(error)),
   });
   scheduledTasksRuntime.setCalendarOwner(calendarOwner);
-  scriptRuntimeOwner.current = createScriptRuntime({ kernel: kernelClient, runtime: agentRuntime, resolveLiveSource: liveSources.validate, onError: () => console.error('[Script] Original environment requires reconciliation') });
+  scriptRuntimeOwner.current = createScriptRuntime({ kernel: kernelClient, runtime: agentRuntime, resolveLiveSource: liveSources.validate, prepareDormantDefault: modelWorkLocations.prepareScriptDefault, onError: () => console.error('[Script] Original environment requires reconciliation') });
   computerRuntimeOwner.current = createComputerRuntime({ kernel: kernelClient, runtime: agentRuntime, computers: computerService, enabled: async runId => {
     const launch = await kernelClient.agentRuntimeRequest<import('./lib/kernel/protocol.generated.js').LaunchIntent | null, 'runtime.launch.inspect'>('runtime.launch.inspect', { runId });
     const workspace = launch?.selection.source?.resource_owner.kind === 'local' ? await documentsAuthority.admitWorkspaceRegistration(launch.selection.source.workspace_id) : undefined;

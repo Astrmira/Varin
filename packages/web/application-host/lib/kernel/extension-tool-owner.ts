@@ -1,3 +1,4 @@
+import { DORMANT_SCRIPT_IDENTITY, VARIN_BUILTIN_SCRIPT_EXTENSION_ID, isDormantScriptDefault, isScriptService } from './dormant-script-contract.js';
 import { createHostModelReferences, resolveHostToolArguments, projectHostToolData } from './model-references.js';
 import type { OutputPart, IncomingMedia } from './protocol.generated.js';
 /** Ordinary installed services, selected and prepared by the existing routing/supervisor owner. */
@@ -130,6 +131,7 @@ export interface ExtensionToolRun {
   runId: string;
   threadId: string;
   source: LaunchIntent['selection']['source'];
+  lazyWorkLocation?: LaunchIntent['selection']['lazy_work_location'];
   projectId?: string;
   fixed?: boolean;
   workFocus?: WorkFocusId;
@@ -198,6 +200,10 @@ export async function retainExtensionTool(
     try {
       configurationIdentity = options.configurationIdentity?.(originalDescriptor, required ? required.configurationIdentity : undefined) ?? null;
     } catch (error) { throw new ExtensionToolConfigurationError(originalDescriptor.id, error); }
+    if (configurationIdentity === DORMANT_SCRIPT_IDENTITY && (
+      provider.extensionId !== VARIN_BUILTIN_SCRIPT_EXTENSION_ID || runtime.supervisor.isRetainedBuiltin?.(provider) !== true
+      || !isScriptService(originalDescriptor.id, originalDescriptor.version)
+    )) throw new ExtensionToolSourceError(originalDescriptor.id, 'physical');
     const descriptor = parseVarinExtensionServiceProvision(options.configurationIdentity?.declaration?.(originalDescriptor, configurationIdentity) ?? originalDescriptor);
     const schema = extensionToolSchema(descriptor);
     const alwaysDeclared = required?.tool.metadata?.always_declared === true;
@@ -558,6 +564,9 @@ export function createExtensionTools(
         | undefined;
     const watches = new Map<string, () => void>();
     const delivered = new Map<string, ExtensionToolLease>();
+    const dormant = !run.source && !run.fixed && isDormantScriptDefault(run.lazyWorkLocation);
+    const scriptCandidate = (descriptor: VarinExtensionServiceProvision) =>
+      dormant && isScriptService(descriptor.id, descriptor.version);
     const enabled = (descriptor: VarinExtensionServiceProvision) =>
       preparedOptions.configurationIdentity?.enabled?.(descriptor) !== false;
     const routingScope = {
@@ -616,7 +625,7 @@ export function createExtensionTools(
     ) => {
       // Metadata suffices if no declared provider in the slot can use this Source.
       // A mixed slot still resolves its exact route and validates that descriptor.
-      if (declarations.length && declarations.every(descriptor => !sourceAvailable(descriptor.tool?.requirements, run.source)))
+      if (declarations.length && declarations.every(descriptor => !scriptCandidate(descriptor) && !sourceAvailable(descriptor.tool?.requirements, run.source)))
         requireToolSource(id, declarations[0]!.tool?.requirements, run.source);
       const candidateOptions = preparedOptions;
       const releasePreparation = candidateOptions.configurationIdentity?.retainPreparation?.();
@@ -632,7 +641,9 @@ export function createExtensionTools(
         { expectedRoutingRevision: routingRevision, signal },
       );
       try {
-        signal.throwIfAborted(); requireToolSource(id, selected.descriptor.tool?.requirements, run.source);
+        signal.throwIfAborted();
+        if (!scriptCandidate(selected.descriptor) || runtime.services.getSnapshot().providers.find(provider => provider.providerId === selected.providerId)?.extensionId !== VARIN_BUILTIN_SCRIPT_EXTENSION_ID)
+          requireToolSource(id, selected.descriptor.tool?.requirements, run.source);
         if (!enabled(selected.descriptor)) throw new ExtensionToolConfigurationError(id, 'Tool is disabled by its configuration');
         return await retainExtensionTool(candidateOptions, selected, undefined, run.workFocus);
       } catch (error) { selected.release(); throw error; }

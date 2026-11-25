@@ -13,11 +13,14 @@ import { resourceSource } from './thread-context.js';
 import type { SourceDirectory } from './thread-sources.js';
 import { sourceToolSchemas } from './source-launch.js';
 import { workLocationCapabilities } from './work-location-capabilities.js';
-import { normalizeWorkspaceRelativePath } from '../workspace/path-safety.js';
+import { normalizePathIdentity, normalizeWorkspaceRelativePath } from '../workspace/path-safety.js';
 import { resourceSections } from '../agent-resources/render.js';
 import type { PreparedAgentResources } from '../agent-resources/authority.js';
 import { waitWithSignal } from '../cancellation.js';
 import type { createResourceFileTransfer } from '../workspace/resource-file-routes.js';
+
+import { DORMANT_SCRIPT_IDENTITY, VARIN_BUILTIN_SCRIPT_EXTENSION_ID } from './dormant-script-contract.js';
+import type { ToolInvocationAuthority } from './tool-invocation.js';
 
 const denied = () => new SourceAdmissionError('source_authority_denied');
 const changed = () => new SourceAdmissionError('source_changed');
@@ -364,7 +367,43 @@ export function createModelWorkLocations(options: {
       throw new SourceAdmissionError(sourceFailureCode(error) ?? 'source_unavailable');
     }
   };
-  return {query, async releaseRun(runId?:string) {
+  async function prepareScriptDefault(authority: ToolInvocationAuthority, contextRevision: string | undefined, signal: AbortSignal) {
+    const { runId, threadId, operationId, callId, origin, executorOwner } = authority;
+    if (origin.kind !== 'model_step' || authority.source !== null || authority.toolName !== 'script_open'
+      || authority.configurationIdentity !== DORMANT_SCRIPT_IDENTITY || operationId !== `${origin.request_id}:tool:${callId}`
+      || !options.captureLocationContext) throw denied();
+    const request = {kind:'script_open',runId,threadId,callId,origin};
+    const original = async () => {
+      const admitted = await admit(request, signal);
+      const [operation, launch] = await Promise.all([runtime.operation(operationId,signal),runtime.launch(runId,signal)]);
+      if (admitted.lazy?.resource_owner.kind !== 'local' || operation.id !== operationId || operation.run_id !== runId
+        || operation.phase !== 'running' || operation.cancel_requested || operation.executor !== 'script_open'
+        || !isDeepStrictEqual(operation.execution_owner, executorOwner) || operation.managed_process
+        || !launch?.selection.extension_bindings.some(binding => binding.extensionId === VARIN_BUILTIN_SCRIPT_EXTENSION_ID
+          && binding.serviceId === 'varin.script.open' && binding.configurationIdentity === DORMANT_SCRIPT_IDENTITY
+          && binding.tool.name === 'script_open')) throw denied();
+      return { run: admitted.run, lazy: admitted.lazy };
+    };
+    const {run,lazy} = await original();
+    const location = await directory.resolve({resourceOwner:lazy.resource_owner,path:lazy.path},signal);
+    // V1 intentionally does not turn a saved alias into a different durable root.
+    if (location.resourceOwner.kind !== 'local' || location.path !== lazy.path
+      || normalizePathIdentity(location.path) !== normalizePathIdentity(lazy.path)
+      || (lazy.workspace_id && lazy.workspace_id !== location.workspaceId)) throw changed();
+    const row = {name:'Default script work location',path:lazy.path,resourceOwner:lazy.resource_owner,workspaceId:location.workspaceId};
+    const prepared = await shareLocationPreparation(run,row,row,location.path,signal);
+    if (!prepared.tools.includes('process_spawn')) throw denied();
+    const source = resourceSource(prepared);
+    if (!source || source.mode !== 'live_root') throw changed();
+    const args = object(authority.arguments) ? authority.arguments : {};
+    const directoryHint = typeof args.cwd === 'string' && args.cwd ? normalizeWorkspaceRelativePath(args.cwd) : '';
+    const context = workLocationContext(await options.captureLocationContext(run,prepared,signal,directoryHint ? [directoryHint] : []),source);
+    const current = await original();
+    if (current.run.epoch !== run.epoch || !isDeepStrictEqual(current.lazy,lazy)) throw changed();
+    if (context && context.revision !== contextRevision) return context;
+    return { kind:'source' as const, source };
+  }
+  return {query, prepareScriptDefault, async releaseRun(runId?:string) {
     for (const [key, controller] of preparing) if (runId === undefined || JSON.parse(key)[0] === runId) controller.abort();
     await Promise.all([...leases].filter(([key])=>runId === undefined || JSON.parse(key)[0] === runId).map(([key,entry])=>releaseEntry(key,entry)));
   }};
