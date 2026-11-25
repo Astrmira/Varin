@@ -5,7 +5,7 @@ import type { SupervisorJournal } from './supervisor-journal.js';
 
 export const SUPERVISOR_LAUNCH = 'VARIN_LOCAL_SUPERVISOR_LAUNCH_ID';
 export const validSupervisorLaunch = (value: string | undefined): value is string =>
-  typeof value === 'string' && /^[0-9a-f-]{36}$/u.test(value);
+  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value);
 
 interface Exit { code: number | null; signal: NodeJS.Signals | null }
 export interface SupervisorRunnerOptions {
