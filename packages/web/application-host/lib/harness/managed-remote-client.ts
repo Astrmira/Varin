@@ -364,6 +364,23 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     };
   };
 
+  const describeSourceTargets = async (signal?: AbortSignal) => {
+    signal?.throwIfAborted();
+    const connections = configuredHosts(await options.readSettings());
+    signal?.throwIfAborted();
+    const targets = [], unavailable = [];
+    for (const connection of connections) {
+      const observed = peers.get(connection.id);
+      if (!observed || connectionKey(observed.connection) !== connectionKey(connection) || !observed.identity.capabilities.includes('sources')) {
+        unavailable.push({ connectionId: connection.id, label: connection.label, message: 'Configured Host source has not been observed as available' });
+        continue;
+      }
+      targets.push({ resourceOwner: { kind: 'managed_host' as const, hostId: observed.hostId, connectionId: connection.id,
+        endpointIdentity: managedEndpointIdentity(connection) }, label: connection.label, capabilities: [...observed.identity.capabilities] });
+    }
+    return { targets, unavailable };
+  };
+
   /** Browser discovery uses the same configured peer authority, without
    * requiring a file Source or registering an Experiment machine. */
   const browserTargets = async (signal?: AbortSignal) => {
@@ -960,7 +977,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     };
   };
 
-  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, browserTargets, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
+  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
 }
 
 export type ManagedRemoteTargetRegistry = ReturnType<typeof createManagedRemoteTargetRegistry>;

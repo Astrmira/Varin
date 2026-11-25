@@ -13,7 +13,7 @@ const signal = new AbortController().signal;
 const discovery = {...q,kind:'work_locations'};
 const operationId = 'req:tool:read';
 const selection = {...q,operationId,kind:'work_location_bind',tool:'file_read'};
-function fixture() {
+function fixture(captureLocationContext?: Parameters<typeof createModelWorkLocations>[0]['captureLocationContext']) {
   const row = {id:'favorite',name:'Logs',path:'/logs',workspaceId:'logs',resourceOwner:owner};
   const workspace = {locations:[row] as ThreadLocationDirectory['locations'], projects: [] as ThreadLocationDirectory['locations']};
   const targets = [{resourceOwner:owner,label:'https://private.example/?token=secret',capabilities:['sources','work-location-read']}];
@@ -29,7 +29,7 @@ function fixture() {
   const directory = {list:vi.fn(async()=>({workspace,targets,unavailable:[]})),resolve:vi.fn(async()=>({resourceOwner:owner,path:'/logs',workspaceId:'logs'}))};
   const prepare = vi.fn(async()=>({source,path:'/logs'}));
   const kernel = {issueGrant:vi.fn(),scoped:vi.fn(),retireGrant:vi.fn()};
-  const work = createModelWorkLocations({runtime,kernel,directory,prepare} as unknown as Parameters<typeof createModelWorkLocations>[0]);
+  const work = createModelWorkLocations({runtime,kernel,directory,prepare,captureLocationContext} as unknown as Parameters<typeof createModelWorkLocations>[0]);
   const discover = async () => (await work.query(discovery,signal) as {locations:{key?:unknown;name:string;device:string;path:string;unavailable?:string}[]}).locations[0]!;
   return {runtime,client,principalCanUseHostResources,run,thread,launch,workspace,targets,row,directory,work,discover,prepare,kernel};
 }
@@ -55,6 +55,8 @@ describe('model location admission',()=>{
     expect(row.device).toBe('Managed Host');
     expect(row.name).toBe('Logs');
     expect(f.client.bind).not.toHaveBeenCalled();
+    expect(f.directory.resolve).not.toHaveBeenCalled();
+    expect(f.prepare).not.toHaveBeenCalled();
     const binding=await f.work.query({...selection,key:row.key},signal) as SourceToolBinding;
     expect(binding.enabledTools).toEqual(['file_read']);
     expect(binding.resourceOwner).toEqual(owner);
@@ -66,6 +68,45 @@ describe('model location admission',()=>{
     expect(f.client.release).toHaveBeenCalledWith({coordinatorHostId:'coordinator',authorityId:'read-only',resourceEpoch:'epoch',mode:'retire'});
     await f.work.releaseRun('run'); expect(f.client.release).toHaveBeenCalledTimes(1);
     expect(f.launch.selection.source).toEqual({mode:'live_root'});
+  });
+  it('keeps an unregistered saved path dormant until a selected operation resolves it',async()=>{
+    const f=fixture();
+    f.workspace.locations=[{id:'new',name:'Saved path',resourceOwner:owner,path:'/logs'}];
+    const row=await f.discover();
+    expect(row.key).toEqual({id:'new',resourceOwner:owner,path:'/logs'});
+    expect(f.directory.resolve).not.toHaveBeenCalled();
+    await f.work.query({...selection,key:row.key},signal);
+    expect(f.directory.resolve).toHaveBeenCalledOnce();
+    expect(f.prepare).toHaveBeenCalledOnce();
+  });
+  it('uses the durable lazy default without probing the directory, and rejects a substituted key',async()=>{
+    const f=fixture();
+    Object.assign(f.launch.selection,{source:null,lazy_work_location:{resource_owner:owner,path:'/logs',workspace_id:'logs'}});
+    await expect(f.work.query({...selection,default:true,key:{id:'favorite'}},signal)).rejects.toMatchObject({code:'source_authority_denied'});
+    expect(f.directory.resolve).not.toHaveBeenCalled();
+    const binding=await f.work.query({...selection,default:true},signal);
+    expect(binding).toMatchObject({workspaceId:'logs',resourceOwner:owner});
+    expect(f.directory.list).not.toHaveBeenCalled();
+    expect(f.directory.resolve).toHaveBeenCalledWith({resourceOwner:owner,path:'/logs'},signal);
+  });
+  it('publishes new default-directory instructions without issuing a grant until the matching revision is reissued',async()=>{
+    let content = 'Check the deployed version before editing.';
+    const reference = {domainId:'project',viewId:'snapshot',path:'AGENTS.md',canonicalId:'/logs/AGENTS.md',version:'v1'};
+    const capture = vi.fn(async()=>({system:null,appendSystem:null,
+      instructions:[{origin:'project',kind:'project-instruction',appliesTo:'',reference}],capturedFiles:[{reference,content}]}));
+    const f = fixture(capture as unknown as Parameters<typeof createModelWorkLocations>[0]['captureLocationContext']);
+    Object.assign(f.launch.selection,{source:null,lazy_work_location:{resource_owner:owner,path:'/logs'}});
+    const request = {...selection,default:true};
+    const offered = await f.work.query(request,signal) as {kind:string;instructions:string;revision:string};
+    expect(offered).toMatchObject({kind:'work_location_context_required'});
+    expect(offered.instructions).toContain(content);
+    expect(f.client.bind).not.toHaveBeenCalled();
+    content = 'Check deployment and permissions first.';
+    const updated = await f.work.query({...request,resourceContext:offered.revision},signal) as typeof offered;
+    expect(updated.revision).not.toEqual(offered.revision);
+    expect(updated.instructions).toContain(content);
+    expect(f.client.bind).not.toHaveBeenCalled();
+    expect(await f.work.query({...request,resourceContext:updated.revision},signal)).toMatchObject({grantId:'read-only'});
   });
   it('rejects changed, removed, offline and newly same-named targets; never resolves a path on the coordinator',async()=>{
     const f=fixture(); const {key}=await f.discover();

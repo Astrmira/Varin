@@ -2476,6 +2476,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     } });
   const modelWorkLocations = createModelWorkLocations({runtime: agentRuntime, kernel: kernelClient, directory: sourceDirectory,
     prepare: prepareThreadSource, executionEnvironment: () => executionEnvironment.snapshot(),
+    async captureLocationContext(run, source, signal) {
+      const checkpoint = await agentRuntime.context(run.branch_id, signal);
+      const admitted = checkpoint?.personalization;
+      if (!admitted || admitted.threadId !== run.thread_id || admitted.threadRole !== 'main') throw new Error('The admitted work-location context is unavailable');
+      return threadResources.prepare({runtime:'agent',threadId:run.thread_id,branchId:run.branch_id},source,
+        {mode:admitted.mode as 'agent' | 'bot',threadRole:admitted.threadRole,projectId:admitted.projectId}, {signal});
+    },
     transfer: (input, signal) => transferResourceFiles(input, signal),
     openProcessView: (source, runId, processId, signal) => admitRunSourceAuthority(kernelClient, agentRuntime,
       savedSourceLaunch(runId, source, ['process_inspect', 'process_read']),

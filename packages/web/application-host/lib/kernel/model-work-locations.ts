@@ -1,6 +1,6 @@
 // Private adapter for the native model's saved-location references. The Catalog
 // owns the reference and Operation; this Host only borrows the original resource.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { ThreadLocationDirectory, ThreadPreparedSource, ThreadPrepareSource, ThreadSourceTarget } from '@varin/application-client';
 import type { SourceResourceOwner } from '@varin/protocol';
@@ -14,6 +14,8 @@ import type { SourceDirectory } from './thread-sources.js';
 import { sourceToolSchemas } from './source-launch.js';
 import { workLocationCapabilities } from './work-location-capabilities.js';
 import { normalizeWorkspaceRelativePath } from '../workspace/path-safety.js';
+import { resourceSections } from '../agent-resources/render.js';
+import type { PreparedAgentResources } from '../agent-resources/authority.js';
 import type { createResourceFileTransfer } from '../workspace/resource-file-routes.js';
 
 const denied = () => new SourceAdmissionError('source_authority_denied');
@@ -29,6 +31,20 @@ interface Lease { binding: SourceToolBinding; operationId: string; release(): Pr
 type Runtime = Pick<AgentRuntimeClient, 'run' | 'thread' | 'launch' | 'operation' | 'managedSource' | 'coordinatorHostId' | 'principalCanUseHostResources'>;
 export type ModelWorkLocationOwner = (query: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
 
+/** Use the already authorized resource snapshot, not a second path reader.
+ * The token changes when the instructions or owning selection change, and
+ * the failed preparation includes precisely the instructions for reissue. */
+export function workLocationContext(snapshot: PreparedAgentResources, source: LaunchSource) {
+  const instructions = snapshot.instructions.filter(entry => entry.origin !== 'user');
+  const system = snapshot.system?.origin !== 'user' ? snapshot.system : null;
+  const appendSystem = snapshot.appendSystem?.origin !== 'user' ? snapshot.appendSystem : null;
+  if (!instructions.length && !system && !appendSystem) return undefined;
+  const sections = resourceSections({system,appendSystem,instructions,capturedFiles:snapshot.capturedFiles,skills:[]},'', 'resource_read');
+  const rendered = [sections.preamble,sections.append_system,sections.workspace_instructions].filter(Boolean).join('\n\n');
+  const revision = 'work-location:' + createHash('sha256').update(JSON.stringify({source,rendered})).digest('hex');
+  return {kind:'work_location_context_required' as const,revision,instructions:rendered};
+}
+
 function device(target: ThreadSourceTarget) {
   const owner = target.resourceOwner;
   if (owner.kind === 'local') return target.label;
@@ -40,8 +56,9 @@ function device(target: ThreadSourceTarget) {
 
 export function createModelWorkLocations(options: {
   runtime: Runtime; kernel: Pick<KernelClient, 'isReady' | 'kernelEpoch' | 'issueGrant' | 'scoped' | 'retireGrant' | 'textEncodingPolicy'>;
-  directory: Pick<SourceDirectory, 'list' | 'resolve'>;
+  directory: Pick<SourceDirectory, 'list' | 'describe' | 'resolve'>;
   prepare(input: ThreadPrepareSource, signal?: AbortSignal): Promise<ThreadPreparedSource>;
+  captureLocationContext?(run: Run, source: ThreadPreparedSource['source'], signal: AbortSignal): Promise<PreparedAgentResources>;
   executionEnvironment?(): Promise<NonNullable<SourceToolBinding['executionEnvironment']>>;
   openProcessView?(source: LaunchSource, runId: string, processId: string, signal: AbortSignal): Promise<{ toolBinding: SourceToolBinding; release(): Promise<void> }>;
   transfer?: ReturnType<typeof createResourceFileTransfer>;
@@ -58,11 +75,12 @@ export function createModelWorkLocations(options: {
       !['executing','generating','runnable','waiting'].includes(run.state) ||
       !await runtime.principalCanUseHostResources?.(run.principal_id)) throw denied();
     const [thread, launch] = await Promise.all([runtime.thread(run.thread_id, signal), runtime.launch(run.id, signal)]);
-    if (thread.parent_thread_id || (thread.principal_id ?? null) !== (run.principal_id ?? null) ||
-      !launch || launch.run_id !== run.id || launch.selection.source?.mode !== 'live_root' ||
-      !sourceToolSchemas(launch.selection).some(tool => tool.name === 'file_read')) throw denied();
+    if (thread.parent_thread_id || (thread.principal_id ?? null) !== (run.principal_id ?? null) || !launch || launch.run_id !== run.id) throw denied();
+    const lazy = launch.selection.source === null ? launch.selection.lazy_work_location : undefined;
+    const tools = lazy ? launch.selection.tools : sourceToolSchemas(launch.selection);
+    if ((!lazy && launch.selection.source?.mode !== 'live_root') || !tools.some(tool => tool.name === 'file_read')) throw denied();
     signal.throwIfAborted();
-    return run;
+    return {run,lazy,tools};
   }
   async function prepareLocation(run: Run, operationId: string, row: Omit<Row, 'id'>, key: LocationKey, canonicalPath: string, signal: AbortSignal) {
     const identity = {runtime: 'agent' as const, threadId: run.thread_id, branchId: run.branch_id};
@@ -75,8 +93,7 @@ export function createModelWorkLocations(options: {
       !isDeepStrictEqual(source.resourceOwner, key.resourceOwner) || prepared.path !== canonicalPath || prepared.path !== source.liveRoot.canonicalRoot) throw changed();
     return { ...source, liveRoot: source.liveRoot };
   }
-  async function lease(run: Run, operationId: string, tool: string, row: Omit<Row, 'id'>, key: LocationKey, canonicalPath: string, signal: AbortSignal): Promise<Lease> {
-    const source = await prepareLocation(run, operationId, row, key, canonicalPath, signal);
+  async function lease(run: Run, operationId: string, tool: string, source: Awaited<ReturnType<typeof prepareLocation>>, key: LocationKey, signal: AbortSignal): Promise<Lease> {
     if (!source.tools.includes(tool)) throw denied();
     const process = tool === 'process_spawn';
     const capabilities = workLocationCapabilities(tool);
@@ -142,7 +159,7 @@ export function createModelWorkLocations(options: {
         }
         return {};
       }
-      const run = await admit(q, signal);
+      const {run,lazy,tools} = await admit(q, signal);
       if (q.kind === 'work_location_process_view') {
         if (!nonempty(q.operationId) || !nonempty(q.processId) || !options.openProcessView) throw denied();
         const process = await runtime.operation(q.processId, signal);
@@ -160,7 +177,12 @@ export function createModelWorkLocations(options: {
           return view.toolBinding;
         } catch (error) { await view.release(); throw error; }
       }
-      const listed = await directory.list(signal);
+      if (q.default !== undefined && (q.default !== true || q.kind !== 'work_location_bind' || !lazy || q.key !== undefined)) throw denied();
+      if (q.refresh !== undefined && (q.kind !== 'work_locations' || typeof q.refresh !== 'boolean')) throw denied();
+      const listed = q.default === true ? {targets: [], workspace: undefined}
+        : q.kind === 'work_locations' && q.refresh !== true && q.device === undefined && q.path === undefined
+          ? await (directory.describe?.(signal) ?? directory.list(signal))
+          : await directory.list(signal);
       const rows = [...(listed.workspace?.locations ?? []), ...(listed.workspace?.projects ?? [])]
         .filter((row): row is Row => 'resourceOwner' in row && row.selection?.mode !== 'native_workspace');
       const locate = async (row: Omit<Row, 'id'> & { id?: string }, target: ThreadSourceTarget): Promise<{key:LocationKey;canonicalPath:string}> => {
@@ -172,6 +194,10 @@ export function createModelWorkLocations(options: {
       const resolveKey = async (given: Record<string, unknown>) => {
         const saved = given.id === undefined ? undefined : rows.find(row => row.id === given.id);
         if (given.id !== undefined && !saved) throw changed();
+        if (Object.keys(given).some(field => !['id', 'path', 'resourceOwner', 'workspaceId'].includes(field))
+          || given.workspaceId !== undefined && !nonempty(given.workspaceId)
+          || !saved && !nonempty(given.workspaceId)
+          || saved?.workspaceId && saved.workspaceId !== given.workspaceId) throw changed();
         const target = listed.targets.find(t => isDeepStrictEqual(t.resourceOwner, given.resourceOwner));
         if (!target) throw unavailable();
         const row = given.id === undefined && nonempty(given.path)
@@ -179,7 +205,9 @@ export function createModelWorkLocations(options: {
           : saved;
         if (!row || !isDeepStrictEqual(row.resourceOwner, given.resourceOwner) || row.path !== given.path) throw changed();
         const { key, canonicalPath } = await locate(row, target);
-        if (!isDeepStrictEqual(given, key)) throw changed();
+        // Saved metadata need not have a workspace registration yet. Explicit
+        // device/path lookups and older observations can still pin that identity.
+        if (given.workspaceId !== undefined && given.workspaceId !== key.workspaceId) throw changed();
         return { key, row, target, canonicalPath };
       };
       if (q.kind === 'work_locations') {
@@ -203,8 +231,8 @@ export function createModelWorkLocations(options: {
           if (target?.resourceOwner.kind === 'managed_host' && !target.capabilities.includes('work-location-read')) {
             results.push({...presentation,unavailable:'Original Host requires an update'});
           } else if (target) {
-            try { results.push({...presentation,key:(await locate(row,target)).key}); }
-            catch { signal.throwIfAborted(); results.push({...presentation,unavailable:'Location is not accessible'}); }
+            results.push({...presentation,key:{id:row.id,path:row.path,resourceOwner:row.resourceOwner,
+              ...(row.workspaceId ? {workspaceId:row.workspaceId} : {})}});
           } else results.push({...presentation,unavailable:'Original Host is unavailable'});
           if (results.length === 32) break;
         }
@@ -228,27 +256,44 @@ export function createModelWorkLocations(options: {
         return { copied: result.copied, removed: result.removed, ...(result.error ? { error: 'The file transfer did not complete. Check both locations before retrying.' } : {}),
           from: device(from.target), to: device(to.target), path, destinationPath };
       }
-      if (!object(q.key)) throw denied();
-      const { key: actual, row, target, canonicalPath } = await resolveKey(q.key);
+      if (!object(q.key) && q.default !== true) throw denied();
+      const target = await (async () => {
+        if (q.default !== true || !lazy) return resolveKey(q.key as Record<string, unknown>);
+        const row = {name: 'Default work location',path:lazy.path,resourceOwner:lazy.resource_owner,
+          ...(lazy.workspace_id ? {workspaceId: lazy.workspace_id} : {})};
+        // Resolve only the Catalog's original saved default. A client/query
+        // cannot substitute a different owner, working directory or grant.
+        const description = {resourceOwner:row.resourceOwner,label:row.name,capabilities:[]};
+        return {row,target:description,...await locate(row,description)};
+      })();
+      const {key:actual,row,canonicalPath} = target;
       if (q.kind === 'work_location_switch') {
         const source = await prepareLocation(run, q.operationId, row, actual, canonicalPath, signal);
         await admit(q, signal);
-        return { source: resourceSource(source), name: row.name, device: device(target), path: canonicalPath };
+        return { source: resourceSource(source), name: row.name, device: device(target.target), path: canonicalPath };
       }
       const tool = q.tool;
       if (typeof tool !== 'string' || !workLocationCapabilities(tool)) throw denied();
-      if (target.resourceOwner.kind === 'managed_host'
-        && !target.capabilities.includes(tool === 'file_read' ? 'work-location-read' : 'work-location')) throw unavailable();
+      if (q.default === true && !tools.some(schema => schema.name === tool)) throw denied();
+      if (q.default !== true && target.target.resourceOwner.kind === 'managed_host'
+        && !target.target.capabilities.includes(tool === 'file_read' ? 'work-location-read' : 'work-location')) throw unavailable();
       const key = keyFor(run.id,q.operationId);
       if (leases.has(key) || preparing.has(key)) throw changed();
       const lifecycle = new AbortController();
       preparing.set(key,lifecycle);
       const active = AbortSignal.any([signal,lifecycle.signal]);
       try {
-        const entry = await lease(run,q.operationId,tool,row,actual,canonicalPath,active);
+        const source = await prepareLocation(run, q.operationId, row, actual, canonicalPath, active);
+        if (q.default === true && options.captureLocationContext) {
+          const snapshot = await options.captureLocationContext(run, source, active);
+          const context = workLocationContext(snapshot, resourceSource(source)!);
+          await admit(q, active);
+          if (context && context.revision !== q.resourceContext) return context;
+        }
+        const entry = await lease(run,q.operationId,tool,source,actual,active);
         try {
           const current = await admit(q, active);
-          if (current.epoch !== run.epoch) throw changed();
+          if (current.run.epoch !== run.epoch || !isDeepStrictEqual(current.lazy,lazy)) throw changed();
           leases.set(key,entry);
           return entry.binding;
         } catch(error) { await entry.release(); throw error; }

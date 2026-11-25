@@ -153,6 +153,9 @@ it('accepts a Bot greeting and uses the restricted Host workspace for file and p
   await fs.writeFile(path.join(project, 'receipts.csv'), 'category,amount\ntrain,18\n');
   await f.documents.resolveWorkspace({ path: project });
   const directory = createThreadSourceDirectory({ documents: f.documents });
+  const resolveLocation = vi.spyOn(directory, 'resolve');
+  const locations = createModelWorkLocations({kernel:f.kernel,runtime:f.runtime,directory,prepare:f.prepare});
+  f.kernel.setModelWorkLocationOwner(locations.query);
   const botDirectory = createBotWorkingDirectoryResolver(f.workspaceConfig, f.guard);
   f.runtime.deviceFileAccess = !f.workspaceConfig.lockdown;
   f.runtime.principalCanUseHostResources = async () => true;
@@ -165,11 +168,17 @@ it('accepts a Bot greeting and uses the restricted Host workspace for file and p
     code: 'path-escape', status: 403, message: expect.stringContaining('outside the workspace') });
   await expect(f.api.sources.resolve(identity, { resourceOwner: { kind: 'local' }, path: path.join(project, 'missing') })).rejects.toMatchObject({
     status: 404, message: expect.stringContaining('does not exist') });
+  resolveLocation.mockClear();
   const first = await f.api.submit({ ...identity, key: 'hello', expectedHead: null, text: 'Hello', model });
   await expect.poll(async () => (await f.api.run(first.run_id)).state, { timeout: 15_000 }).toBe('completed');
+  expect(resolveLocation).not.toHaveBeenCalled();
+  expect((await f.runtime.launch(first.run_id))?.selection).toMatchObject({
+    source:null,lazy_work_location:{resource_owner:{kind:'local'},path:await fs.realpath(f.workspace)},
+  });
   const head = (await f.runtime.thread(identity.threadId)).branches[0]!.head;
   const next = await f.api.submit({ ...identity, key: 'expenses', expectedHead: head, text: 'Summarize the receipts', model });
   await expect.poll(async () => (await f.api.run(next.run_id)).state, { timeout: 15_000 }).toBe('completed');
+  expect(resolveLocation).toHaveBeenCalled();
   expect(await fs.readFile(path.join(project, 'checked.csv'), 'utf8')).toBe('category,total\ntrain,18\n');
   expect(await fs.readdir(home)).toEqual([]);
 }, 45_000);

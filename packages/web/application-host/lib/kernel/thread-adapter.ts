@@ -44,6 +44,15 @@ import { HistoryRunUsageReader, historyModelRequestId } from './history-run-usag
 import { HistoryRunNavigationReader } from './history-run-navigation.js';
 import { threadEventHub } from './event-hub.js';
 import { ownershipResolver } from './ownership-resolver.js';
+import type { DefaultWorkLocationSelection, LazyDefaultWorkLocation } from './default-work-location.js';
+
+const lazyWorkLocationTools = ['file_read','file_list','file_search','file_write','file_edit','process_spawn','process_inspect','process_read'];
+
+function splitDefaultLocation(selection: DefaultWorkLocationSelection) {
+  return selection && 'lazyWorkLocation' in selection
+    ? { source: null, lazyWorkLocation: selection.lazyWorkLocation }
+    : { source: selection, lazyWorkLocation: undefined };
+}
 
 export interface ThreadModelAuthority {
   listModels?(): Promise<ThreadModelInfo[]>;
@@ -237,6 +246,7 @@ export class ThreadAdapter {
         if (!model) { await hold('model_unavailable'); return; }
         try {
           let source: ThreadSource | null = null;
+          let lazyWorkLocation: LazyDefaultWorkLocation | undefined;
           let initialContext: InitialContext;
           try {
             const thread = botThread ?? await this.requireIdentity(identity, signal);
@@ -246,7 +256,7 @@ export class ThreadAdapter {
               source = await this.workspaceSource(workspace, signal);
             } else {
               const canUseHostSources = await this.runtime.principalCanUseHostResources?.(thread.principal_id) ?? true;
-              if (canUseHostSources) source = await this.defaultDeviceSource?.(identity, thread, signal) ?? null;
+              if (canUseHostSources) ({ source, lazyWorkLocation } = splitDefaultLocation(await this.defaultDeviceSource?.(identity, thread, signal) ?? null));
             }
             if (source) await this.admitSource(source, identity, undefined, signal);
             initialContext = work.botId
@@ -257,7 +267,8 @@ export class ThreadAdapter {
             throw error;
           }
           const credentialScope = await model.credentialOwner.scope();
-          const childDispatch = this.prepareChildProfiles ? await this.prepareChildProfiles({ modelOwner: model.credentialOwner, ...(source ? { resourceOwner: source.resourceOwner } : {}),
+          const childOwner = source?.resourceOwner ?? lazyWorkLocation?.resourceOwner;
+          const childDispatch = this.prepareChildProfiles ? await this.prepareChildProfiles({ modelOwner: model.credentialOwner, ...(childOwner ? { resourceOwner: childOwner } : {}),
             parent: { configuration: model.configuration, credential_scope: credentialScope } }, signal) : undefined;
           signal.throwIfAborted();
           const receipt = await this.runtime.admitBotWork({ work, configuration: model.configuration, initialContext,
@@ -266,7 +277,8 @@ export class ThreadAdapter {
               mode: source.mode, liveRoot: source.liveRoot ?? null,
               ...(source.mode === 'native_workspace' && source.nativeScope ? { nativeScope: source.nativeScope } : {}),
               ...(source.environmentRunId ? { environmentRunId: source.environmentRunId } : {}) } : null,
-              enabledTools: source?.tools ?? [], credentialScope, ...(childDispatch ? { childDispatch } : {}) } }, signal);
+              enabledTools: source?.tools ?? (lazyWorkLocation ? lazyWorkLocationTools : []), credentialScope, ...(lazyWorkLocation ? { lazyWorkLocation } : {}),
+              ...(childDispatch ? { childDispatch } : {}) } }, signal);
           void this.continueLaunch(receipt.run_id, { credentialOwner: model.credentialOwner, signal }).catch(() => undefined);
         } finally { model.credentialOwner.release(); }
       }, signal).catch(error => { if (!signal.aborted) this.onLaunchError(work.inputId, error); })
@@ -296,7 +308,7 @@ export class ThreadAdapter {
   bindCreationDefaults(read: NonNullable<ThreadAdapter['creationDefaults']>): void { this.creationDefaults = read; }
   private organizationCreation?: (identity: ThreadIdentity, placement: import('@varin/application-client').ConversationOrganizationPlacement) => Promise<import('@varin/application-client').ConversationCreationDefaults | null>;
   bindOrganizationCreation(prepare: NonNullable<ThreadAdapter['organizationCreation']>): void { this.organizationCreation = prepare; }
-  private defaultDeviceSource?: (identity: ThreadIdentity, thread: ThreadSnapshot['thread'], signal?: AbortSignal) => Promise<ThreadSource | null>;
+  private defaultDeviceSource?: (identity: ThreadIdentity, thread: ThreadSnapshot['thread'], signal?: AbortSignal) => Promise<DefaultWorkLocationSelection>;
   bindDefaultDeviceSource(prepare: NonNullable<ThreadAdapter['defaultDeviceSource']>): void { this.defaultDeviceSource = prepare; }
   private fileResolver?: import('./thread-file-target.js').ThreadFileTargetResolver;
   private codeExchangeReader?: import('./thread-code-exchange.js').ThreadCodeExchangeReader;
@@ -1194,15 +1206,16 @@ export class ThreadAdapter {
         }
         // Existing branch source wins; a fresh source-less conversation uses its creation default.
         const workspace = thread.branches.find(b => b.branch_id === input.branchId)?.workspace_default;
-        const candidateSource = input.source !== undefined ? input.source
-          : workspace ? await this.workspaceSource(workspace) : await this.defaultDeviceSource?.(input, thread) ?? null;
+        const { source: candidateSource, lazyWorkLocation } = splitDefaultLocation(input.source !== undefined ? input.source
+          : workspace ? await this.workspaceSource(workspace) : await this.defaultDeviceSource?.(input, thread) ?? null);
         const command: InputSubmitParams = { key: input.key, threadId: input.threadId, branchId: input.branchId,
           ...(workspace ? { expectedWorkspaceRevision: workspace.revision } : {}),
           expectedHead: input.expectedHead, input: preparedInput, configuration: model.configuration,
           launch: { ...(input.agent ? { agent: { ...input.agent, name: null, tools: null } } : {}), inheritSource: input.source === undefined, source: candidateSource ? {
             resourceOwner: candidateSource.resourceOwner, workspaceId: candidateSource.workspaceId, executionWorkspaceId: candidateSource.executionWorkspaceId,
             ...(candidateSource.mode==='native_workspace'&&candidateSource.nativeScope?{nativeScope:candidateSource.nativeScope}:{}),branchId: candidateSource.branchId ?? null, revision: candidateSource.revision ?? null, mode: candidateSource.mode, liveRoot: candidateSource.liveRoot ?? null, ...(candidateSource.environmentRunId ? { environmentRunId: candidateSource.environmentRunId } : {}),
-          } : null, enabledTools: candidateSource?.tools ?? [], credentialScope },
+          } : null, enabledTools: candidateSource?.tools ?? (lazyWorkLocation ? lazyWorkLocationTools : []), credentialScope,
+          ...(lazyWorkLocation ? { lazyWorkLocation } : {}) },
         };
         if (input.references?.length || input.contentReferences?.length || input.contentReferenceOccurrences?.length || input.skills?.length || parseExplicitSkillCommand(input.text) || this.prepareContext || this.prepareChildProfiles || input.agent) {
           const accepted = await this.runtime.inputReceipt(command);
@@ -1281,8 +1294,9 @@ export class ThreadAdapter {
               }
             }
             if (this.prepareChildProfiles) {
+              const childOwner = candidateSource?.resourceOwner ?? lazyWorkLocation?.resourceOwner;
               command.launch!.childDispatch = await this.prepareChildProfiles({ modelOwner: model.credentialOwner,
-                ...(candidateSource ? { resourceOwner: candidateSource.resourceOwner } : {}), parent: {
+                ...(childOwner ? { resourceOwner: childOwner } : {}), parent: {
                 configuration: model.configuration, credential_scope: command.launch!.credentialScope ?? null,
               } });
             }
