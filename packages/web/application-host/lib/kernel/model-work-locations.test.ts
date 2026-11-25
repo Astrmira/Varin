@@ -24,7 +24,8 @@ function fixture(captureLocationContext?: Parameters<typeof createModelWorkLocat
   const run = {id:'run',thread_id:'thread',branch_id:'branch',state:'executing',cancel_requested:false,principal_id:'principal',epoch:1};
   const thread = {parent_thread_id:null as string|null,principal_id:'principal'};
   const launch = {run_id:'run',selection:{source:{mode:'live_root'},tools:[{name:'file_read'}],extension_bindings:[]}};
-  const runtime = {run:vi.fn(async()=>run),thread:vi.fn(async()=>thread),launch:vi.fn(async()=>launch),
+  const runtime = {run:vi.fn(async(_id:string)=>run),thread:vi.fn(async()=>thread),launch:vi.fn(async(_id:string)=>launch),
+    childExecutionForRun:vi.fn(async(_id:string):Promise<unknown>=>null),operation:vi.fn(async(_id:string):Promise<unknown>=>null),
     principalCanUseHostResources,managedSource:vi.fn(async()=>client),coordinatorHostId:'coordinator'};
   const directory = {list:vi.fn(async()=>({workspace,targets,unavailable:[]})),describe:vi.fn(async()=>({workspace,targets,unavailable:[]})),
     resolve:vi.fn(async()=>({resourceOwner:owner,path:'/logs',workspaceId:'logs'}))};
@@ -103,21 +104,48 @@ describe('model location admission',()=>{
   it('publishes new default-directory instructions without issuing a grant until the matching revision is reissued',async()=>{
     let content = 'Check the deployed version before editing.';
     const reference = {domainId:'project',viewId:'snapshot',path:'AGENTS.md',canonicalId:'/logs/AGENTS.md',version:'v1'};
-    const capture = vi.fn(async()=>({system:null,appendSystem:null,
-      instructions:[{origin:'project',kind:'project-instruction',appliesTo:'',reference}],capturedFiles:[{reference,content}]}));
+    const capture = vi.fn(async(_run:unknown,_source:unknown,_signal:AbortSignal,_directories:string[])=>({system:null,appendSystem:null,
+      instructions:[],instructionScopes:[{directory:'src',instructions:[{origin:'project',kind:'project-instruction',appliesTo:'src',reference}]}],
+      capturedFiles:[{reference,content}]}));
     const f = fixture(capture as unknown as Parameters<typeof createModelWorkLocations>[0]['captureLocationContext']);
     Object.assign(f.launch.selection,{source:null,lazy_work_location:{resource_owner:owner,path:'/logs'}});
-    const request = {...selection,default:true};
+    const request = {...selection,default:true,instructionDirectories:['src','src']};
     const offered = await f.work.query(request,signal) as {kind:string;instructions:string;revision:string};
     expect(offered).toMatchObject({kind:'work_location_context_required'});
     expect(offered.instructions).toContain(content);
+    expect(capture).toHaveBeenCalledWith(expect.anything(),expect.anything(),expect.any(AbortSignal),['src']);
     expect(f.client.bind).not.toHaveBeenCalled();
+    await expect(f.work.query({...request,instructionDirectories:['../outside']},signal)).rejects.toThrow();
     content = 'Check deployment and permissions first.';
     const updated = await f.work.query({...request,resourceContext:offered.revision},signal) as typeof offered;
     expect(updated.revision).not.toEqual(offered.revision);
     expect(updated.instructions).toContain(content);
     expect(f.client.bind).not.toHaveBeenCalled();
     expect(await f.work.query({...request,resourceContext:updated.revision},signal)).toMatchObject({grantId:'read-only'});
+  });
+  it('borrows only the recorded default of the exact native child dispatch and rejects changed lineage before resolution',async()=>{
+    const f=fixture();
+    const lazy = {resource_owner:owner,path:'/logs',workspace_id:'logs'};
+    Object.assign(f.launch.selection,{source:null,lazy_work_location:lazy});
+    f.thread.parent_thread_id='parent-thread';
+    const parent={...f.run,id:'parent-run',thread_id:'parent-thread',branch_id:'parent-branch'};
+    f.runtime.run.mockImplementation(async id=>id==='parent-run' ? parent : f.run);
+    f.runtime.launch.mockImplementation(async id=>id==='parent-run' ? {...f.launch,run_id:id} : f.launch);
+    const child={
+      trigger:{kind:'dispatch'},child_operation_id:'parent-dispatch',parent_run_id:parent.id,parent_thread_id:parent.thread_id,parent_branch_id:parent.branch_id,
+      child_thread_id:f.run.thread_id,child_branch_id:f.run.branch_id,receipt:{run_id:f.run.id},report:null,cancel_requested:false,resources_released:false,
+      source:{kind:'absent'},launch:f.launch.selection,
+    };
+    f.runtime.childExecutionForRun.mockResolvedValue(child);
+    f.runtime.operation.mockResolvedValue({id:'parent-dispatch',run_id:parent.id,cancel_requested:false});
+    await expect(f.work.query({...selection,key:{id:'favorite'}},signal)).rejects.toMatchObject({code:'source_authority_denied'});
+    await expect(f.work.query({...selection,default:true,toolVersion:'3'},signal)).rejects.toMatchObject({code:'source_authority_denied'});
+    child.parent_branch_id='different-branch';
+    await expect(f.work.query({...selection,default:true,toolVersion:'4'},signal)).rejects.toMatchObject({code:'source_authority_denied'});
+    expect(f.directory.resolve).not.toHaveBeenCalled();
+    child.parent_branch_id=parent.branch_id;
+    expect(await f.work.query({...selection,default:true,toolVersion:'4'},signal)).toMatchObject({grantId:'read-only',resourceOwner:owner});
+    expect(f.directory.resolve).toHaveBeenCalledOnce();
   });
   it('rejects changed, removed, offline and newly same-named targets; never resolves a path on the coordinator',async()=>{
     const f=fixture(); const {key}=await f.discover();
@@ -162,5 +190,24 @@ describe('model location admission',()=>{
     const bound=await f.client.bind(); f.client.bind.mockImplementationOnce(async()=>{f.run.cancel_requested=true;return bound;});
     await expect(f.work.query({...selection,key},signal)).rejects.toMatchObject({code:'source_authority_denied'});
     expect(f.client.release).toHaveBeenCalledWith({coordinatorHostId:'coordinator',authorityId:'read-only',resourceEpoch:'epoch',mode:'retire'});
+  });
+  it('shares live-root preparation but not the admitted tool grant when a waiter cancels',async()=>{
+    const f=fixture(); const {key}=await f.discover();
+    let finish!:()=>void;
+    const held = new Promise<void>(resolve=>{finish=resolve;});
+    f.prepare.mockImplementationOnce(async()=>{await held; return {source,path:'/logs'};});
+    const first=new AbortController(), second=new AbortController();
+    const firstCall=f.work.query({...selection,key},first.signal);
+    const firstResult=firstCall.catch(error=>error);
+    const otherOperation='req:tool:other';
+    const other=f.work.query({...selection,callId:'other',operationId:otherOperation,key},second.signal);
+    await vi.waitFor(()=>expect(f.directory.resolve).toHaveBeenCalledTimes(2));
+    expect(f.prepare).toHaveBeenCalledOnce();
+    first.abort();
+    expect((await firstResult).name).toBe('AbortError');
+    finish();
+    await expect(other).resolves.toMatchObject({grantId:'read-only'});
+    expect(f.prepare).toHaveBeenCalledOnce();
+    expect(f.client.bind).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({operationId:otherOperation}));
   });
 });

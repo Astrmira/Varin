@@ -16,6 +16,7 @@ import { workLocationCapabilities } from './work-location-capabilities.js';
 import { normalizeWorkspaceRelativePath } from '../workspace/path-safety.js';
 import { resourceSections } from '../agent-resources/render.js';
 import type { PreparedAgentResources } from '../agent-resources/authority.js';
+import { waitWithSignal } from '../cancellation.js';
 import type { createResourceFileTransfer } from '../workspace/resource-file-routes.js';
 
 const denied = () => new SourceAdmissionError('source_authority_denied');
@@ -29,14 +30,17 @@ type Row = Extract<ThreadLocationDirectory['locations'][number], { resourceOwner
 interface LocationDescription { id?: string; path: string; workspaceId?: string; resourceOwner: SourceResourceOwner }
 interface LocationKey extends LocationDescription { workspaceId: string }
 interface Lease { binding: SourceToolBinding; operationId: string; release(): Promise<void> }
-type Runtime = Pick<AgentRuntimeClient, 'run' | 'thread' | 'launch' | 'operation' | 'managedSource' | 'coordinatorHostId' | 'principalCanUseHostResources'>;
+interface PreparationFlight<T> { work: Promise<T>; controller: AbortController; consumers: number }
+type Runtime = Pick<AgentRuntimeClient, 'run' | 'thread' | 'launch' | 'operation' | 'managedSource' | 'coordinatorHostId' | 'principalCanUseHostResources' | 'childExecutionForRun'>;
 export type ModelWorkLocationOwner = (query: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
 
 /** Use the already authorized resource snapshot, not a second path reader.
  * The token changes when the instructions or owning selection change, and
  * the failed preparation includes precisely the instructions for reissue. */
 export function workLocationContext(snapshot: PreparedAgentResources, source: LaunchSource) {
-  const instructions = snapshot.instructions.filter(entry => entry.origin !== 'user');
+  const instructions = [...new Map([...snapshot.instructions, ...(snapshot.instructionScopes ?? []).flatMap(scope => scope.instructions)]
+    .filter(entry => entry.origin !== 'user')
+    .map(entry => [JSON.stringify([entry.reference.canonicalId, entry.reference.version, entry.appliesTo]), entry])).values()];
   const system = snapshot.system?.origin !== 'user' ? snapshot.system : null;
   const appendSystem = snapshot.appendSystem?.origin !== 'user' ? snapshot.appendSystem : null;
   if (!instructions.length && !system && !appendSystem) return undefined;
@@ -59,7 +63,7 @@ export function createModelWorkLocations(options: {
   runtime: Runtime; kernel: Pick<KernelClient, 'isReady' | 'kernelEpoch' | 'issueGrant' | 'scoped' | 'retireGrant' | 'textEncodingPolicy'>;
   directory: Pick<SourceDirectory, 'list' | 'describe' | 'resolve'>;
   prepare(input: ThreadPrepareSource, signal?: AbortSignal): Promise<ThreadPreparedSource>;
-  captureLocationContext?(run: Run, source: ThreadPreparedSource['source'], signal: AbortSignal): Promise<PreparedAgentResources>;
+  captureLocationContext?(run: Run, source: ThreadPreparedSource['source'], signal: AbortSignal, instructionDirectories: string[]): Promise<PreparedAgentResources>;
   executionEnvironment?(): Promise<NonNullable<SourceToolBinding['executionEnvironment']>>;
   openProcessView?(source: LaunchSource, runId: string, processId: string, signal: AbortSignal): Promise<{ toolBinding: SourceToolBinding; release(): Promise<void> }>;
   transfer?: ReturnType<typeof createResourceFileTransfer>;
@@ -67,6 +71,7 @@ export function createModelWorkLocations(options: {
   const {runtime, directory, kernel} = options;
   const leases = new Map<string, Lease>();
   const preparing = new Map<string, AbortController>();
+  const locationPreparations = new Map<string, PreparationFlight<Awaited<ReturnType<typeof prepareLocation>>>>();
   const keyFor = (runId: string, operationId: string) => JSON.stringify([runId, operationId]);
   async function admit(query: Record<string, unknown>, signal: AbortSignal) {
     if (!nonempty(query.runId) || !nonempty(query.threadId) || !nonempty(query.callId) ||
@@ -76,23 +81,73 @@ export function createModelWorkLocations(options: {
       !['executing','generating','runnable','waiting'].includes(run.state) ||
       !await runtime.principalCanUseHostResources?.(run.principal_id)) throw denied();
     const [thread, launch] = await Promise.all([runtime.thread(run.thread_id, signal), runtime.launch(run.id, signal)]);
-    if (thread.parent_thread_id || (thread.principal_id ?? null) !== (run.principal_id ?? null) || !launch || launch.run_id !== run.id) throw denied();
+    if ((thread.principal_id ?? null) !== (run.principal_id ?? null) || !launch || launch.run_id !== run.id) throw denied();
     const lazy = launch.selection.source === null ? launch.selection.lazy_work_location : undefined;
     const tools = lazy ? launch.selection.tools : sourceToolSchemas(launch.selection);
-    if ((!lazy && launch.selection.source?.mode !== 'live_root') || !tools.some(tool => tool.name === 'file_read')) throw denied();
+    if (!lazy && (launch.selection.source?.mode !== 'live_root' || !tools.some(tool => tool.name === 'file_read'))) throw denied();
+    if (thread.parent_thread_id) {
+      // Only the actual accepted, explicitly scoped native dispatch can
+      // authorize a child borrow. The parent ID or a plan alone is not a grant.
+      const tool = query.tool;
+      if (!lazy || query.kind !== 'work_location_bind' || query.default !== true || query.key !== undefined || query.toolVersion !== '4' ||
+        typeof tool !== 'string' || !['file_read','file_list','file_search','file_write','file_edit'].includes(tool)
+        || !tools.some(schema => schema.name === tool)) throw denied();
+      const child = await runtime.childExecutionForRun?.(run.id, signal);
+      if (!child || child.trigger.kind !== 'dispatch' || child.cancel_requested || child.report || child.resources_released
+        || child.receipt?.run_id !== run.id || child.child_thread_id !== run.thread_id || child.child_branch_id !== run.branch_id
+        || child.parent_thread_id !== thread.parent_thread_id || child.source?.kind !== 'absent'
+        || child.launch.source !== null || !isDeepStrictEqual(child.launch.lazy_work_location, lazy)
+        || !child.launch.tools.some(schema => schema.name === tool)) throw denied();
+      const [dispatch, parent, parentLaunch] = await Promise.all([
+        runtime.operation(child.child_operation_id, signal),runtime.run(child.parent_run_id, signal),runtime.launch(child.parent_run_id, signal),
+      ]);
+      if (dispatch.id !== child.child_operation_id || dispatch.run_id !== child.parent_run_id || dispatch.cancel_requested ||
+        parent.id !== child.parent_run_id || parent.thread_id !== child.parent_thread_id || parent.branch_id !== child.parent_branch_id ||
+        (parent.principal_id ?? null) !== (run.principal_id ?? null) || parentLaunch?.run_id !== child.parent_run_id ||
+        !isDeepStrictEqual(parentLaunch.selection.lazy_work_location,lazy)) throw denied();
+    }
     signal.throwIfAborted();
     return {run,lazy,tools};
   }
   async function prepareLocation(run: Run, operationId: string, row: Omit<Row, 'id'>, key: LocationKey, canonicalPath: string, signal: AbortSignal) {
     const identity = {runtime: 'agent' as const, threadId: run.thread_id, branchId: run.branch_id};
     const prepared = await options.prepare({...identity, key: `work-location:${operationId}`, resourceOwner: row.resourceOwner,
-      workspaceId: key.workspaceId, mode: 'live_root', ...(row.selection ? {selection: row.selection} : {}),
+      // This router admits live directories. Without an explicit mode, the
+      // source preparer may mount a registered native branch before rejecting
+      // the resulting view here.
+      workspaceId: key.workspaceId, mode: 'live_root', selection: row.selection ?? {mode:'live_root'},
       captureScopes: [], content: {mode:'saved-files'}}, signal);
     const source = prepared.source;
     if (source.mode !== 'live_root' || !source.liveRoot || !source.tools.includes('file_read') ||
       source.workspaceId !== key.workspaceId || source.executionWorkspaceId !== key.workspaceId ||
       !isDeepStrictEqual(source.resourceOwner, key.resourceOwner) || prepared.path !== canonicalPath || prepared.path !== source.liveRoot.canonicalRoot) throw changed();
     return { ...source, liveRoot: source.liveRoot };
+  }
+  async function shareLocationPreparation(run: Run, row: Omit<Row, 'id'>, key: LocationKey, canonicalPath: string, signal: AbortSignal) {
+    // This coalesces live-root preparation only. The original Operation
+    // independently acquires, fences and releases its exact tool grant.
+    const scope = JSON.stringify([run.epoch,run.principal_id,run.thread_id,run.branch_id,key.resourceOwner,key.workspaceId,canonicalPath,row.selection?.mode ?? 'live_root']);
+    let flight = locationPreparations.get(scope);
+    if (flight?.controller.signal.aborted) {
+      // A successor does not race a still-settling abandoned preparation.
+      await waitWithSignal(flight.work.catch(() => undefined), signal);
+      return shareLocationPreparation(run,row,key,canonicalPath,signal);
+    }
+    if (!flight) {
+      const controller = new AbortController();
+      const preparationKey = createHash('sha256').update(scope).digest('hex');
+      const next = {controller,consumers:0,
+        work: Promise.resolve().then(()=>prepareLocation(run,`prepare:${preparationKey}`,row,key,canonicalPath,controller.signal))
+          .finally(() => { if (locationPreparations.get(scope) === next) locationPreparations.delete(scope); })};
+      locationPreparations.set(scope,next);
+      flight=next;
+    }
+    flight.consumers++;
+    try { return await waitWithSignal(flight.work,signal); }
+    finally {
+      flight.consumers--;
+      if (!flight.consumers && locationPreparations.get(scope) === flight) flight.controller.abort();
+    }
   }
   async function lease(run: Run, operationId: string, tool: string, source: Awaited<ReturnType<typeof prepareLocation>>, key: LocationKey, signal: AbortSignal): Promise<Lease> {
     if (!source.tools.includes(tool)) throw denied();
@@ -179,6 +234,9 @@ export function createModelWorkLocations(options: {
         } catch (error) { await view.release(); throw error; }
       }
       if (q.default !== undefined && (q.default !== true || q.kind !== 'work_location_bind' || !lazy || q.key !== undefined)) throw denied();
+      if (q.instructionDirectories !== undefined && (q.default !== true || !Array.isArray(q.instructionDirectories)
+        || q.instructionDirectories.some(dir=>typeof dir !== 'string'))) throw denied();
+      const instructionDirectories = [...new Set((q.instructionDirectories ?? []) as string[])].map(normalizeWorkspaceRelativePath).filter(Boolean).sort();
       if (q.refresh !== undefined && (q.kind !== 'work_locations' || typeof q.refresh !== 'boolean')) throw denied();
       const listed = q.default === true ? {targets: [], workspace: undefined}
         : q.kind === 'work_locations' && q.refresh !== true && q.device === undefined && q.path === undefined
@@ -284,9 +342,9 @@ export function createModelWorkLocations(options: {
       preparing.set(key,lifecycle);
       const active = AbortSignal.any([signal,lifecycle.signal]);
       try {
-        const source = await prepareLocation(run, q.operationId, row, actual, canonicalPath, active);
+        const source = await shareLocationPreparation(run,row,actual,canonicalPath,active);
         if (q.default === true && options.captureLocationContext) {
-          const snapshot = await options.captureLocationContext(run, source, active);
+          const snapshot = await options.captureLocationContext(run, source, active, instructionDirectories);
           const context = workLocationContext(snapshot, resourceSource(source)!);
           await admit(q, active);
           if (context && context.revision !== q.resourceContext) return context;
