@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import path from 'node:path';
 import { SupervisorJournal } from './supervisor-journal.js';
+import { runLocalSupervisor } from './supervisor-runner.js';
 import type { FollowupEventReceiveParams } from '@varin/protocol';
 
 async function readPage(): Promise<FollowupEventReceiveParams> {
@@ -50,6 +52,7 @@ export async function waitForPublishedWake(
 async function main(argv: string[]): Promise<unknown> {
   const [directory, owner, action, ...args] = argv;
   if (!directory || !owner) throw new Error('Supervisor journal and owner are required');
+  if (action === 'run' && path.basename(directory) !== 'supervisor-wake') throw new Error('A resident supervisor must use DATA_DIR/supervisor-wake');
   const journal = await SupervisorJournal.open(directory, owner);
   if (action === 'accept' && args.length === 1) return journal.accept(args[0]!, await readPage());
   if (action === 'publish' && args.length === 2) {
@@ -57,6 +60,23 @@ async function main(argv: string[]): Promise<unknown> {
     return journal.publishWake({revision: Number(args[0]), nextWakeAtMs: args[1] === 'none' ? null : Number(args[1])});
   }
   if (action === 'status' && !args.length) return { wake: await journal.currentWake(), pending: await journal.hasPendingEvents() };
+  if (action === 'run' && !args.length) {
+    const stop = new AbortController();
+    const requestStop = () => stop.abort();
+    process.on('SIGTERM', requestStop);
+    process.on('SIGINT', requestStop);
+    try {
+      const outcome = await runLocalSupervisor({ journal, entry: fileURLToPath(new URL('../../index.js', import.meta.url)),
+        env: { ...process.env, VARIN_DATA_DIR: path.dirname(journal.directory) }, signal: stop.signal,
+        status: (state, pid) => console.log(JSON.stringify({ supervisor: state, ...(pid === undefined ? {} : { pid }) })) });
+      if (!outcome.stoppedCleanly) throw new Error('Application Host did not drain cleanly');
+      return { supervisor: 'stopped' };
+    } finally {
+      process.off('SIGTERM', requestStop);
+      process.off('SIGINT', requestStop);
+    }
+  }
+
   if (action === 'wake-due' && args.length > 2 && /^\d+$/.test(args[0]!) && args[1] === '--') {
     return { wake: await journal.reconcileDueWake(Number(args[0]), Date.now(), () => ensureRunning(args.slice(2))) };
   }
@@ -71,7 +91,7 @@ async function main(argv: string[]): Promise<unknown> {
   throw new Error('Invalid supervisor command');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   void main(process.argv.slice(2)).then(
     result => console.log(JSON.stringify(result)),
     () => { console.error('Local supervisor command failed'); process.exitCode = 1; },

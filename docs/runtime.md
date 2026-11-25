@@ -110,6 +110,16 @@ supervisor to run under that same account:
   `wait-due REVISION -- EXECUTABLE ARG...` can instead wait on that absolute
   deadline locally. It returns stale if the registration is superseded and
   checks long deadlines in bounded intervals rather than scheduling one timer.
+- `node local-supervisor.js DATA_DIR/supervisor-wake OWNER run` is the opt-in
+  resident foreground process for an already initialized Host. Run just one
+  supervisor for this original state directory; stop the direct Host first.
+  It launches the same built Host separately on loopback (honoring `VARIN_PORT`),
+  checks startup using the spawned process's private IPC and live kernel readiness,
+  and reconciles wake receipts and pending inbox work. The supervisor, not its
+  child, is what your service manager should stop and restart. Explicit stop
+  forwards the ordinary Host drain; an unrequested child exit, even exit 0, is
+  restarted with bounded backoff, not treated as Park. Losing the supervisor's
+  IPC makes a supervised Host drain rather than relaunch itself.
 - `accept PAGE_KEY < page.json` fsyncs an original Catalog event page before
   returning an acceptance receipt. `wake-inbox -- EXECUTABLE ARG...` lets the
   supervisor start or reconcile the original Host when accepted input is waiting.
@@ -127,8 +137,9 @@ keep this directory private. On a process crash before acknowledgement, the
 same pending page is delivered again under its original keys.
 
 This does **not** switch automatic parking on or transfer Calendar scheduling.
-There is no Park command and no supervisor path is invoked automatically to
-stop the Host. Incomplete owner coverage, external scheduler publication and
+There is no Park command and the production Host does not emit a quiescent
+exit receipt. The resident supervisor must not turn an ordinary exit or stop
+into Park. Incomplete owner coverage, external scheduler publication and
 lossless close are still blockers. On filesystems without supported directory
 sync or on Windows, do not enable the local supervisor journal.
 
