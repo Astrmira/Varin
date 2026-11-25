@@ -532,11 +532,16 @@ impl Catalog {
                 "branch head or execution owner changed".into(),
             ));
         }
-        if launch.as_ref().is_some_and(|selection| selection.lazy_work_location.is_some())
-            && (child_operation.is_some() || !principals::thread_has_host_authority(tx, &command.thread_id)?
-                || !matches!(origin, submissions::SubmissionOrigin::User { .. } | submissions::SubmissionOrigin::Ingress { .. }))
-        {
-            return Err(RuntimeError::Invalid("lazy work locations require owner-controlled native root work".into()));
+        if let Some(location) = launch.as_ref().and_then(|selection| selection.lazy_work_location.as_ref()) {
+            match origin {
+                submissions::SubmissionOrigin::Child { operation_id, .. } => {
+                    let selected: delegated::DelegatedExecution = record(tx, "delegated_executions", operation_id)?;
+                    collaboration::validate_lazy_dispatch(tx, &command.thread_id, &command.branch_id, &selected, location)?;
+                }
+                submissions::SubmissionOrigin::User { .. } | submissions::SubmissionOrigin::Ingress { .. }
+                    if child_operation.is_none() && principals::thread_has_host_authority(tx, &command.thread_id)? => {}
+                _ => return Err(RuntimeError::Invalid("lazy work location needs its exact native admission".into())),
+            }
         }
         let branch_default = if matches!(origin, submissions::SubmissionOrigin::User { .. } | submissions::SubmissionOrigin::Ingress { .. }) {
             branch_workspace::read(tx, &command.branch_id)?

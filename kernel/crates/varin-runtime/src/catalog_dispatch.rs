@@ -431,6 +431,8 @@ pub struct FrozenChildDispatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_focus: Option<String>,
     pub source: Option<super::launches::SourceSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lazy_work_location: Option<launches::LazyWorkLocation>,
     /// Optional child directory. The same frozen composition also serves non-delegating MCP/extension calls.
     pub catalog_ref: Option<Value>,
     pub parent_model: ChildModelBinding,
@@ -442,6 +444,7 @@ pub struct FrozenChildDispatch {
 }
 
 pub struct ChildDispatchPreparation {
+    allow_lazy: bool,
     selection: super::launch_content::LaunchSelectionMetadata,
     model: ChildModelBinding,
     allowed_delegation: Vec<ToolSchema>,
@@ -469,8 +472,13 @@ pub struct ChildDispatchSelection {
     pub extension_bindings: Vec<super::launches::ExtensionToolBinding>,
     _publication: crate::content::ContentPublication,
 }
+pub fn lazy_child_file_tool(name: &str) -> bool {
+    matches!(name, "file_read" | "file_list" | "file_search" | "file_write" | "file_edit")
+}
+
 #[derive(Debug)]
 pub struct ResolvedChildSelection {
+    pub lazy_work_location: Option<launches::LazyWorkLocation>,
     pub agent: Option<launches::AgentSelection>,
     pub process: bool,
     pub frozen_reference: Value,
@@ -779,6 +787,27 @@ impl ChildDispatchSelection {
             tools
         }
     }
+    fn lazy_child_location(&self, input: &DispatchInput, tools: &[String]) -> Result<Option<launches::LazyWorkLocation>> {
+        let Some(location) = &self.frozen.lazy_work_location else { return Ok(None) };
+        if self.frozen.source.is_some() || self.project(input)?.is_some()
+            || input.source_agent.is_some() || input.source_path.is_some()
+            || !matches!(input.work_mode, Some(ChildWorkMode::ReadOnly | ChildWorkMode::Shared))
+            || input.tools.is_none()
+            || input.executor.as_deref().is_some_and(|e| e != "varin")
+            || !tools.iter().any(|name| lazy_child_file_tool(name))
+        {
+            return Ok(None);
+        }
+        // No configured Host capability, process, or third-party source can borrow this
+        // native file-only lease. Existing constraints still reject writes in read_only.
+        if tools.iter().filter(|name| lazy_child_file_tool(name)).any(|name| {
+            self.host_tool(name).is_some()
+                || !self.frozen.allowed_delegation.iter().any(|t| t.name == *name)
+        }) {
+            return Err(RuntimeError::Conflict("lazy child file capabilities differ from the original dispatch".into()));
+        }
+        Ok(Some(location.clone()))
+    }
     pub fn unavailable_source_tools(&self, tools: &[String]) -> Vec<String> {
         if self.frozen.source.is_some() {
             return Vec::new();
@@ -920,8 +949,12 @@ impl ChildDispatchSelection {
                 tools.push(gateway.name);
             }
         }
+        let lazy_work_location = self.lazy_child_location(input, &tools)?;
         if self.frozen.source.is_none() && self.project(input)?.is_none() {
-            let unavailable = self.unavailable_source_tools(&tools);
+            let mut unavailable = self.unavailable_source_tools(&tools);
+            if lazy_work_location.is_some() {
+                unavailable.retain(|name| !lazy_child_file_tool(name));
+            }
             if !unavailable.is_empty() {
                 return Err(RuntimeError::Invalid(format!(
                     "child tools require a file source: {}; select a source or select only source-independent tools",
@@ -963,6 +996,7 @@ impl ChildDispatchSelection {
                 .is_some_and(|capability| capability.process)
         });
         Ok(ResolvedChildSelection {
+            lazy_work_location,
             agent: input.work_focus.as_ref().or(self.frozen.work_focus.as_ref()).map(|focus| launches::AgentSelection {
                 profile_id: None, name: None, work_focus: focus.clone(), tools: None,
             }),
@@ -1167,6 +1201,7 @@ impl ChildDispatchPreparation {
                     .save(&serde_json::to_value(FrozenChildDispatch {
                         work_focus: self.selection.agent.as_ref().map(|agent| agent.work_focus.clone()),
                         source: self.selection.source.clone(),
+                        lazy_work_location: self.selection.lazy_work_location.clone().filter(|_| self.allow_lazy),
                         catalog_ref,
                         parent_model: self.model.clone(),
                         allowed_delegation: self.allowed_delegation,
@@ -1281,7 +1316,12 @@ impl Catalog {
                 "delegation tool generation differs from its selected directory".into(),
             ));
         }
+        let run = self.run(run_id)?;
+        let allow_lazy = launch.selection.lazy_work_location.is_some()
+            && self.child_task_for_thread(&run.thread_id)?.is_none()
+            && self.thread_has_host_authority(&run.thread_id)?;
         Ok(ChildDispatchPreparation {
+            allow_lazy,
             selection: launch.selection,
             model,
             allowed_delegation,

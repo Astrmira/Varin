@@ -374,8 +374,14 @@ impl RunAssembly {
             .transpose()
             .map_err(domain)?;
         let lazy_work_location = saved_launch.as_ref().and_then(|launch| launch.selection.lazy_work_location.clone());
-        if lazy_work_location.is_some() && (!host_authority || is_child || is_context_job || tool_binding.is_some()) {
-            return Err(KernelError::Authorization("lazy launch must retain its original owner-controlled root scope".into()));
+        if let Some(location) = lazy_work_location.as_ref() {
+            if !host_authority || is_context_job || tool_binding.is_some() {
+                return Err(KernelError::Authorization("lazy launch must retain its original owner-controlled scope".into()));
+            }
+            if is_child {
+                runtime.catalog().lock().map_err(|_| KernelError::Storage("catalog owner failed".into()))?
+                    .require_lazy_child_launch(&run.id, location).map_err(domain)?;
+            }
         }
         let mut launch_source = None;
         let mut declarations = Vec::new();
@@ -427,6 +433,16 @@ impl RunAssembly {
                     lazy_work_location.clone(), lazy_schemas, runtime.catalog(),
                     resources.clone().with_journal_catalog(runtime.catalog()));
             }
+            if let Some((location, launch)) = lazy_work_location.as_ref().zip(saved_launch.as_ref()).filter(|_| is_child) {
+                let kinds = crate::tools::ToolKind::all().filter(|kind| {
+                    varin_runtime::catalog::dispatch::lazy_child_file_tool(kind.name())
+                        && launch.selection.tools.iter().any(|tool| tool.name == kind.name())
+                }).collect();
+                declarations.extend(crate::work_locations::child_declarations(
+                    p.run_id.clone(), location.clone(), crate::tools::KernelToolExecutor::selected_schemas(&kinds),
+                    runtime.catalog(), resources.clone().with_journal_catalog(runtime.catalog()),
+                ));
+            }
             let existing=declarations.iter().position(|declaration|declaration.schema.name=="file_read").map(|index|declarations.remove(index));
             let reader = crate::attachment_reads::declaration(existing,runtime.catalog(),self.resource.clone());
             declarations.push(reader);
@@ -469,7 +485,7 @@ impl RunAssembly {
                     source,
                     resources.clone(),
                 ));
-            } else if let Some(launch) = saved_launch.as_ref().filter(|_| lazy_work_location.is_some()) {
+            } else if let Some(launch) = saved_launch.as_ref().filter(|_| lazy_work_location.is_some() && !is_child) {
                 declarations.extend(crate::process_wait::lazy_declarations(
                     &launch.selection.tools, p.run_id.clone(), runtime.catalog(), resources.clone(),
                 ));

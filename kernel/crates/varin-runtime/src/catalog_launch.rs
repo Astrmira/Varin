@@ -1007,13 +1007,13 @@ impl Catalog {
         // Delegated capabilities and context-job recipes have their own owners.
         let current_tools = bound && !self.is_context_job(run_id)?
             && self.require_child_launch(run_id)?.is_none();
-        if selection.lazy_work_location.is_some() {
+        if let Some(location) = selection.lazy_work_location.as_ref() {
             let run = self.run(run_id)?;
-            if !self.thread_has_host_authority(&run.thread_id)?
-                || self.child_task_for_thread(&run.thread_id)?.is_some()
-                || self.is_context_job(run_id)?
-            {
-                return Err(RuntimeError::Invalid("lazy work locations require owner-controlled native root work".into()));
+            if !self.thread_has_host_authority(&run.thread_id)? || self.is_context_job(run_id)? {
+                return Err(RuntimeError::Invalid("lazy work locations require owner-controlled native work".into()));
+            }
+            if self.child_task_for_thread(&run.thread_id)?.is_some() {
+                self.require_lazy_child_launch(run_id, location)?;
             }
         }
         let tx = self.db.transaction()?;

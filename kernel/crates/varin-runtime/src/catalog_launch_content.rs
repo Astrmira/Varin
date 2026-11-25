@@ -350,6 +350,10 @@ impl ChildLaunchPreparation {
         names.sort();
         if names != self.selected.profile.tools
             || self.child.agent != self.selected.agent
+            || self.child.lazy_work_location != self.selected.lazy_work_location
+            || self.child.lazy_work_location.as_ref().is_some_and(|location| {
+                self.child.source.is_some() || self.read.metadata.selection.lazy_work_location.as_ref() != Some(location)
+            })
             || self.child.connection_identity != self.selected.model.connection_identity()?
             || self.child.credential_scope != self.selected.model.credential_scope
             || self.child.model != self.selected.model.configuration.model

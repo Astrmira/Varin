@@ -67,6 +67,9 @@ impl ChildAdmissionPreparation {
         let resolved = original.resolve_with_attachments(&self.input,&self.attachments)?;
         if resolved.frozen_reference != self.launch.frozen_reference
             || resolved.profile != self.launch.selected_profile
+            || resolved.lazy_work_location != self.launch.selection.lazy_work_location
+            || (resolved.lazy_work_location.is_some() && (self.handoff.is_some()
+                || !matches!(self.context.origin, crate::execution::ToolOrigin::ModelStep { .. })))
             || !super::usage_ledger::same_configuration(&serde_json::to_value(&resolved.model.configuration)?, &self.launch.configuration)
         {
             return Err(RuntimeError::Conflict(
