@@ -24,6 +24,16 @@ Measure changes by user-perceived outcomes: streaming smoothness, action respons
 
 ## Measurement
 
+### Catalog and Host memory
+
+- Recovery selects unfinished work, retained ownership and pending receipt repairs through SQLite indexes. It captures their row IDs inside the recovery transaction and reads each body immediately before processing it. A child receipt can settle another selected operation in the same transaction.
+- Prepared context transforms belong to the Run compiler. Each Catalog reader keeps its most recent branch inspection and streams the ancestry metadata needed for a cache miss. Both can reconstruct their views from the durable checkpoint.
+- An external Agent connection's idle check reads whether the conversation has turns, unfinished work or an outstanding child report. Fetching conversation history for this timer would allocate item bodies on both sides of the Host/kernel connection.
+
+For a Linux memory report, record the kernel and Host PIDs across startup, active execution and idle after completion. Compare `VmRSS`, `RssAnon` and `RssFile` in each PID's `/proc/<pid>/status`, alongside the container's `anon` and `file` values in `memory.stat`. Record active work and retained history size with each sample. Repeating the same work on the same processes distinguishes a growing idle footprint from a restart peak.
+
+### Workload comparisons
+
 Compare identical workloads on the same build type while verifying correctness. Prefer deterministic work counts (IPC calls, snapshot reads, renders) for regression tests; record cold/warm, platform, and sample counts when reporting wall-clock numbers.
 
 ```sh

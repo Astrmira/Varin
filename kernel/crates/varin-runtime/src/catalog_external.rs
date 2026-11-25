@@ -66,6 +66,7 @@ pub enum ExternalCommand {
     List,
     /// Trusted owner metadata, including tombstones; does not read Harness history.
     Inspect { id: String },
+    ConnectionActivity { id: String },
     UpdateReceipt { command: Box<ExternalCommand> },
     ArrangementPending,
     Defer { id: String, turn_id: String, reason: String },
@@ -177,7 +178,10 @@ mod tests {
         let directory = Fixture::new();
         let mut c = Catalog::open(directory.path()).unwrap();
         create(&mut c, "external:steer");
+        let activity = json!({"action":"connection_activity","id":"external:steer"});
+        assert_eq!(call(&mut c, activity.clone()).unwrap(), json!({"hasTurns":false,"busy":false}));
         let original = call(&mut c, json!({"action":"admit","id":"external:steer","key":"first","input":{"text":"work"}})).unwrap();
+        assert_eq!(call(&mut c, activity.clone()).unwrap(), json!({"hasTurns":true,"busy":true}));
         let target = original["id"].as_str().unwrap();
         call(&mut c, json!({"action":"begin","id":"external:steer","turnId":target})).unwrap();
         call(&mut c, json!({"action":"observe","id":"external:steer","turnId":target,"status":"running"})).unwrap();
@@ -200,6 +204,7 @@ mod tests {
         let mut c = Catalog::open(directory.path()).unwrap();
         let snapshot = call(&mut c,json!({"action":"read","id":"external:steer"})).unwrap();
         assert!(snapshot["conversation"]["activeTurn"].is_null());
+        assert_eq!(call(&mut c, activity).unwrap(), json!({"hasTurns":true,"busy":false}));
         assert_eq!(snapshot["turns"].as_array().unwrap().iter().find(|t|t["key"]=="extra").unwrap()["consumedByTurnId"], target);
     }
     #[test]
@@ -561,6 +566,12 @@ fn now() -> u64 {
 }
 pub(super) fn terminal(s: &str) -> bool {
     matches!(s, "completed" | "failed" | "cancelled" | "interrupted")
+}
+const OPEN_TURN: &str = "json_extract(body,'$.status') NOT IN ('completed','failed','cancelled','interrupted')";
+
+pub(super) fn initialize_activity_index(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS external_open_turns ON external_turns(conversation_id) WHERE {OPEN_TURN}"))?;
+    Ok(())
 }
 fn required(s: &str) -> Result<()> {
     if s.trim().is_empty() {
@@ -964,6 +975,18 @@ impl Catalog {
                 found
             }
             ExternalCommand::Inspect { id } => record::<Value>(&tx,"external_conversations",&id)?,
+            ExternalCommand::ConnectionActivity { id } => {
+                let conversation = conversation(&tx, &id)?;
+                let (has_turns, open_turn, pending_child): (bool, bool, bool) = tx.query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM external_turns WHERE conversation_id=?1),
+                    EXISTS(SELECT 1 FROM external_turns WHERE conversation_id=?1 AND {OPEN_TURN}),
+                    EXISTS(SELECT 1 FROM external_children WHERE
+                        (json_extract(body,'$.receipt_published')=0 OR json_extract(body,'$.resources_released')=0)
+                        AND json_extract(body,'$.conversation_id')=?1 AND json_extract(body,'$.report') IS NULL)"),
+                    [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+                json!({"hasTurns":has_turns, "busy":conversation["activeTurn"].is_string() || open_turn || pending_child})
+            }
             ExternalCommand::UpdateReceipt { command } => {
                 use sha2::{Digest,Sha256};
                 let ExternalCommand::Update{id,key:Some(key),..}=command.as_ref() else{return Err(RuntimeError::Invalid("metadata receipt requires the original keyed Update command".into()));};

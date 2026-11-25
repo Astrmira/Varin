@@ -17,7 +17,6 @@ impl Catalog {
             content: self.content.clone(),
             resource_admission: self.resource_admission.clone(),
             nested_tools: self.nested_tools.clone(),
-            context_compositions: self.context_compositions.clone(),
             _owner: None,
             database_path: self.database_path.clone(),
             epoch: self.epoch,
@@ -25,7 +24,7 @@ impl Catalog {
             continuation_stopping: self.continuation_stopping.clone(),
             event_observers: self.event_observers.clone(),
             attention_cache: Default::default(),
-            context_inspections: self.context_inspections.clone(),
+            context_inspections: Default::default(),
         })
     }
 

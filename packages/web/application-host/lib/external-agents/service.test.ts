@@ -44,6 +44,10 @@ async function fixture(options: { connect?: boolean; probeUnconfirmed?: boolean;
     if (params.command.action === 'bind') snapshot.conversation.sessionId = String(params.command.sessionId);
     if (params.command.action === 'child_list' || params.command.action === 'arrangement_pending') return [];
     if (params.command.action === 'read') return snapshot;
+    if (params.command.action === 'connection_activity') return {
+      hasTurns: snapshot.turns.length > 0,
+      busy: Boolean(snapshot.conversation.activeTurn || snapshot.turns.some(turn => !['completed', 'failed', 'cancelled', 'interrupted'].includes(turn.status))),
+    };
     if (params.command.action === 'cleanup_list') return [];
     if (params.command.action === 'update') return { ...snapshot.conversation, deleted: params.command.deleted === true };
     return {};
@@ -576,8 +580,8 @@ it('keeps durable delegated work alive even before its transient Host task has s
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const f = await fixture();
   const original = f.kernel.agentRuntimeRequest.getMockImplementation()!;
-  f.kernel.agentRuntimeRequest.mockImplementation(async (method, params) => params.command.action === 'child_list'
-    ? [{ conversation_id: 'external:test', report: null }] : original(method, params));
+  f.kernel.agentRuntimeRequest.mockImplementation(async (method, params) => params.command.action === 'connection_activity'
+    ? { hasTurns: false, busy: true } : original(method, params));
   now += 60 * 60_000;
   await f.sweep();
   expect(f.children[0]!.terminating).toBe(false);

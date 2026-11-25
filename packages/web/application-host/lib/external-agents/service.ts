@@ -513,14 +513,12 @@ export class ExternalAgentsService {
         live.idleSince ??= Date.now();
         const idleSince = live.idleSince;
         // Read the durable queue and delegation receipts, not just transient Host tasks.
-        const snapshot = await this.read(id);
-        const children = await this.children(true);
-        if (snapshot.conversation.activeTurn || snapshot.turns.some(turn => !ended(turn)) ||
-          children.some(child => child.conversation_id === id && !child.report)) {
+        const activity = await this.command<{ hasTurns: boolean; busy: boolean }>({ action: 'connection_activity', id });
+        if (activity.busy) {
           live.idleSince = undefined;
           continue;
         }
-        const timeout = snapshot.turns.length ? this.deps.idle?.conversationMs ?? 15 * 60_000
+        const timeout = activity.hasTurns ? this.deps.idle?.conversationMs ?? 15 * 60_000
           : this.deps.idle?.preparedMs ?? 5 * 60_000;
         // Any observation, input admission, native activity or generation change during those
         // reads defeats this candidate. The reservation below seals new Host admissions.
