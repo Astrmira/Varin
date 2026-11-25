@@ -240,6 +240,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = (props) => {
     : -1, [entryTarget, blocks.items]);
   const initialScrollAtEnd = entryTarget.kind === 'end' || entryTargetIndex < 0;
   const firstVisibleIndexRef = React.useRef(-1);
+  const historyCursorFor = React.useRef(props.historyCursorFor);
+  historyCursorFor.current = props.historyCursorFor;
   const viewportRef = React.useRef<ChatTimelineViewportAnchor | undefined>(timelineView.viewport);
   const observedLeafIdRef = React.useRef<string | null | undefined>(timelineView.observedLeafId);
   const atEndRef = React.useRef(initialScrollAtEnd);
@@ -363,7 +365,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = (props) => {
     if (!item) return;
     const position = state.positionAtIndex(index);
     if (!Number.isFinite(position) || !Number.isFinite(state.scroll)) return;
+    const cursor = historyCursorFor.current?.(item.ownerId,
+      item.kind === 'user' ? item.turn.userEntry?.id : item.group.entries[0]?.id);
     viewportRef.current = {
+      ...(cursor ? { historyItemId: cursor } : {}),
       itemId: item.id,
       mode: modeRef.current === 'free-scrolling' ? 'free-scrolling' : 'following-end',
       offset: position - state.scroll,
