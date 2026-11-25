@@ -161,6 +161,14 @@ coordinator and Browser node APIs, not a CDP stub: the Browser role may restart
 without replacing its Chromium process or tab, and restarting Chromium keeps
 the disk profile but invalidates the previously bound live instance.
 
+The existing **Container validation** workflow also accepts the optional
+`real_linux_roles` dispatch input. Enable it to run the real Chromium test and
+the Computer driver's isolated Xvfb/AT-SPI test against the exact checked-out
+source and the checksum-verified Linux/amd64 kernel from that run's Browser
+candidate. Set `benchmark`, `toolbelt`, and `multi_platform` to false for a
+focused run. Ordinary CI still runs its existing image smokes without installing
+these extra prerequisites.
+
 ### Dedicated Computer control plane
 
 The Linux `computer-node` build target packages the existing platform driver alongside
