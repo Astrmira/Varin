@@ -1366,6 +1366,8 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.qrDialogTitle': '扫码连接',
 'settings.remoteInstances.clientAuth.actions.addDevice': '添加设备',
   'settings.remoteInstances.clientAuth.actions.copied': '已复制',
+  'settings.remoteInstances.clientAuth.field.lanAddress': '局域网地址',
+  'settings.remoteInstances.clientAuth.actions.copyAddress': '复制地址',
   'settings.remoteInstances.clientAuth.addDevice.transportLabel': '你会在哪里使用这台设备?',
   'settings.remoteInstances.clientAuth.addDevice.subtitle': '创建一次性二维码，把另一台设备连接到此服务器。',
   'settings.remoteInstances.clientAuth.addDevice.transport.local': '仅本机',

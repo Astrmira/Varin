@@ -1020,6 +1020,8 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.qrDialogTitle': '掃碼連線',
 'settings.remoteInstances.clientAuth.actions.addDevice': '新增裝置',
   'settings.remoteInstances.clientAuth.actions.copied': '已複製',
+  'settings.remoteInstances.clientAuth.field.lanAddress': '區域網路位址',
+  'settings.remoteInstances.clientAuth.actions.copyAddress': '複製位址',
   'settings.remoteInstances.clientAuth.addDevice.transportLabel': '你會在哪裡使用這台裝置?',
   'settings.remoteInstances.clientAuth.addDevice.subtitle': '建立一次性 QR 代碼，將另一台裝置連線到此伺服器。',
   'settings.remoteInstances.clientAuth.addDevice.transport.local': '僅本機',

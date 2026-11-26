@@ -1360,6 +1360,8 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.qrDialogTitle': 'Scan to connect',
   'settings.remoteInstances.clientAuth.actions.addDevice': 'Add a device',
   'settings.remoteInstances.clientAuth.actions.copied': 'Copied',
+  'settings.remoteInstances.clientAuth.field.lanAddress': 'Local network address',
+  'settings.remoteInstances.clientAuth.actions.copyAddress': 'Copy address',
   'settings.remoteInstances.clientAuth.addDevice.transportLabel': 'Where will you use this device?',
   'settings.remoteInstances.clientAuth.addDevice.subtitle': 'Create a one-time QR code that connects another device to this server.',
   'settings.remoteInstances.clientAuth.addDevice.transport.local': 'This computer only',
