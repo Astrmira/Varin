@@ -338,6 +338,7 @@ import { createNgrokTunnelProvider } from './lib/tunnels/providers/ngrok.js';
 import { TUNNEL_MODE_MANAGED_LOCAL, TUNNEL_MODE_MANAGED_REMOTE, TUNNEL_MODE_QUICK, TUNNEL_PROVIDER_CLOUDFLARE, TunnelServiceError, isSupportedTunnelMode, normalizeOptionalPath, normalizeTunnelMode, normalizeTunnelProvider, normalizeTunnelStartRequest, type TunnelController } from './lib/tunnels/types.js';
 import { createRequestSecurityRuntime } from './lib/security/request-security.js';
 import { getInvalidBindHostErrorMessage, getUnauthenticatedLanErrorMessage, isLoopbackBindHost, isNetworkExposedBindHost, isUnsafeUnauthenticatedLanAllowed, normalizeBindHost } from './lib/security/bind-host.js';
+import { getLanHostAddresses } from './lib/platform/lan-addresses.js';
 import { registerTtsRoutes } from './lib/tts/routes.js';
 import { detectSayTtsCapability } from './lib/tts/capability-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
@@ -785,12 +786,6 @@ const bootstrapRuntime = createServerBootstrapRuntime({
 });
 const platformRoutesRuntime = createPlatformRoutesRuntime({ clientReloadDelayMs: CLIENT_RELOAD_DELAY_MS });
 
-const requestReachedLanAddress = (req: Request): string | null => {
-  const raw = typeof req?.socket?.localAddress === 'string' ? req.socket.localAddress : '';
-  const address = raw.startsWith('::ffff:') ? raw.slice(7) : raw;
-  return /^\d+\.\d+\.\d+\.\d+$/.test(address) && !address.startsWith('127.') ? address : null;
-};
-
 async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerController> {
   await assertDataRootMayStart(VARIN_DATA_DIR);
   if (server?.listening) throw new Error('Varin server is already running');
@@ -981,41 +976,14 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   let dictationRuntime: ReturnType<typeof createDictationRuntime> | null = null;
 
   const activePort = () => tunnelRuntimeContext?.getActivePort() || port;
+  const resolveDirectLanUrls = (req: Request): string[] => getLanHostAddresses(effectiveBindHost, req.socket.localAddress)
+    .map(address => `http://${address.includes(':') ? `[${address}]` : address}:${activePort()}`);
   // Anywhere pairing needs an operator-configured relay (VARIN_RELAY_URL); there is no built-in one.
-  const resolvePairingTransports = (req: Request) => {
-    const local = `http://127.0.0.1:${activePort()}`;
-    let lanHost = null;
-    if (isNetworkExposedBindHost(effectiveBindHost)) {
-      lanHost = requestReachedLanAddress(req);
-      if (!lanHost) {
-        for (const list of Object.values(os.networkInterfaces())) {
-          const entry = (list || []).find((candidate) => candidate.family === 'IPv4' && !candidate.internal);
-          if (entry) { lanHost = entry.address; break; }
-        }
-      }
-    } else if (!['127.0.0.1', 'localhost', '::1'].includes(effectiveBindHost.toLowerCase())) {
-      lanHost = effectiveBindHost;
-    }
-    const lan = lanHost ? `http://${lanHost.includes(':') ? `[${lanHost}]` : lanHost}:${activePort()}` : null;
-    return { local, lan, relayAvailable: resolveRelayEndpoint().state === 'configured' };
-  };
-  const resolveDirectLanUrls = (req: Request): string[] => {
-    const urls: string[] = [];
-    const add = (address: string | null): void => {
-      if (!address) return;
-      const url = `http://${address.includes(':') ? `[${address}]` : address}:${activePort()}`;
-      if (!urls.includes(url)) urls.push(url);
-    };
-    if (isNetworkExposedBindHost(effectiveBindHost)) {
-      add(requestReachedLanAddress(req));
-      for (const list of Object.values(os.networkInterfaces())) {
-        for (const entry of list || []) if (entry.family === 'IPv4' && !entry.internal) add(entry.address);
-      }
-    } else if (!['127.0.0.1', 'localhost', '::1'].includes(effectiveBindHost.toLowerCase())) {
-      add(effectiveBindHost);
-    }
-    return urls;
-  };
+  const resolvePairingTransports = (req: Request) => ({
+    local: `http://127.0.0.1:${activePort()}`,
+    lan: resolveDirectLanUrls(req)[0] ?? null,
+    relayAvailable: resolveRelayEndpoint().state === 'configured',
+  });
 
   const sayTTSCapability = detectSayTtsCapability(process);
   const bootstrapResult = bootstrapRuntime.setupBaseRoutes(app, {
