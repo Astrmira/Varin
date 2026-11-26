@@ -354,7 +354,7 @@ import { createMobilePairingRuntime } from './lib/mobile/pairing-runtime.js';
 import { createMobilePushRuntime } from './lib/mobile/push-runtime.js';
 import { registerMobileRoutes } from './lib/mobile/routes.js';
 import { createGracefulShutdownRuntime, createShutdownCollector, ShutdownDeadline, resolveShutdownTimeoutMs, reportShutdownOutcome } from './lib/shutdown-runtime.js';
-import { createDrainingAdmission, createHttpObservationDrain } from './lib/draining-admission.js';
+import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteAdmission } from './lib/draining-admission.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
@@ -379,6 +379,9 @@ import { resolveVarinDataDir } from './lib/platform/data-paths.js';
 import { clearAppImageArgv0FromProcessEnv } from './lib/platform/inherited-env.js';
 import { pathLooksUserConfigured, mergePathValues } from './lib/platform/path-utils.js';
 import { createProjectDirectoryRuntime } from './lib/platform/project-directory-runtime.js';
+import { projectHostActivity, registerHostActivityRoute } from './lib/lifecycle/host-activity.js';
+import { startSupervisorInbox } from './lib/lifecycle/supervisor-inbox.js';
+import { SupervisorJournal } from './lib/lifecycle/supervisor-journal.js';
 import { registerVarinRoutes } from './lib/platform/varin-routes.js';
 import { createPlatformRoutesRuntime } from './lib/platform/routes-runtime.js';
 import { runCliEntryIfMain } from './lib/platform/cli-entry-runtime.js';
@@ -862,6 +865,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   console.log(`Starting Varin on port ${port === 0 ? 'auto' : port}`);
   const app = express();
   const httpObservationDrain = createHttpObservationDrain();
+  const threadWriteAdmission = createThreadWriteAdmission(() => isShuttingDown);
   app.use(httpObservationDrain.middleware);
   app.use(createDrainingAdmission(() => isShuttingDown));
   const extensionCatalog = options.extensionCatalog
@@ -1766,8 +1770,6 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     vmProviders: async () => configuredVmProviders(await readSettingsFromDisk() as unknown as Record<string, unknown>),
   });
   computerServiceRef.current = computerService;
-  void computerService.defaultDesktop().then(id => id ? computerService.prewarm(id) : undefined)
-    .catch(error => console.error('[Computer] Desktop preparation failed:', errorMessage(error)));
   options.onComputerControlsReady?.({
     holderId: desktopControlHolder,
     takeover: async () => { await computerService.takeover({ desktopId: 'local-console', holderId: desktopControlHolder }); },
@@ -2148,7 +2150,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     if (!officeRuntimeOwner.current) throw new Error('Office tool preparation is unavailable');
     if (!browserRuntimeOwner.current) throw new Error('Browser tool preparation is unavailable');
     let configuration = await computerRuntimeOwner.current.prepareConfiguration(run, required);
-    configuration = await scriptRuntimeOwner.current.prepareConfiguration(configuration, run.source, required);
+    configuration = await scriptRuntimeOwner.current.prepareConfiguration(configuration, run.source, required, run.lazyWorkLocation);
     configuration = await webRuntimeOwner.current.prepareConfiguration(run, required, configuration);
     configuration = await researchDiscoveryOwner.current.prepareConfiguration(run, required, configuration);
     configuration = await imageRuntimeOwner.current.prepareConfiguration(run, required, configuration);
@@ -2476,6 +2478,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     } });
   const modelWorkLocations = createModelWorkLocations({runtime: agentRuntime, kernel: kernelClient, directory: sourceDirectory,
     prepare: prepareThreadSource, executionEnvironment: () => executionEnvironment.snapshot(),
+    async captureLocationContext(run, source, signal, instructionDirectories) {
+      const checkpoint = await agentRuntime.context(run.branch_id, signal);
+      const admitted = checkpoint?.personalization;
+      if (!admitted || admitted.threadId !== run.thread_id) throw new Error('The admitted work-location context is unavailable');
+      return threadResources.prepare({runtime:'agent',threadId:run.thread_id,branchId:run.branch_id},source,
+        {mode:admitted.mode as 'agent' | 'bot',threadRole:admitted.threadRole,projectId:admitted.projectId}, {signal,instructionDirectories});
+    },
     transfer: (input, signal) => transferResourceFiles(input, signal),
     openProcessView: (source, runId, processId, signal) => admitRunSourceAuthority(kernelClient, agentRuntime,
       savedSourceLaunch(runId, source, ['process_inspect', 'process_read']),
@@ -2788,7 +2797,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     onError: error => console.warn('[Calendar] preparation or asset synchronization requires attention:', calendarErrorCode(error)),
   });
   scheduledTasksRuntime.setCalendarOwner(calendarOwner);
-  scriptRuntimeOwner.current = createScriptRuntime({ kernel: kernelClient, runtime: agentRuntime, resolveLiveSource: liveSources.validate, onError: () => console.error('[Script] Original environment requires reconciliation') });
+  scriptRuntimeOwner.current = createScriptRuntime({ kernel: kernelClient, runtime: agentRuntime, resolveLiveSource: liveSources.validate, prepareDormantDefault: modelWorkLocations.prepareScriptDefault, onError: () => console.error('[Script] Original environment requires reconciliation') });
   computerRuntimeOwner.current = createComputerRuntime({ kernel: kernelClient, runtime: agentRuntime, computers: computerService, enabled: async runId => {
     const launch = await kernelClient.agentRuntimeRequest<import('./lib/kernel/protocol.generated.js').LaunchIntent | null, 'runtime.launch.inspect'>('runtime.launch.inspect', { runId });
     const workspace = launch?.selection.source?.resource_owner.kind === 'local' ? await documentsAuthority.admitWorkspaceRegistration(launch.selection.source.workspace_id) : undefined;
@@ -2844,7 +2853,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   kernelClient.setFollowupEventOwner(createFollowupEventOwner(agentRuntime, pluginEventSources));
   const conversationOrganization = new ConversationOrganizationService({ runtime: agentRuntime, threads, external: externalAgents, readSettings: readSettingsFromDisk });
   registerConversationOrganizationRoutes(app, conversationOrganization, uiAuthController.requireAuth, (req, res) => uiAuthController!.resolveAuthContext(req, res));
-  registerThreadRoutes(app, threads, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()), researchRuntime.user, computerRuntimeOwner.current.user, webRuntimeOwner.current.user, userIntegrations, pluginEventSources);
+  registerThreadRoutes(app, threads, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()), researchRuntime.user, computerRuntimeOwner.current.user, webRuntimeOwner.current.user, userIntegrations, pluginEventSources, threadWriteAdmission);
   const agentProfiles = createAgentProfilesAPI({ settings: modelsService.settings,
     capabilities: signal => agentRuntime.childCapabilities(signal),
     contextAgentDefinition: signal => agentRuntime.contextAgentDefinition(signal),
@@ -3328,6 +3337,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     console.warn('[Varin Extensions] Host reconciliation failed:', error?.message || error);
   });
   const unregisterWorkbenchLayoutService = await registerBuiltinWorkbenchLayoutService(extensionRuntime);
+  // Explicit trusted OS-local handoff. Never opens a network event-ingress API
+  // or takes over a Catalog source owner.
+  const supervisorInbox = process.env.VARIN_LOCAL_SUPERVISOR === '1'
+    ? startSupervisorInbox(await SupervisorJournal.open(path.join(VARIN_DATA_DIR, 'supervisor-wake'), hostId),
+      (page, signal) => agentRuntime.receivePluginEvents(page, signal),
+      () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'))
+    : undefined;
   pluginEventSources.start();
   pluginEventTransport.start();
   botLifecycleRuntime = createBotLifecycleRuntime({
@@ -3422,6 +3438,23 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   relayServiceInstance = relayService;
   relayService.registerRoutes(app);
+  const getHostActivity = (signal: AbortSignal) => projectHostActivity({
+    kernelEpoch: () => kernelClient.isReady ? kernelClient.kernelEpoch : null,
+    draining: () => isShuttingDown,
+    observationStreams: httpObservationDrain.count,
+    threadWrites: threadWriteAdmission.count,
+    externalIngressActive: () => Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled),
+    admission: async (ownerSignal) => (await agentRuntime.status(ownerSignal)).admission,
+    calendar: scheduledTasksRuntime.getActivity,
+    browser: () => browserResources.activity(),
+    computerOperations: () => computerService.activities().filter(row => row.activity.status === 'running').length,
+    dictation: () => dictationRuntime?.activity() ?? null,
+  }, signal);
+  registerHostActivityRoute(app, uiAuthController.requireAuth, async request => {
+    const auth = await uiAuthController!.resolveRequestAuth(request, { allowUrlToken: false });
+    return typeof auth?.principalId === 'string' && await hostPrincipals().isOwner(auth.principalId);
+  }, getHostActivity);
+
 
   await platformRoutesRuntime.registerRoutes(app, {
     onProjectGitDispatcher: dispatch => { projectGitDispatcher = dispatch; },
@@ -3597,6 +3630,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     },
     setExternalIngressEnabled,
     getTunnelUrl: () => tunnelService.getPublicUrl(),
+    getHostActivity: (signal = AbortSignal.timeout(2000)) => getHostActivity(signal),
     getQuitRiskStatus: async () => ({
       tunnel: { active: Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled) },
       scheduledTasks: await scheduledTasksRuntime.getStatus(),
@@ -3618,6 +3652,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       previewProxyRuntime.beginDraining();
       stopTask = (async () => {
         const shutdown = createShutdownCollector({ deadline, stopOnFailure: true });
+        await shutdown.run('supervisorInbox.close', () => supervisorInbox?.close());
         await shutdown.run('externalIngress.close', async () => {
           unsubscribeExternalIngressRevocation();
           await externalIngress?.close();

@@ -1,3 +1,4 @@
+import { DORMANT_SCRIPT_IDENTITY, VARIN_BUILTIN_SCRIPT_EXTENSION_ID, isDormantScriptDefault, isScriptService } from './dormant-script-contract.js';
 import { createHostModelReferences, resolveHostToolArguments, projectHostToolData } from './model-references.js';
 import type { OutputPart, IncomingMedia } from './protocol.generated.js';
 /** Ordinary installed services, selected and prepared by the existing routing/supervisor owner. */
@@ -130,6 +131,7 @@ export interface ExtensionToolRun {
   runId: string;
   threadId: string;
   source: LaunchIntent['selection']['source'];
+  lazyWorkLocation?: LaunchIntent['selection']['lazy_work_location'];
   projectId?: string;
   fixed?: boolean;
   workFocus?: WorkFocusId;
@@ -140,12 +142,13 @@ class ExtensionToolSourceError extends Error {
   }
 }
 /** Availability projection of the original declaration, never a grant or dispatch fence. */
-function requireToolSource(serviceId: string, requirements: LaunchTool['requirements'], source: ExtensionToolRun['source']): void {
-  if (!requirements) return;
-  const available = source && (requirements.source === 'source'
+function sourceAvailable(requirements: LaunchTool['requirements'], source: ExtensionToolRun['source']): boolean {
+  return !requirements || Boolean(source && (requirements.source === 'source'
     || (requirements.source === 'physical' && source.mode !== 'fixed_branch')
-    || (requirements.source === 'live' && source.mode === 'live_root'));
-  if (!available) throw new ExtensionToolSourceError(serviceId, requirements.source);
+    || (requirements.source === 'live' && source.mode === 'live_root')));
+}
+function requireToolSource(serviceId: string, requirements: LaunchTool['requirements'], source: ExtensionToolRun['source']): void {
+  if (requirements && !sourceAvailable(requirements, source)) throw new ExtensionToolSourceError(serviceId, requirements.source);
 }
 export interface ExtensionToolOwnerOptions {
   runtime: ApplicationExtensionRuntime;
@@ -197,6 +200,10 @@ export async function retainExtensionTool(
     try {
       configurationIdentity = options.configurationIdentity?.(originalDescriptor, required ? required.configurationIdentity : undefined) ?? null;
     } catch (error) { throw new ExtensionToolConfigurationError(originalDescriptor.id, error); }
+    if (configurationIdentity === DORMANT_SCRIPT_IDENTITY && (
+      provider.extensionId !== VARIN_BUILTIN_SCRIPT_EXTENSION_ID || runtime.supervisor.isRetainedBuiltin?.(provider) !== true
+      || !isScriptService(originalDescriptor.id, originalDescriptor.version)
+    )) throw new ExtensionToolSourceError(originalDescriptor.id, 'physical');
     const descriptor = parseVarinExtensionServiceProvision(options.configurationIdentity?.declaration?.(originalDescriptor, configurationIdentity) ?? originalDescriptor);
     const schema = extensionToolSchema(descriptor);
     const alwaysDeclared = required?.tool.metadata?.always_declared === true;
@@ -557,6 +564,9 @@ export function createExtensionTools(
         | undefined;
     const watches = new Map<string, () => void>();
     const delivered = new Map<string, ExtensionToolLease>();
+    const dormant = !run.source && !run.fixed && isDormantScriptDefault(run.lazyWorkLocation);
+    const scriptCandidate = (descriptor: VarinExtensionServiceProvision) =>
+      dormant && isScriptService(descriptor.id, descriptor.version);
     const enabled = (descriptor: VarinExtensionServiceProvision) =>
       preparedOptions.configurationIdentity?.enabled?.(descriptor) !== false;
     const routingScope = {
@@ -611,7 +621,12 @@ export function createExtensionTools(
       id: string,
       version: number,
       routingRevision: number,
+      declarations: readonly VarinExtensionServiceProvision[],
     ) => {
+      // Metadata suffices if no declared provider in the slot can use this Source.
+      // A mixed slot still resolves its exact route and validates that descriptor.
+      if (declarations.length && declarations.every(descriptor => !scriptCandidate(descriptor) && !sourceAvailable(descriptor.tool?.requirements, run.source)))
+        requireToolSource(id, declarations[0]!.tool?.requirements, run.source);
       const candidateOptions = preparedOptions;
       const releasePreparation = candidateOptions.configurationIdentity?.retainPreparation?.();
       try {
@@ -626,7 +641,9 @@ export function createExtensionTools(
         { expectedRoutingRevision: routingRevision, signal },
       );
       try {
-        signal.throwIfAborted(); requireToolSource(id, selected.descriptor.tool?.requirements, run.source);
+        signal.throwIfAborted();
+        if (!scriptCandidate(selected.descriptor) || runtime.services.getSnapshot().providers.find(provider => provider.providerId === selected.providerId)?.extensionId !== VARIN_BUILTIN_SCRIPT_EXTENSION_ID)
+          requireToolSource(id, selected.descriptor.tool?.requirements, run.source);
         if (!enabled(selected.descriptor)) throw new ExtensionToolConfigurationError(id, 'Tool is disabled by its configuration');
         return await retainExtensionTool(candidateOptions, selected, undefined, run.workFocus);
       } catch (error) { selected.release(); throw error; }
@@ -683,7 +700,7 @@ export function createExtensionTools(
           if (entry.declarations.every(descriptor => !enabled(descriptor))) return;
           // Prepare the first complete directory before the first model request.
           // Later changes still publish only at a closed request boundary.
-          initial.push(await prepare(entry.id, entry.version, snapshot!.routing.document.revision));
+          initial.push(await prepare(entry.id, entry.version, snapshot!.routing.document.revision, entry.declarations));
         } catch (error) {
           states.set(`${entry.id}@${entry.version}`, { serviceId: entry.id, version: entry.version,
             declarations: entry.declarations, status: 'unavailable',
@@ -760,7 +777,7 @@ export function createExtensionTools(
           declarations: entry.declarations,
           status: 'preparing',
         });
-        void prepare(entry.id, entry.version, current.routing.document.revision)
+        void prepare(entry.id, entry.version, current.routing.document.revision, entry.declarations)
           .then(async (retained) => {
             if (closed || signal.aborted || tokens.get(slot) !== token) {
               retained.lease.release();
