@@ -19,6 +19,8 @@ import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import { previewRuntime } from './runtime';
 import { PreviewBotPanel } from './bot-panel';
 import { ConversationHeading } from './conversation-heading';
+import { initialContainers, withSampleLocations, workSnapshot } from './work-organization';
+import { nearestOrganizationProject } from '@/components/conversation/organizationProjection';
 import { usePreviewLattice, type ShellWave } from './usePreviewLattice';
 import { currentMotionLevel } from '@/hooks/usePrefersReducedMotion';
 import { activationPoint, trackRecentPointer, type RecentPointer } from '@/lib/motion/pointer';
@@ -48,10 +50,14 @@ function entry(route: Route, depth: number): Entry {
   return { mobilePreview: true, route, depth, chatDepth: route.page === 'chat' ? depth : history.state?.chatDepth ?? 0 };
 }
 if (!history.state?.mobilePreview) {
-  const linked = initialRooms.find(r => r.id === new URLSearchParams(location.search).get('room'));
+  const params = new URLSearchParams(location.search);
+  const linked = initialRooms.find(r => r.id === params.get('room'));
   const route = linked ? { ...initial, id: linked.id, mode: linked.mode } : load('lastChat', initial);
-  history.replaceState(entry({ ...route, page: 'list' }, 0), '');
-  history.pushState(entry(route, 1), '');
+  if (params.get('view') === 'workbench') history.replaceState(entry({ page: 'list', id: 'review', mode: 'work' }, 0), '');
+  else {
+    history.replaceState(entry({ ...route, page: 'list' }, 0), '');
+    history.pushState(entry(route, 1), '');
+  }
 }
 
 function usePreviewRoute() {
@@ -120,7 +126,9 @@ function usePreviewRoute() {
 
 function App() {
   const { route, show, layer, returnPoint } = usePreviewRoute();
-  const [rooms, setRooms] = React.useState(() => load('rooms', initialRooms));
+  const [rooms, setRooms] = React.useState(() => withSampleLocations(load('rooms', initialRooms)));
+  const [containers, setContainers] = React.useState(() => load('work-containers', initialContainers));
+  const directory = React.useMemo(() => workSnapshot(rooms, containers), [rooms, containers]);
   const [bots, setBots] = React.useState(() => load('bots', initialBots));
   const [notes, setNotes] = React.useState<Notes>(() => load('drafts', {}));
   const [theme, setTheme] = React.useState(() => load('theme', 'light'));
@@ -135,6 +143,8 @@ function App() {
   const offsets = React.useRef(new Map<string, number>());
   const focusOnReturn = React.useRef(false);
   const room = rooms.find(r => r.id === route.id) ?? rooms[0];
+  const location = directory.conversations.find(r => r.conversation.id === room.id)?.position.containerId;
+  const projectName = containers.find(c => c.kind === 'project' && c.projectId === room.projectId)?.name ?? undefined;
   const group = isGroup(room);
   const bot = bots.find(b => b.id === room.people[0]) ?? bots[0];
   const draft = notes[room.id] ?? { text: '' };
@@ -146,6 +156,7 @@ function App() {
     return () => media.removeEventListener('change', update);
   }, []);
   React.useEffect(() => { store('rooms', rooms); }, [rooms]);
+  React.useEffect(() => { store('work-containers', containers); }, [containers]);
   React.useEffect(() => { store('bots', bots); }, [bots]);
   React.useEffect(() => { store('drafts', notes); }, [notes]);
   React.useLayoutEffect(() => { document.documentElement.classList.toggle('dark', theme === 'dark'); store('theme', theme); }, [theme]);
@@ -178,9 +189,12 @@ function App() {
     const first = rooms.find(r => r.mode === m)!;
     nav({ page: split ? 'chat' : 'list', mode: m, id: first.id }, true);
   }
-  function newChat(person?: Person, fork?: number) {
+  function newChat(person?: Person, fork?: number, containerId?: string | null) {
     const child: Room = { id: crypto.randomUUID(), title: fork !== undefined ? room.title + ' · 分支' : route.mode === 'work' ? '新任务' : '新会话',
-      time: '刚刚', people: [person ?? room.people[0]], mode: route.mode, messages: fork !== undefined ? room.messages.slice(0, fork + 1) : [] };
+      time: '刚刚', people: [person ?? room.people[0]], mode: route.mode,
+      containerId: fork !== undefined ? location : containerId,
+      projectId: fork !== undefined ? room.projectId : nearestOrganizationProject(directory, containerId ?? null),
+      messages: fork !== undefined ? room.messages.slice(0, fork + 1) : [] };
     setRooms(prev => [child, ...prev]); nav({ ...route, id: child.id, page: 'chat' });
   }
   function edit(d: Draft) { setNotes(prev => ({ ...prev, [room.id]: d })); }
@@ -226,6 +240,9 @@ function App() {
     history.go(history.state.chatDepth - history.state.depth);
   }
   const inbox = <Inbox mode={route.mode} selected={room.id} rooms={rooms} changeMode={mode} open={open} create={p => newChat(p)} createBot={createBot} createGroup={createGroup}
+    work={{ snapshot: directory, createTask: id => newChat(undefined, undefined, id),
+      updateContainer: value => setContainers(prev => prev.some(c => c.id === value.id) ? prev.map(c => c.id === value.id ? value : c) : [...prev, value]),
+      moveTask: (id, containerId) => setRooms(prev => prev.map(r => r.id === id ? { ...r, containerId } : r)) }}
     settings={event => { if (history.state.route.page !== 'settings') nav({ ...route, page: 'settings' }, false, activationPoint(event)); }} />;
   return <Roster.Provider value={bots}><div className="studio">
     <nav className="preview-tools" aria-label="设计稿预览"><div className="switcher"><button aria-pressed={width === 'phone'} onClick={() => setWidth('phone')}><Glyph name="smartphone" />手机</button>
@@ -250,7 +267,7 @@ function App() {
             updateBot={next => setBots(prev => prev.map(b => b.id === next.id ? next : b))} newChat={() => newChat(bot.id)} /> :
           <div className="screen-body">{effectivePage === 'file' ? <DocumentPage reply={quoteFile} /> : effectivePage === 'settings' ?
             <div className="detail-body"><h3>外观</h3><div className="switcher">{['light', 'dark'].map(v => <button key={v} aria-pressed={theme === v} onClick={() => setTheme(v)}>{v === 'dark' ? '深色' : '浅色'}</button>)}</div></div> :
-            <RoomDetails room={room} open={open} openFile={file} mention={mentionMember} files={diffOpen} setFiles={setDiffOpen}
+            <RoomDetails room={room} open={open} openFile={file} mention={mentionMember} projectName={projectName} files={diffOpen} setFiles={setDiffOpen}
               selectedTab={route.tab} selectTab={tab => nav({ ...route, tab }, true)} />}</div>}
       </section>}
       {layer}

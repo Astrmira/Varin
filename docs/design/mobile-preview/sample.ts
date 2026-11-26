@@ -2,7 +2,7 @@ export type Mode = 'bot' | 'work';
 // The original fixtures use their names as IDs. Newly created Bots have stable UUIDs.
 export type Person = string;
 export type Message = { who: Person | '我'; text: string; quote?: string; file?: boolean; process?: string[]; attachment?: string; choices?: string[]; answer?: string };
-export type Room = { id: string; title: string; mode: Mode; people: Person[]; time: string; messages: Message[]; parent?: string; group?: boolean };
+export type Room = { id: string; title: string; mode: Mode; people: Person[]; time: string; messages: Message[]; parent?: string; group?: boolean; containerId?: string | null; projectId?: string | null };
 export const isGroup = (room: Room) => room.group ?? room.people.length > 1;
 
 export const people: Person[] = ['薇琳', '蓝汐', '秋澄'];
@@ -32,11 +32,17 @@ export const initialRooms: Room[] = [
   { id: 'copy', title: '邀请函措辞', mode: 'bot', people: ['蓝汐'], time: '周一', messages: [
     { who: '蓝汐', text: '开头用「周五见，一起试试 Varin」就很自然。' },
   ] },
-  { id: 'review', title: '演示前走查', mode: 'work', people: ['薇琳'], time: '10:35', messages: [
+  { id: 'review', title: '演示前走查', mode: 'work', containerId: 'rehearsal', projectId: 'demo', people: ['薇琳'], time: '10:35', messages: [
     { who: '我', text: '按演示提纲走一遍手机配对和群聊。' },
     { who: '薇琳', text: '手机配对已走通，群聊走查交给了蓝汐。两部分的结果会汇总到这份提纲。', file: true, process: ['检查配对流程', '派发群聊走查'] },
   ] },
-  { id: 'check', title: '群聊走查', mode: 'work', people: ['蓝汐'], time: '10:31', parent: 'review', messages: [
+  { id: 'check', title: '群聊走查', mode: 'work', projectId: 'demo', people: ['蓝汐'], time: '10:31', parent: 'review', messages: [
     { who: '蓝汐', text: '两位成员分别收到了点名，也能直接回复对应的消息。' },
+  ] },
+  { id: 'feedback', title: '整理试用反馈', mode: 'work', containerId: 'followup', people: ['秋澄'], time: '昨天', messages: [
+    { who: '秋澄', text: '已把试用时大家提到的问题整理好了。' },
+  ] },
+  { id: 'wifi', title: '检查访客 Wi-Fi', mode: 'work', people: ['薇琳'], time: '周一', messages: [
+    { who: '我', text: '帮我列一下在会议室测试手机配对时要检查的网络设置。' },
   ] },
 ];

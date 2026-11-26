@@ -7,17 +7,18 @@ import { BotDirectory, type CreateKind } from './bot-directory';
 import { useRoster } from './roster';
 import { ConversationPortraits } from './conversation-heading';
 import type { BotAppearance } from '@varin/application-client';
+import { WorkDirectory } from './work-directory';
 
-export function Inbox({ mode, changeMode, rooms, selected, open, create, settings, createBot, createGroup }: {
+export function Inbox({ mode, changeMode, rooms, selected, open, create, settings, createBot, createGroup, work }: {
   mode: Mode; changeMode(m: Mode): void; rooms: Room[]; selected: string; open(id: string): void; create(name?: Person): void; settings: React.MouseEventHandler<HTMLButtonElement>;
   createBot(name: string, appearance?: BotAppearance): void; createGroup(name: string, ids: string[]): void;
+  work: Omit<React.ComponentProps<typeof WorkDirectory>, 'rooms' | 'selected' | 'query' | 'open'>;
 }) {
   const { bots, display } = useRoster();
   const [action, setAction] = React.useState<CreateKind | null>(null);
   const [query, setQuery] = React.useState('');
   const [filter, setFilter] = React.useState('全部');
-  const [expanded, setExpanded] = React.useState(false);
-  const visible = rooms.filter(r => r.mode === mode && (mode === 'work' || filter === '全部' || r.people.some(p => p === filter))
+  const visible = rooms.filter(r => r.mode === 'bot' && (filter === '全部' || r.people.some(p => p === filter))
     && (r.title + r.people.map(display).join('') + r.messages.map(m => m.text).join('')).toLowerCase().includes(query.trim().toLowerCase()));
   return <section className="screen inbox">
     <header className="page-bar"><ModeMenu mode={mode} change={m => { setQuery(''); changeMode(m); }} /><div className="bar-actions"><IconButton name="settings-3" label="设置" settingsOrigin="open" onClick={settings} />
@@ -25,21 +26,21 @@ export function Inbox({ mode, changeMode, rooms, selected, open, create, setting
         <Flyout label="新建" trigger={<Glyph name="chat-new" />}>{close => ([
           ['chat', 'chat-new', '新建会话'], ['group', 'group', '新建群聊'],
         ] as const).map(([kind, icon, label]) => <button key={kind} className="choice" onClick={() => { close(); setAction(kind); }}><Glyph name={icon} />{label}</button>)}</Flyout></> :
-        <IconButton name="chat-new" label="新建任务" onClick={() => create()} />}</div></header>
+        <IconButton name="chat-new" label="新建任务" onClick={() => work.createTask(null)} />}</div></header>
     <div className="list-tools">
       <label className="find"><Glyph name="search" /><input type="search" aria-label="搜索会话" placeholder="搜索会话" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
-    <div className="screen-body"><div className="list-heading"><span>{mode === 'bot' ? '最近' : 'Varin · 演示项目'}</span>
-      {mode === 'bot' && <Flyout label="筛选 Bot" trigger={<>{filter === '全部' ? '全部 Bot' : display(filter)}<Glyph name="arrow-down-s" /></>}>{close =>
-        [{ id: '全部', name: '全部' }, ...bots].map(b => <button className="choice" key={b.id} onClick={() => { setFilter(b.id); close(); }}>{b.name}{b.id === filter && <Glyph name="check" />}</button>)}</Flyout>}</div>
-      {visible.filter(r => !r.parent || expanded || query).map(r => <div className={'room-row' + (r.parent ? ' child' : '')} key={r.id}>
+    <div className="screen-body">{mode === 'work' ? <WorkDirectory {...work} rooms={rooms} selected={selected} query={query} open={open} /> : <>
+      <div className="list-heading"><span>最近</span>
+      <Flyout label="筛选 Bot" trigger={<>{filter === '全部' ? '全部 Bot' : display(filter)}<Glyph name="arrow-down-s" /></>}>{close =>
+        [{ id: '全部', name: '全部' }, ...bots].map(b => <button className="choice" key={b.id} onClick={() => { setFilter(b.id); close(); }}>{b.name}{b.id === filter && <Glyph name="check" />}</button>)}</Flyout></div>
+      {visible.map(r => <div className="room-row" key={r.id}>
         <button onClick={() => open(r.id)} className="room-link" aria-current={r.id === selected ? 'page' : undefined}>
-          {mode === 'bot' ? <span className="list-face"><Face names={r.people} size={r.people.length > 1 ? 26 : 37} /></span> : <span className="work-icon"><Glyph name={r.parent ? 'git-branch' : 'chat-thread'} /></span>}
+          <span className="list-face"><Face names={r.people} size={r.people.length > 1 ? 26 : 37} /></span>
           <span className="room-copy"><strong>{r.title}</strong><small>{r.messages.some(m => m.choices && !m.answer) && <span className="needs-reply">等你回复 · </span>}{r.messages.at(-1)?.text || '新会话'}</small></span><time>{r.time}</time></button>
-        {mode === 'work' && rooms.some(child => child.parent === r.id) && <button className="child-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Glyph name={expanded ? 'arrow-down-s' : 'arrow-right-s'} />1 个子任务</button>}
       </div>)}
       {!visible.length && <p className="empty">没有匹配的会话</p>}
-      {mode === 'bot' && <BotDirectory action={action} openCreate={() => setAction('bot')} close={() => setAction(null)} query={query} newBot={createBot} newChat={create} newGroup={createGroup}
-        selectBot={id => { const existing = rooms.find(r => r.mode === 'bot' && !isGroup(r) && r.people[0] === id); if (existing) open(existing.id); else create(id); }} />}
+      <BotDirectory action={action} openCreate={() => setAction('bot')} close={() => setAction(null)} query={query} newBot={createBot} newChat={create} newGroup={createGroup}
+        selectBot={id => { const existing = rooms.find(r => r.mode === 'bot' && !isGroup(r) && r.people[0] === id); if (existing) open(existing.id); else create(id); }} /></>}
     </div>
   </section>;
 }
@@ -84,9 +85,10 @@ export function Timeline({ room, openFile, quote, branch, answer }: {
   </div>;
 }
 
-export function RoomDetails({ room, open, openFile, files, setFiles, selectedTab, selectTab, mention }: {
+export function RoomDetails({ room, open, openFile, files, setFiles, selectedTab, selectTab, mention, projectName }: {
   room: Room; open(id: string): void; openFile(): void; files: boolean; setFiles(v: boolean): void;
   mention(id: string): void;
+  projectName: string | undefined;
   selectedTab?: string; selectTab(tab: string): void;
 }) {
   const group = isGroup(room);
@@ -95,7 +97,7 @@ export function RoomDetails({ room, open, openFile, files, setFiles, selectedTab
   const tab = selectedTab && tabs.includes(selectedTab) ? selectedTab : tabs[0];
   return <div className="detail-body">
     <div className="profile">{group ? <ConversationPortraits ids={room.people} group /> : <Face names={room.people} size={42} />}<h2>{room.title}</h2>
-      <small>{group ? room.people.length + ' 位成员' : 'Varin · 演示项目'}</small></div>
+      <small>{group ? room.people.length + ' 位成员' : projectName ?? '未选择项目'}</small></div>
     <div className="switcher detail-tabs">{tabs.map(t => <button key={t} aria-pressed={t === tab} onClick={() => selectTab(t)}>{t}</button>)}</div>
     {tab === '成员' ? room.people.map(p => <div key={p} className="person-row"><Face names={[p]} size={30} /><strong>{display(p)}</strong><small>提及时接收</small>
       <Button variant="ghost" size="icon" aria-label={'提及' + display(p)} onClick={() => mention(p)}>@</Button></div>) :
