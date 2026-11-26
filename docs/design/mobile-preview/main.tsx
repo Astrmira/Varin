@@ -8,7 +8,14 @@ import '@/index.css';
 import '@/workbenches/bot/bot-group-chat.css';
 import { Compose, Face, Glyph, IconButton, type Draft } from './controls';
 import { DocumentPage, Inbox, RoomDetails, Services, Timeline } from './screens';
-import { fileName, initialRooms, type Mode, type Person, type Room } from './sample';
+import { fileName, initialRooms, isGroup, type Mode, type Person, type Room } from './sample';
+import { initialBots, makeBot, Roster } from './roster';
+import type { BotAppearance } from '@varin/application-client';
+import { I18nProvider, useI18nStore } from '@/lib/i18n';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
+import { previewRuntime } from './runtime';
+import { PreviewBotPanel } from './bot-panel';
 import './preview.css';
 
 const themeCss = new CSSVariableGenerator();
@@ -37,6 +44,7 @@ if (!history.state?.mobilePreview) {
 function App() {
   const [route, setRoute] = React.useState<Route>(history.state.route);
   const [rooms, setRooms] = React.useState(() => load('rooms', initialRooms));
+  const [bots, setBots] = React.useState(() => load('bots', initialBots));
   const [notes, setNotes] = React.useState<Notes>(() => load('drafts', {}));
   const [theme, setTheme] = React.useState(() => load('theme', 'light'));
   const [width, setWidth] = React.useState<'phone' | 'tablet'>(() => load('width',
@@ -49,7 +57,8 @@ function App() {
   const offsets = React.useRef(new Map<string, number>());
   const focusOnReturn = React.useRef(false);
   const room = rooms.find(r => r.id === route.id) ?? rooms[0];
-  const group = room.people.length > 1;
+  const group = isGroup(room);
+  const bot = bots.find(b => b.id === room.people[0]) ?? bots[0];
   const draft = notes[room.id] ?? { text: '' };
   const split = width === 'tablet' && wideWindow;
   React.useEffect(() => {
@@ -60,6 +69,7 @@ function App() {
     return () => { media.removeEventListener('change', update); window.removeEventListener('popstate', pop); };
   }, []);
   React.useEffect(() => { store('rooms', rooms); }, [rooms]);
+  React.useEffect(() => { store('bots', bots); }, [bots]);
   React.useEffect(() => { store('drafts', notes); }, [notes]);
   React.useLayoutEffect(() => { document.documentElement.classList.toggle('dark', theme === 'dark'); store('theme', theme); }, [theme]);
   React.useEffect(() => { store('width', width); }, [width]);
@@ -96,6 +106,16 @@ function App() {
     setRooms(prev => [child, ...prev]); nav({ ...route, id: child.id, page: 'chat' });
   }
   function edit(d: Draft) { setNotes(prev => ({ ...prev, [room.id]: d })); }
+  function createBot(name: string, appearance?: BotAppearance) {
+    const id = crypto.randomUUID();
+    setBots(prev => [...prev, makeBot(id, name, appearance)]);
+    newChat(id);
+  }
+  function createGroup(title: string, people: string[]) {
+    const id = crypto.randomUUID();
+    setRooms(prev => [{ id, title, mode: 'bot', group: true, people, messages: [], time: '刚刚' }, ...prev]);
+    nav({ page: 'chat', mode: 'bot', id });
+  }
   function answer(index: number, value: string) {
     setRooms(prev => prev.map(r => r.id === room.id ? { ...r, messages: [
       ...r.messages.map((m, i) => i === index ? { ...m, answer: value } : m), { who: '我', text: value },
@@ -103,7 +123,7 @@ function App() {
   }
   function send() {
     if (!draft.text.trim() && !draft.attachment) return;
-    setRooms(prev => [{ ...room, time: '刚刚', title: room.messages.length ? room.title : (draft.text.trim() || draft.attachment || room.title).slice(0, 22),
+    setRooms(prev => [{ ...room, time: '刚刚', title: group || room.messages.length ? room.title : (draft.text.trim() || draft.attachment || room.title).slice(0, 22),
       messages: [...room.messages, { who: '我', text: draft.text.trim(), quote: draft.quote, attachment: draft.attachment }] }, ...prev.filter(r => r.id !== room.id)]);
     edit({ text: '' }); requestAnimationFrame(() => { if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; });
   }
@@ -115,9 +135,9 @@ function App() {
     focusOnReturn.current = true;
     history.go(history.state.chatDepth - history.state.depth);
   }
-  const inbox = <Inbox mode={route.mode} selected={room.id} rooms={rooms} changeMode={mode} open={open} create={p => newChat(p)}
+  const inbox = <Inbox mode={route.mode} selected={room.id} rooms={rooms} changeMode={mode} open={open} create={p => newChat(p)} createBot={createBot} createGroup={createGroup}
     settings={() => nav({ ...route, page: 'settings' })} />;
-  return <div className="studio">
+  return <Roster.Provider value={bots}><div className="studio">
     <nav className="preview-tools" aria-label="设计稿预览"><div className="switcher"><button aria-pressed={width === 'phone'} onClick={() => setWidth('phone')}><Glyph name="smartphone" />手机</button>
       <button aria-pressed={width === 'tablet'} onClick={() => setWidth('tablet')}><Glyph name="layout-column" />平板</button></div>
       <IconButton label="切换明暗主题" name={theme === 'light' ? 'moon' : 'palette'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} /></nav>
@@ -127,22 +147,26 @@ function App() {
         <header className="page-bar">
           {(!split || effectivePage !== 'chat') && <IconButton name="arrow-left" label="返回" onClick={back} />}
           {effectivePage === 'chat' ? <><div className="room-title">
-            <Face names={room.people} size={group ? 22 : 30} /><span><strong>{room.title}</strong><small>{group ? room.people.length + ' 位成员' : room.mode === 'work' ? '演示项目' : room.people[0]}</small></span></div>
-            <div className="bar-actions"><Services /><IconButton name={group ? 'group' : 'layout-right'} label="会话详情" onClick={() => nav({ ...route, page: 'details' })} /></div></> :
-            <h1>{effectivePage === 'file' ? fileName : effectivePage === 'settings' ? '设置' : group ? '群聊详情' : '会话详情'}</h1>}
+            <Face names={room.people} size={group ? 22 : 30} /><span><strong>{room.title}</strong><small>{group ? room.people.length + ' 位成员' : room.mode === 'work' ? '演示项目' : bot.name}</small></span></div>
+            <div className="bar-actions">{room.mode === 'work' && <Services />}<IconButton name={group ? 'group' : 'layout-right'} label={group ? '群聊详情' : room.mode === 'bot' ? 'Bot 面板' : '会话详情'} onClick={() => nav({ ...route, page: 'details' })} /></div></> :
+            <h1>{effectivePage === 'file' ? fileName : effectivePage === 'settings' ? '设置' : group ? '群聊详情' : room.mode === 'bot' ? 'Bot 面板' : '会话详情'}</h1>}
         </header>
         {effectivePage === 'chat' ? <>
           <div ref={scroll} className="screen-body conversation-scroll" onScroll={event => offsets.current.set(room.id, event.currentTarget.scrollTop)}>
             {room.messages.length ? <Timeline room={room} openFile={file} answer={answer} quote={m => { edit({ ...draft, quote: m.who + ' · ' + m.text }); focusEditor(); }} branch={i => newChat(undefined, i)} /> :
-              <div className="welcome"><Face names={room.people} size={54} /><h2>{room.mode === 'work' ? '我们要做什么？' : '和' + room.people[0] + '聊点什么'}</h2></div>}
+              <div className="welcome"><Face names={room.people} size={54} /><h2>{group ? room.title : room.mode === 'work' ? '我们要做什么？' : '和' + bot.name + '聊点什么'}</h2></div>}
           </div><Compose room={room} draft={draft} change={edit} send={send} model={models[room.id] ?? 'DeepSeek V4.1 Flash'} setModel={v => setModels({ ...models, [room.id]: v })}
             effort={efforts[room.id] ?? '高'} setEffort={v => setEfforts({ ...efforts, [room.id]: v })} /></> :
+          effectivePage === 'details' && !group && room.mode === 'bot' ? <PreviewBotPanel bot={bot} room={room} rooms={rooms} open={open} openFile={file}
+            updateBot={next => setBots(prev => prev.map(b => b.id === next.id ? next : b))} newChat={() => newChat(bot.id)} /> :
           <div className="screen-body">{effectivePage === 'file' ? <DocumentPage reply={quoteFile} /> : effectivePage === 'settings' ?
             <div className="detail-body"><h3>外观</h3><div className="switcher">{['light', 'dark'].map(v => <button key={v} aria-pressed={theme === v} onClick={() => setTheme(v)}>{v === 'dark' ? '深色' : '浅色'}</button>)}</div></div> :
             <RoomDetails room={room} open={open} openFile={file} files={diffOpen} setFiles={setDiffOpen}
               selectedTab={route.tab} selectTab={tab => nav({ ...route, tab }, true)} />}</div>}
       </section>}
     </main>
-  </div>;
+  </div></Roster.Provider>;
 }
-createRoot(document.getElementById('root')!).render(<App />);
+void useI18nStore.getState().setLocale('zh-CN').then(() => {
+  createRoot(document.getElementById('root')!).render(<I18nProvider><TooltipProvider><RuntimeAPIContext.Provider value={previewRuntime}><App /></RuntimeAPIContext.Provider></TooltipProvider></I18nProvider>);
+});

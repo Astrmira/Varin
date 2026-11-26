@@ -10,6 +10,7 @@ export default defineConfig({
   root,
   plugins: [react()],
   resolve: { alias: [
+    { find: '@/lib/varinEvents', replacement: resolve(root, 'preview-events.ts') },
     ...web.resolve.alias,
     ...['react', 'react-dom', '@base-ui/react'].map(find => ({ find, replacement: resolve(repo, 'packages/ui/node_modules', find) })),
   ] },

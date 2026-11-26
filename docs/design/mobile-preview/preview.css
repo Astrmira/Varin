@@ -2,6 +2,18 @@ html, body, #root { height:100%; margin:0; }
 .studio { height:100dvh; display:grid; place-content:center; justify-items:center; gap:12px; background:color-mix(in srgb,var(--workbench-frame) 90%,var(--foreground)); color:var(--foreground); }
 .preview-tools, .bar-actions, .switcher, .room-title, .find, .choice, .fly-trigger, .byline, .doc-link, .person-row, .info-row, .draft-ref, .child-toggle, .service-head, .sent-file { display:flex; align-items:center; }
 .preview-tools { gap:10px; }
+.preview-bot-panel { flex:1; min-height:0; }
+.preview-bot-panel .bot-stage { max-height:32dvh; }
+.preview-bot-panel .bot-stage-figure .bot-figure { max-height:21dvh; }
+.bot-directory { margin:14px 10px; border-top:1px solid var(--border); padding-top:4px; }
+.bot-directory .list-heading { padding:10px 6px; margin:0; }
+.directory-row, .directory-row > button:first-child, .member-pick { display:flex; align-items:center; gap:8px; }
+.directory-row { min-width:0; margin-left:14px; }
+.directory-row > button:first-child, .member-pick { min-height:42px; text-align:left; flex:1; padding:5px 8px; }
+.directory-row > button:last-child { color:var(--muted-foreground); }
+.member-pick { width:100%; }
+.member-pick > :last-child { margin-inline-start:auto; }
+.member-pick:hover, .directory-row > button:hover { background:var(--interactive-hover); border-radius:8px; }
 .device { width:min(390px,100vw); height:min(844px,calc(100dvh - 84px)); position:relative; isolation:isolate; overflow:hidden; display:flex; background:var(--background); border:1px solid var(--border); border-radius:20px; box-shadow:0 12px 42px rgb(0 0 0 / .1); }
 .device.split { width:min(960px,calc(100vw - 36px)); }
 .screen { flex:1; min-height:0; min-width:0; display:flex; flex-direction:column; background:var(--background); }

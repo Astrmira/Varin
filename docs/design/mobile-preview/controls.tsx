@@ -2,33 +2,36 @@ import React from 'react';
 import { Popover } from '@base-ui/react/popover';
 import { Icon, type IconProps } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
-import { VarinFigureRig } from '@/workbenches/bot/varinFigureRig';
-import { DEFAULT_FIGURE_ACCENT } from '@/workbenches/bot/varinFigurePalette';
-import bluePortrait from '@/workbenches/bot/figurePresets/deepseek.webp';
-import amberPortrait from '@/workbenches/bot/figurePresets/claude.webp';
+import { BotFigure } from '@/workbenches/bot/BotFigure';
+import { VarinLogo } from '@/components/ui/VarinLogo';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem } from '@/components/ui/dropdown-menu';
+import { useRoster } from './roster';
 import { ComposerEditor, type ComposerEditorHandle } from '@/components/chat/composer/editor/ComposerEditor';
 import { ModelLogo } from '@/components/ui/ModelLogo';
-import { people, type Person, type Room } from './sample';
+import { isGroup, people, type Mode, type Person, type Room } from './sample';
 
 export function Glyph({ name }: { name: IconProps['name'] }) {
   return <Icon name={name} className="size-4" />;
 }
 
-function VarinPortrait({ size }: { size: number }) {
-  const host = React.useRef<HTMLSpanElement>(null);
-  React.useLayoutEffect(() => {
-    if (!host.current) return;
-    const rig = new VarinFigureRig(host.current, { state: 'idle', still: true, compact: true, wide: false, accent: DEFAULT_FIGURE_ACCENT });
-    return () => rig.dispose();
-  }, []);
-  return <span ref={host} aria-hidden="true" className="bot-figure" data-still="" style={{ width: size, height: size }} />;
-}
-
 export function Face({ names, size = 32 }: { names: Person[]; size?: number }) {
+  const { bots } = useRoster();
   return <span className="group-chat-faces">{names.slice(0, 2).map(name =>
     <span key={name} className="group-chat-avatar" style={{ width: size, height: size }}>
-      {name === '薇琳' ? <VarinPortrait size={size} /> : <img src={name === '蓝汐' ? bluePortrait : amberPortrait} width={size} height={size} alt="" />}
+      <BotFigure appearance={bots.find(b => b.id === name)?.appearance} state="idle" size={size} portrait still />
     </span>)}</span>;
+}
+
+export function ModeMenu({ mode, change }: { mode: Mode; change(value: Mode): void }) {
+  const label = (value: Mode) => value === 'bot' ? 'Varin' : '工作台';
+  const icon = (value: Mode) => value === 'bot' ? <VarinLogo decorative width={16} height={16} /> : <Glyph name="workbench-agent" />;
+  return <DropdownMenu><DropdownMenuTrigger asChild>
+    <Button variant="ghost" size="sm" className="h-7 gap-1.5 rounded-md bg-interactive-hover px-2 typography-meta font-medium" aria-label={'切换模式：' + label(mode)}>
+      {icon(mode)}{label(mode)}<Icon name="arrow-down-s" className="size-3.5 opacity-60" />
+    </Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="min-w-44">
+      <DropdownMenuRadioGroup value={mode} onValueChange={value => change(value as Mode)}>
+        {(['bot', 'work'] as const).map(value => <DropdownMenuRadioItem key={value} value={value} closeOnClick>{icon(value)}{label(value)}</DropdownMenuRadioItem>)}
+      </DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>;
 }
 
 export function IconButton({ name, label, onClick }: { name: IconProps['name']; label: string; onClick(): void }) {
@@ -71,7 +74,9 @@ export function Compose({ room, draft, change, send, model, setModel, effort, se
 }) {
   const editor = React.useRef<ComposerEditorHandle>(null);
   const input = React.useRef<HTMLInputElement>(null);
-  const group = room.people.length > 1;
+  const group = isGroup(room);
+  const { display } = useRoster();
+  const members = room.people.map(display);
   const [permission, setPermission] = React.useState('先问我');
   function mention(name: string) {
     const control = editor.current;
@@ -83,10 +88,10 @@ export function Compose({ room, draft, change, send, model, setModel, effort, se
   }
   const [cursor, setCursor] = React.useState(0);
   const query = group && /@([^\s@]*)$/u.exec(draft.text.slice(0, cursor));
-  const matches = query ? room.people.filter(p => p.startsWith(query[1])) : [];
+  const matches = query ? room.people.filter(p => display(p).startsWith(query[1])) : [];
   return <div className="compose-wrap">
     <div className="compose-box rounded-composer bg-muted border border-border" data-conversation-composer-input-frame="true">
-      {matches.length > 0 && <div className="mention-list">{matches.map(p => <button key={p} onClick={() => mention(p)}><Face names={[p]} size={23} />{p}</button>)}</div>}
+      {matches.length > 0 && <div className="mention-list">{matches.map(p => <button key={p} onClick={() => mention(display(p))}><Face names={[p]} size={23} />{display(p)}</button>)}</div>}
       {(['quote', 'attachment'] as const).map(key => draft[key] && <div className="draft-ref" key={key}><Glyph name={key === 'quote' ? 'chat-quote' : 'attachment-2'} /><span>{draft[key]}</span><IconButton name="close" label="移除" onClick={() => change({ ...draft, [key]: undefined })} /></div>)}
       <ComposerEditor ref={editor} draftKey={room.id} value={draft.text} onChange={c => { change({ ...draft, text: c.value }); setCursor(c.selection.end); }}
         onSelectionChange={s => setCursor(s.end)} languageContext={language} maxLines={4} className="compose-editor" aria-label="消息"
@@ -96,10 +101,10 @@ export function Compose({ room, draft, change, send, model, setModel, effort, se
           <input type="file" ref={input} hidden onChange={e => { const f = e.target.files?.[0]; if (f) change({ ...draft, attachment: f.name }); e.target.value = ''; }} />
           <IconButton name="add" label="附加文件" onClick={() => input.current?.click()} />
           {!group && <Choices label="确认模式" trigger={<Glyph name="shield-user" />} values={['先问我', '智能判断', '直接执行']} selected={permission} onSelect={setPermission} side="top" align="start" />}
-          {group && <Choices label="提及成员" trigger="@" values={room.people} onSelect={mention} side="top" align="start" />}
+          {group && <Choices label="提及成员" trigger="@" values={members} onSelect={mention} side="top" align="start" />}
         </div>
         <div className="conversation-composer-models">
-          {group ? <small>{room.people.filter(p => draft.text.includes('@' + p)).map(p => '@' + p).join('、') || (draft.quote ? '回复消息' : '仅记录')}</small> : <>
+          {group ? <small>{members.filter(p => draft.text.includes('@' + p)).map(p => '@' + p).join('、') || (draft.quote ? '回复消息' : '仅记录')}</small> : <>
             <Choices label="思考强度" trigger={<><Glyph name="brain" />{effort}</>} values={['低', '中', '高']} selected={effort} onSelect={setEffort} side="top" />
             <Choices label="选择模型" trigger={<><ModelLogo modelId={model} className="size-4 shrink-0" /><span className="choice-label">{model}</span></>} values={['DeepSeek V4.1 Flash', 'GPT-6.2']} selected={model} onSelect={setModel} side="top" />
           </>}
