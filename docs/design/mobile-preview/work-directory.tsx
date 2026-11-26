@@ -7,6 +7,7 @@ import { organizationContainerPath, organizationDropAllowed, organizationObjectK
 import { useOrganizationNavigation } from '@/hooks/useOrganizationNavigation';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { Button } from '@/components/ui/button';
+import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Flyout, Glyph } from './controls';
@@ -16,12 +17,13 @@ import '@/components/conversation/organization.css';
 
 type Props = {
   rooms: Room[]; snapshot: Snapshot; selected: string; query: string; open(id: string): void;
-  createTask(parentId: string | null): void; updateContainer(value: Container): void; moveTask(id: string, parentId: string | null): void;
+  menuBoundary?: HTMLElement; createTask(parentId: string | null): void; updateContainer(value: Container): void;
+  updateTask(id: string, change: Partial<Pick<Room, 'containerId' | 'title' | 'pinned'>>): void;
 };
 const containerKey = (id: string) => organizationObjectKey({ kind: 'container', id });
 const name = (node: OrganizationNode) => node.container?.name ?? node.conversation?.title ?? '';
 
-export function WorkDirectory({ rooms, snapshot, selected, query, open, createTask, updateContainer, moveTask }: Props) {
+export function WorkDirectory({ rooms, snapshot, selected, query, open, createTask, updateContainer, updateTask, menuBoundary }: Props) {
   const [pref, update] = useOrganizationNavigation('mobile-design-workbench');
   const grouping = useSessionDisplayStore(s => s.sessionGroupingMode);
   const setGrouping = useSessionDisplayStore(s => s.setSessionGroupingMode);
@@ -29,6 +31,7 @@ export function WorkDirectory({ rooms, snapshot, selected, query, open, createTa
   const [group, setGroup] = React.useState<OrganizationGroupEditor | null>(null);
   const [project, setProject] = React.useState<{ parent: string | null; name: string } | null>(null);
   const [moving, setMoving] = React.useState<OrganizationNode | null>(null);
+  const [renaming, setRenaming] = React.useState<{ id: string; title: string } | null>(null);
   const [target, setTarget] = React.useState('');
   const byId = new Map(rooms.map(r => [r.id, r]));
   const selectedPath = snapshot.conversations.find(entry => entry.conversation.id === selected)?.path ?? [];
@@ -41,7 +44,7 @@ export function WorkDirectory({ rooms, snapshot, selected, query, open, createTa
     if (!moving) return;
     const parentId = target || null;
     if (moving.container) updateContainer({ ...moving.container, parentId });
-    else moveTask(moving.object.id, parentId);
+    else updateTask(moving.object.id, { containerId: parentId });
     setMoving(null); reveal(parentId);
   };
   const roots = recent ? projectRecentConversations(snapshot) : projectOrganization(snapshot, { flat: grouping === 'flat' });
@@ -62,16 +65,25 @@ export function WorkDirectory({ rooms, snapshot, selected, query, open, createTa
     const toggle = () => { if (!needle) update({ expanded: { [node.key]: !expanded } }); };
     const activate = () => c ? toggle() : open(node.object.id);
     const label = name(node);
-    const actions = <Flyout label={label + '的操作'} trigger={<Glyph name="more" />}>{close => <>
-      {c && <><button className="choice" onClick={() => { close(); reveal(c.id); createTask(c.id); }}>新建会话</button>
-        <button className="choice" onClick={() => { close(); editGroup(c.id); }}>新建分组</button>
-        <button className="choice" onClick={() => { close(); setProject({ name: '', parent: c.id }); }}>添加项目</button></>}
-      <button className="choice" onClick={() => { close(); startMove(node); }}>移动到…</button></>}</Flyout>;
+    const menu = <>
+      {c ? <>
+        <DropdownMenuItem onClick={() => { reveal(c.id); createTask(c.id); }}><Glyph name="chat-new" />新建会话</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => editGroup(c.id)}><Glyph name="folder-add" />新建分组</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setProject({ name: '', parent: c.id })}><Glyph name="code-box" />添加项目</DropdownMenuItem>
+        <DropdownMenuSeparator />
+      </> : <>
+        <DropdownMenuItem onClick={() => setRenaming({ id: node.object.id, title: label })}><Glyph name="pencil-ai" />重命名</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => updateTask(node.object.id, { pinned: !node.conversation?.pinned })}>
+          <Glyph name={node.conversation?.pinned ? 'unpin' : 'pushpin'} />{node.conversation?.pinned ? '取消置顶' : '置顶'}
+        </DropdownMenuItem>
+      </>}
+      <DropdownMenuItem onClick={() => startMove(node)}><Glyph name="folder-received" />移动到…</DropdownMenuItem>
+    </>;
     return <div key={node.key}><OrganizationRow id={node.key} title={label}
       icon={c ? <OrganizationContainerIcon container={c} /> : <Glyph name={byId.get(node.object.id)?.parent ? 'git-branch' : 'chat-thread'} />}
       container={!!c} active={!c && selected === node.object.id} expandable={expandable} expanded={expanded} recent={recent}
       time={byId.get(node.object.id)?.time} path={!c && (recent || grouping === 'flat' || !!needle) ? location(node.parentId) || '未分类' : undefined}
-      selecting={false} selected={false} actions={actions} onSelect={activate} onOpen={activate} onToggle={toggle}
+      selecting={false} selected={false} pinned={node.conversation?.pinned} menu={menu} menuBoundary={menuBoundary} onSelect={activate} onOpen={activate} onToggle={toggle}
       onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activate(); } }} />
       {expanded && expandable && <div role="group" className={c ? 'organization-children' : 'organization-task-children'}>
         {node.children.length ? <>{node.children.filter(child => child.container).map(row)}{node.children.filter(child => !child.container).map(row)}</> :
@@ -81,7 +93,7 @@ export function WorkDirectory({ rooms, snapshot, selected, query, open, createTa
   const visible = search(roots);
   const containers = visible.filter(n => n.container);
   const threads = visible.filter(n => !n.container);
-  return <section className="work-directory">
+  return <section className="work-directory" data-touch-directory>
     <header><div className="organization-tabs" role="tablist" aria-label="工作台会话视图">
       {(['recent', 'classified'] as const).map(v => <button key={v} type="button" role="tab" aria-selected={pref.view === v} onClick={() => update({ view: v })}>{v === 'recent' ? '最近' : '分类'}</button>)}
     </div><div className="bar-actions">
@@ -105,6 +117,12 @@ export function WorkDirectory({ rooms, snapshot, selected, query, open, createTa
         addContainer(container(crypto.randomUUID(), 'project', project.name.trim(), project.parent, snapshot.containers.length)); setProject(null);
       }}><Input autoFocus aria-label="项目名称" placeholder="项目名称" value={project.name} onChange={e => setProject({ ...project, name: e.target.value })} />
         <DialogFooter><Button type="submit" disabled={!project.name.trim()}>添加项目</Button></DialogFooter></form>}</DialogContent></Dialog>
+    <Dialog open={!!renaming} onOpenChange={v => { if (!v) setRenaming(null); }}><DialogContent className="max-w-sm">
+      <DialogHeader><DialogTitle>重命名</DialogTitle></DialogHeader>{renaming && <form className="grid gap-4" onSubmit={e => {
+        e.preventDefault(); const title = renaming.title.trim(); if (!title) return;
+        updateTask(renaming.id, { title }); setRenaming(null);
+      }}><Input autoFocus aria-label="会话名称" value={renaming.title} onChange={e => setRenaming({ ...renaming, title: e.target.value })} />
+        <DialogFooter><Button type="submit" disabled={!renaming.title.trim()}>保存</Button></DialogFooter></form>}</DialogContent></Dialog>
     <Dialog open={!!moving} onOpenChange={v => { if (!v) setMoving(null); }}><DialogContent className="max-w-sm">
       <DialogHeader><DialogTitle>移动到…</DialogTitle></DialogHeader>{moving && <><label>{name(moving)}
         <select className="bot-group-select" aria-label="目标分类" value={target} onChange={e => setTarget(e.target.value)}>

@@ -37,8 +37,6 @@ html, body, #root { height:100%; margin:0; }
 .work-directory .organization-row { min-height:44px; }
 .work-directory .organization-row-main { min-height:44px; }
 .work-directory .organization-chevron { min-width:27px; min-height:42px; }
-.work-directory .organization-row-actions { position:static; opacity:1; pointer-events:auto; background:none; }
-.work-directory .organization-row-trailing { display:flex; align-items:center; gap:2px; }
 .work-directory h3, .work-directory-empty { padding:9px 8px; color:var(--muted-foreground); font-size:12px; }
 .inbox .page-bar { padding-inline:16px 8px; }
 .inbox .page-bar h1 { padding:0; font-size:19px; }

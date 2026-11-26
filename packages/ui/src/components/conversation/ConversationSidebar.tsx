@@ -1193,6 +1193,7 @@ export const ConversationSidebar: React.FC<ConversationSessionSidebarProps> = ({
           !isVisible && 'pointer-events-none',
         )}
         aria-hidden={!isVisible}
+        data-touch-directory={mobileVariant || undefined}
         onContextMenuCapture={(event) => { if (isSidebarEditor(event.target)) event.stopPropagation(); }}
         onTouchStartCapture={(event) => { if (isSidebarEditor(event.target)) event.stopPropagation(); }}
       >

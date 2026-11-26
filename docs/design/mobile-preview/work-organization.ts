@@ -27,10 +27,11 @@ export function workSnapshot(rooms: Room[], containers: Container[]): Snapshot {
     const parent = r.parent && byId.get(r.parent);
     return parent ? placement(parent) : null;
   }
-  snapshot.conversations = work.map((r, order) => {
+  snapshot.conversations = work.map((r, index) => {
     const conversation = ref(r.id), parent = r.parent ? ref(r.parent) : null;
     const containerId = placement(r);
-    return { conversation, title: r.title, pinned: false, archived: false, revision: 1,
+    const order = r.pinned ? index : work.length + index;
+    return { conversation, title: r.title, pinned: !!r.pinned, archived: false, revision: 1,
       path: organizationContainerPath(snapshot, containerId).map(c => c.id),
       position: { conversation, order, containerId, revision: 1, explicit: r.containerId !== undefined, inheritedFrom: r.containerId === undefined ? parent : null },
       origin: { botId: null, directBotId: null, conversation: parent } };

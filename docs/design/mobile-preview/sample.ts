@@ -2,7 +2,7 @@ export type Mode = 'bot' | 'work';
 // The original fixtures use their names as IDs. Newly created Bots have stable UUIDs.
 export type Person = string;
 export type Message = { who: Person | '我'; text: string; quote?: string; file?: boolean; process?: string[]; attachment?: string; choices?: string[]; answer?: string };
-export type Room = { id: string; title: string; mode: Mode; people: Person[]; time: string; messages: Message[]; parent?: string; group?: boolean; containerId?: string | null; projectId?: string | null };
+export type Room = { id: string; title: string; mode: Mode; people: Person[]; time: string; messages: Message[]; parent?: string; group?: boolean; pinned?: boolean; containerId?: string | null; projectId?: string | null };
 export const isGroup = (room: Room) => room.group ?? room.people.length > 1;
 
 export const people: Person[] = ['薇琳', '蓝汐', '秋澄'];

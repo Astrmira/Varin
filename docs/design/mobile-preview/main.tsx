@@ -129,6 +129,7 @@ function App() {
   const [rooms, setRooms] = React.useState(() => withSampleLocations(load('rooms', initialRooms)));
   const [containers, setContainers] = React.useState(() => load('work-containers', initialContainers));
   const directory = React.useMemo(() => workSnapshot(rooms, containers), [rooms, containers]);
+  const [device, setDevice] = React.useState<HTMLElement | null>(null);
   const [bots, setBots] = React.useState(() => load('bots', initialBots));
   const [notes, setNotes] = React.useState<Notes>(() => load('drafts', {}));
   const [theme, setTheme] = React.useState(() => load('theme', 'light'));
@@ -240,15 +241,15 @@ function App() {
     history.go(history.state.chatDepth - history.state.depth);
   }
   const inbox = <Inbox mode={route.mode} selected={room.id} rooms={rooms} changeMode={mode} open={open} create={p => newChat(p)} createBot={createBot} createGroup={createGroup}
-    work={{ snapshot: directory, createTask: id => newChat(undefined, undefined, id),
+    work={{ snapshot: directory, menuBoundary: device ?? undefined, createTask: id => newChat(undefined, undefined, id),
       updateContainer: value => setContainers(prev => prev.some(c => c.id === value.id) ? prev.map(c => c.id === value.id ? value : c) : [...prev, value]),
-      moveTask: (id, containerId) => setRooms(prev => prev.map(r => r.id === id ? { ...r, containerId } : r)) }}
+      updateTask: (id, change) => setRooms(prev => prev.map(r => r.id === id ? { ...r, ...change } : r)) }}
     settings={event => { if (history.state.route.page !== 'settings') nav({ ...route, page: 'settings' }, false, activationPoint(event)); }} />;
   return <Roster.Provider value={bots}><div className="studio">
     <nav className="preview-tools" aria-label="设计稿预览"><div className="switcher"><button aria-pressed={width === 'phone'} onClick={() => setWidth('phone')}><Glyph name="smartphone" />手机</button>
       <button aria-pressed={width === 'tablet'} onClick={() => setWidth('tablet')}><Glyph name="layout-column" />平板</button></div>
       <IconButton label="切换明暗主题" name={theme === 'light' ? 'moon' : 'palette'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} /></nav>
-    <main className={'device' + (split ? ' split' : '')}>
+    <main ref={setDevice} className={'device' + (split ? ' split' : '')}>
       <div className="list-pane" hidden={!split && effectivePage !== 'list'}>{inbox}</div>
       {effectivePage !== 'list' && <section key={effectivePage + room.id} className="screen content">
         {effectivePage === 'chat' ? <ConversationHeading room={room} back={split ? undefined : back}
