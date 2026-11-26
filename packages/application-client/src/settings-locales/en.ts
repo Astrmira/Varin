@@ -712,6 +712,8 @@ export const settingsDict = {
   "settings.models.modelId": "Model ID",
   "settings.models.addModel": "Add model",
   "settings.models.discover": "Discover models",
+  "settings.models.discoveryUpToDate": "All {count} models returned by the service are already listed.",
+  "settings.models.discoveryEmpty": "The service returned no models.",
   "settings.models.context": "Context capacity (tokens)",
   "settings.models.output": "Maximum output (tokens)",
   "settings.models.save": "Save",

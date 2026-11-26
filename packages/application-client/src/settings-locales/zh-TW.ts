@@ -225,6 +225,8 @@ export const settingsDict = {
   "settings.models.modelId": "模型 ID",
   "settings.models.addModel": "新增模型",
   "settings.models.discover": "取得模型",
+  "settings.models.discoveryUpToDate": "已取得 {count} 個模型，皆已在清單中。",
+  "settings.models.discoveryEmpty": "服務未傳回模型。",
   "settings.models.context": "上下文容量（token）",
   "settings.models.output": "最大輸出（token）",
   "settings.models.save": "儲存",
