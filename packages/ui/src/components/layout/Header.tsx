@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import {
   Tooltip,
   TooltipContent,
@@ -12,6 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { dropdownMenuPopupClass } from '@/components/ui/dropdown-menu.styles';
 import { SortableTabsStrip, type SortableTabsStripItem } from '@/components/ui/sortable-tabs-strip';
 
 import { DiffIcon } from '@/components/icons/DiffIcon';
@@ -1029,8 +1031,7 @@ export const Header: React.FC<HeaderProps> = ({
               />
             )}
 
-            {/* Mobile Services Menu (Usage + MCP) */}
-            <DropdownMenu
+            <Popover.Root
               open={isMobileServicesOpen}
               onOpenChange={(open) => {
                 if (open) {
@@ -1046,66 +1047,59 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label={t('header.services.viewAria')}
-                      className={cn(
-                        mobileHeaderIconButtonClass,
-                        mobileActiveHeaderItem === 'services' && 'bg-interactive-selection text-interactive-selection-foreground'
-                      )}
-                    >
-                      <Icon name="stack" className="h-5 w-5" />
-                    </button>
-                  </DropdownMenuTrigger>
+                  <Popover.Trigger
+                    type="button"
+                    aria-label={t('header.services.viewAria')}
+                    className={cn(
+                      mobileHeaderIconButtonClass,
+                      mobileActiveHeaderItem === 'services' && 'bg-interactive-selection text-interactive-selection-foreground'
+                    )}
+                  >
+                    <Icon name="stack" className="h-5 w-5" />
+                  </Popover.Trigger>
                 </TooltipTrigger>
                 <TooltipContent>
                   <p>{t('header.services.title')}</p>
                 </TooltipContent>
               </Tooltip>
-              <DropdownMenuContent
-                align="end"
-                sideOffset={0}
-                positionerClassName="!fixed !bottom-0 !left-0 !right-0 !top-[var(--varin-header-height,56px)] !transform-none"
-                className="h-full w-screen max-h-none rounded-none border-0 p-0 pt-1 overflow-hidden"
-              >
-                <div className="flex h-full flex-col bg-[var(--surface-elevated)]">
-                  <div className="sticky top-0 z-20 bg-[var(--surface-elevated)] px-2 py-px">
-                    <div className="flex items-center justify-between gap-2 px-3 py-0">
-                      <div className="h-10 min-w-0 flex-1">
-                        <SortableTabsStrip
-                          items={mobileServicesTabItems}
-                          activeId={mobileServicesTab}
-                          onSelect={(tabID) => {
-                            const value = tabID as 'usage' | 'mcp';
-                            setMobileServicesTab(value);
-                          }}
-                          layoutMode="fit"
-                          variant="active-pill"
-                          activePillInsetClassName="gap-0.5 px-px py-0"
-                          activePillButtonClassName="h-8"
-                          className="h-full"
-                        />
-                      </div>
-                      <button
+              <Popover.Portal>
+                <Popover.Positioner side="bottom" align="end" sideOffset={8} collisionPadding={12} className="z-50">
+                  <Popover.Popup
+                    aria-label={t('header.services.title')}
+                    className={cn(
+                      dropdownMenuPopupClass,
+                      'flex max-h-[min(28rem,65dvh,var(--available-height))] w-[min(22rem,var(--available-width))] min-w-0 flex-col overflow-hidden rounded-xl bg-[var(--surface-elevated)] p-0 text-[var(--surface-elevated-foreground)] outline-none'
+                    )}
+                  >
+                    <div className="flex shrink-0 items-center gap-2 border-b border-border/50 px-2.5 py-2">
+                      <SortableTabsStrip
+                        items={mobileServicesTabItems}
+                        activeId={mobileServicesTab}
+                        onSelect={tab => setMobileServicesTab(tab as 'usage' | 'mcp')}
+                        layoutMode="fit"
+                        variant="active-pill"
+                        activePillInsetClassName="gap-0.5 px-px py-0"
+                        activePillButtonClassName="h-8"
+                        activePillLowercase={false}
+                        className="h-9 min-w-0 flex-1"
+                      />
+                      <Popover.Close
                         type="button"
-                        onClick={() => setIsMobileServicesOpen(false)}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-interactive-hover"
+                        className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                         aria-label={t('header.services.closeAria')}
                       >
-                        <Icon name="close" className="h-5 w-5" />
-                      </button>
+                        <Icon name="close" className="size-5" />
+                      </Popover.Close>
                     </div>
-                  </div>
-
-                  {mobileServicesTab === 'mcp' && (
-                    <McpDropdownContent active={isMobileServicesOpen && mobileServicesTab === 'mcp'} />
-                  )}
-
-                  {mobileServicesTab === 'usage' && <ThreadTokenUsage active={isMobileServicesOpen} />}
-                </div>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                    <div key={mobileServicesTab} className="min-h-0 overflow-y-auto overscroll-contain">
+                      {mobileServicesTab === 'mcp'
+                        ? <McpDropdownContent active={isMobileServicesOpen} mobileListDensity onNavigate={() => setIsMobileServicesOpen(false)} />
+                        : <ThreadTokenUsage active={isMobileServicesOpen} />}
+                    </div>
+                  </Popover.Popup>
+                </Popover.Positioner>
+              </Popover.Portal>
+            </Popover.Root>
 
             {panelControl}
             {onToggleRightDrawer && !mobileTitle ? (
