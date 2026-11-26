@@ -51,6 +51,10 @@ Operator checks required before `activate`:
 
 Mount restored scopes at their expected paths and boot the matching Varin release so native owners run normal crash recovery. Regression tests: `node --test scripts/cold-backup.test.mjs`.
 
+## Knowledge stores after upgrading TriviumDB
+
+On first writable use the Host converts older knowledge stores with the bundled TriviumDB migrator. Allow space on the data volume for the temporary copy and verified output. The original checkpointed file group is retained. The active copy is `<name>.store/current/database.tdb` inside the same knowledge directory. Include the entire directory in backups. To roll back Varin, restore its pre-upgrade backup. If conversion is interrupted, reopen the same store with the same Host to resume it.
+
 ## Legacy TriviumDB 0.8 Knowledge Stores
 
 Varin **0.9.53** retains the 0.8 WAL-only conversion bridge. A dormant knowledge store may

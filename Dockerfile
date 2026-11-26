@@ -15,6 +15,14 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
   CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
   AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
 
+FROM kernel-toolchain AS knowledge-migrator
+ARG TARGETARCH
+COPY scripts/trivium-release.json /src/trivium-release.json
+RUN set -eu; \
+  case "$TARGETARCH" in amd64) target=x86_64-unknown-linux-gnu ;; arm64) target=aarch64-unknown-linux-gnu ;; *) exit 1 ;; esac; \
+  revision="$(sed -n 's/.*"revision": "\([a-f0-9]*\)".*/\1/p' /src/trivium-release.json)"; \
+  cargo install --git https://github.com/Astrmira/TriviumDB.git --rev "$revision" --locked --target "$target" --root /out triviumdb-migrate
+
 FROM kernel-toolchain AS kernel-planner
 COPY kernel ./
 RUN cargo chef prepare --recipe-path /tmp/kernel-recipe.json
@@ -89,11 +97,13 @@ RUN bun run build:frontend
 
 FROM web-build-inputs AS builder
 COPY --from=kernel-builder /out/varin-kernel /tmp/varin-kernel
+COPY --from=knowledge-migrator /out/bin/triviumdb-migrate /tmp/triviumdb-migrate
 # Revision and target affect packaging, not the shared workspace install.
 ARG VARIN_SOURCE_REVISION
 ARG TARGETARCH
 RUN VARIN_SOURCE_REVISION="${VARIN_SOURCE_REVISION}" \
   VARIN_KERNEL_PREBUILT=/tmp/varin-kernel \
+  VARIN_TDB_MIGRATOR_PREBUILT=/tmp/triviumdb-migrate \
   VARIN_TARGET_PLATFORM=linux \
   VARIN_TARGET_ARCH="${TARGETARCH}" \
   bun run build:cloud-runtime -- --output /app/artifacts/cloud-runtime --no-archive --prepared-frontend
