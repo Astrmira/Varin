@@ -68,11 +68,11 @@ type Draft = { text: string; quote?: string; attachment?: string };
 export type { Draft };
 const language = { inputMode: 'normal' as const, knownAgentNames: new Set(people), confirmedMentions: new Set<string>(), knownSlashNames: new Set<string>(), attachmentFilenames: [] };
 
-export function Compose({ room, draft, change, send, model, setModel, effort, setEffort }: {
+export function Compose({ editor, room, draft, change, send, model, setModel, effort, setEffort }: {
+  editor: React.RefObject<ComposerEditorHandle | null>;
   room: Room; draft: Draft; change(value: Draft): void; send(): void;
   model: string; setModel(value: string): void; effort: string; setEffort(value: string): void;
 }) {
-  const editor = React.useRef<ComposerEditorHandle>(null);
   const input = React.useRef<HTMLInputElement>(null);
   const group = isGroup(room);
   const { display } = useRoster();

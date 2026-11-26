@@ -5,6 +5,7 @@ import { Face, Flyout, Glyph, IconButton, ModeMenu } from './controls';
 import { fileName, isGroup, outline, type Message, type Mode, type Room, type Person } from './sample';
 import { BotDirectory, type CreateKind } from './bot-directory';
 import { useRoster } from './roster';
+import { ConversationPortraits } from './conversation-heading';
 import type { BotAppearance } from '@varin/application-client';
 
 export function Inbox({ mode, changeMode, rooms, selected, open, create, settings, createBot, createGroup }: {
@@ -60,11 +61,15 @@ export function Timeline({ room, openFile, quote, branch, answer }: {
 }) {
   const group = isGroup(room);
   const { display } = useRoster();
+  const initialCount = React.useRef(room.messages.length);
+  if (!room.messages.length) return null;
   return <div className="timeline"><div className="day">{room.time.includes(':') ? '今天' : room.time}</div>
     {room.messages.map((m, i) => {
       const self = m.who === '我';
-      return <article key={i} className={'turn ' + (self ? 'own' : '') + (group ? ' group-turn' : '')}>
-        {!self && <div className="byline"><Face names={[m.who]} size={group ? 25 : 20} />{display(m.who)}</div>}
+      const consecutive = group && i > 0 && room.messages[i - 1].who === m.who;
+      return <article key={i} data-new={i >= initialCount.current || undefined} data-consecutive={consecutive || undefined}
+        className={'turn ' + (self ? 'own' : '') + (group ? ' group-turn' : '')}>
+        {!self && !consecutive && <div className="byline"><Face names={[m.who]} size={group ? 29 : 20} />{display(m.who)}</div>}
         {m.process && <details className="process"><summary><Glyph name="arrow-right-s" />工作过程</summary>{m.process.map(step => <p key={step}><Glyph name="check" />{step}</p>)}</details>}
         <ContextMenu><ContextMenuTrigger render={<div className={group ? 'group-chat-bubble message' : 'message'} tabIndex={0} />}>
           {m.quote && <blockquote>{m.quote}</blockquote>}{m.text}{m.attachment && <small className="sent-file"><Glyph name="attachment-2" />{m.attachment}</small>}
@@ -79,8 +84,9 @@ export function Timeline({ room, openFile, quote, branch, answer }: {
   </div>;
 }
 
-export function RoomDetails({ room, open, openFile, files, setFiles, selectedTab, selectTab }: {
+export function RoomDetails({ room, open, openFile, files, setFiles, selectedTab, selectTab, mention }: {
   room: Room; open(id: string): void; openFile(): void; files: boolean; setFiles(v: boolean): void;
+  mention(id: string): void;
   selectedTab?: string; selectTab(tab: string): void;
 }) {
   const group = isGroup(room);
@@ -88,10 +94,11 @@ export function RoomDetails({ room, open, openFile, files, setFiles, selectedTab
   const tabs = group ? ['成员', '协作', '日程'] : ['任务', '文件', '改动'];
   const tab = selectedTab && tabs.includes(selectedTab) ? selectedTab : tabs[0];
   return <div className="detail-body">
-    <div className="profile"><Face names={room.people} size={42} /><h2>{room.title}</h2>
+    <div className="profile">{group ? <ConversationPortraits ids={room.people} group /> : <Face names={room.people} size={42} />}<h2>{room.title}</h2>
       <small>{group ? room.people.length + ' 位成员' : 'Varin · 演示项目'}</small></div>
     <div className="switcher detail-tabs">{tabs.map(t => <button key={t} aria-pressed={t === tab} onClick={() => selectTab(t)}>{t}</button>)}</div>
-    {tab === '成员' ? room.people.map(p => <div key={p} className="person-row"><Face names={[p]} size={30} /><strong>{display(p)}</strong><small>提及时接收</small></div>) :
+    {tab === '成员' ? room.people.map(p => <div key={p} className="person-row"><Face names={[p]} size={30} /><strong>{display(p)}</strong><small>提及时接收</small>
+      <Button variant="ghost" size="icon" aria-label={'提及' + display(p)} onClick={() => mention(p)}>@</Button></div>) :
       !['outline', 'group', 'check', 'review'].includes(room.id) ? <p className="empty">暂无{tab}</p> :
       tab === '日程' ? <div className="info-row"><Glyph name="calendar" /><span>合作方演示彩排<small>今天 14:30</small></span></div> :
       tab === '改动' ? <><button className="info-row" aria-expanded={files} onClick={() => setFiles(!files)}><Glyph name="git-branch" /><span>{fileName}</span><Glyph name={files ? 'arrow-down-s' : 'arrow-right-s'} /></button>
