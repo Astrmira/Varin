@@ -1,0 +1,148 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { CSSVariableGenerator } from '@/lib/theme/cssGenerator';
+import light from '@/lib/theme/themes/varin-light.json';
+import dark from '@/lib/theme/themes/varin-dark.json';
+import type { Theme } from '@/types/theme';
+import '@/index.css';
+import '@/workbenches/bot/bot-group-chat.css';
+import { Compose, Face, Glyph, IconButton, type Draft } from './controls';
+import { DocumentPage, Inbox, RoomDetails, Services, Timeline } from './screens';
+import { fileName, initialRooms, type Mode, type Person, type Room } from './sample';
+import './preview.css';
+
+const themeCss = new CSSVariableGenerator();
+const style = document.createElement('style');
+style.textContent = ':root{' + themeCss.generate(light as Theme) + '}:root.dark{' + themeCss.generate(dark as Theme) + '}';
+document.head.append(style);
+
+type Page = 'list' | 'chat' | 'details' | 'file' | 'settings';
+type Route = { page: Page; id: string; mode: Mode; tab?: string };
+type Entry = { mobilePreview: true; route: Route; depth: number; chatDepth: number };
+type Notes = Record<string, Draft>;
+const initial: Route = { page: 'chat', id: 'outline', mode: 'bot' };
+function load<T,>(key: string, fallback: T): T {
+  try { return JSON.parse(sessionStorage.getItem('design.' + key) ?? 'null') ?? fallback; } catch { return fallback; }
+}
+function store(key: string, value: unknown) { sessionStorage.setItem('design.' + key, JSON.stringify(value)); }
+function entry(route: Route, depth: number): Entry {
+  return { mobilePreview: true, route, depth, chatDepth: route.page === 'chat' ? depth : history.state?.chatDepth ?? 0 };
+}
+if (!history.state?.mobilePreview) {
+  const route = load('lastChat', initial);
+  history.replaceState(entry({ ...route, page: 'list' }, 0), '');
+  history.pushState(entry(route, 1), '');
+}
+
+function App() {
+  const [route, setRoute] = React.useState<Route>(history.state.route);
+  const [rooms, setRooms] = React.useState(() => load('rooms', initialRooms));
+  const [notes, setNotes] = React.useState<Notes>(() => load('drafts', {}));
+  const [theme, setTheme] = React.useState(() => load('theme', 'light'));
+  const [width, setWidth] = React.useState<'phone' | 'tablet'>(() => load('width',
+    matchMedia('(min-width: 760px) and (pointer: coarse)').matches ? 'tablet' : 'phone'));
+  const [wideWindow, setWideWindow] = React.useState(false);
+  const [models, setModels] = React.useState<Record<string, string>>({});
+  const [efforts, setEfforts] = React.useState<Record<string, string>>({});
+  const [diffOpen, setDiffOpen] = React.useState(false);
+  const scroll = React.useRef<HTMLDivElement>(null);
+  const offsets = React.useRef(new Map<string, number>());
+  const focusOnReturn = React.useRef(false);
+  const room = rooms.find(r => r.id === route.id) ?? rooms[0];
+  const group = room.people.length > 1;
+  const draft = notes[room.id] ?? { text: '' };
+  const split = width === 'tablet' && wideWindow;
+  React.useEffect(() => {
+    const media = matchMedia('(min-width: 760px)');
+    const update = () => setWideWindow(media.matches);
+    const pop = () => { if (history.state?.mobilePreview) setRoute(history.state.route); };
+    update(); media.addEventListener('change', update); window.addEventListener('popstate', pop);
+    return () => { media.removeEventListener('change', update); window.removeEventListener('popstate', pop); };
+  }, []);
+  React.useEffect(() => { store('rooms', rooms); }, [rooms]);
+  React.useEffect(() => { store('drafts', notes); }, [notes]);
+  React.useLayoutEffect(() => { document.documentElement.classList.toggle('dark', theme === 'dark'); store('theme', theme); }, [theme]);
+  React.useEffect(() => { store('width', width); }, [width]);
+  React.useLayoutEffect(() => {
+    if (route.page === 'chat') store('lastChat', route);
+    const el = scroll.current;
+    if (el) el.scrollTop = offsets.current.get(room.id) ?? el.scrollHeight;
+    if (el && focusOnReturn.current) {
+      focusOnReturn.current = false;
+      focusEditor();
+    }
+  }, [route, room.id]);
+  function nav(next: Route, replace = false) {
+    const depth = history.state?.depth ?? 0;
+    if (replace) history.replaceState(entry(next, depth), '');
+    else history.pushState(entry(next, depth + 1), '');
+    setRoute(next);
+  }
+  function back() {
+    if (history.state?.depth) history.back();
+    else nav({ ...route, page: 'list' }, true);
+  }
+  function open(id: string) {
+    const target = rooms.find(r => r.id === id);
+    if (target) nav({ page: 'chat', id, mode: target.mode });
+  }
+  function mode(m: Mode) {
+    const first = rooms.find(r => r.mode === m)!;
+    nav({ page: split ? 'chat' : 'list', mode: m, id: first.id }, true);
+  }
+  function newChat(person?: Person, fork?: number) {
+    const child: Room = { id: crypto.randomUUID(), title: fork !== undefined ? room.title + ' · 分支' : route.mode === 'work' ? '新任务' : '新会话',
+      time: '刚刚', people: [person ?? room.people[0]], mode: route.mode, messages: fork !== undefined ? room.messages.slice(0, fork + 1) : [] };
+    setRooms(prev => [child, ...prev]); nav({ ...route, id: child.id, page: 'chat' });
+  }
+  function edit(d: Draft) { setNotes(prev => ({ ...prev, [room.id]: d })); }
+  function answer(index: number, value: string) {
+    setRooms(prev => prev.map(r => r.id === room.id ? { ...r, messages: [
+      ...r.messages.map((m, i) => i === index ? { ...m, answer: value } : m), { who: '我', text: value },
+    ] } : r));
+  }
+  function send() {
+    if (!draft.text.trim() && !draft.attachment) return;
+    setRooms(prev => [{ ...room, time: '刚刚', title: room.messages.length ? room.title : (draft.text.trim() || draft.attachment || room.title).slice(0, 22),
+      messages: [...room.messages, { who: '我', text: draft.text.trim(), quote: draft.quote, attachment: draft.attachment }] }, ...prev.filter(r => r.id !== room.id)]);
+    edit({ text: '' }); requestAnimationFrame(() => { if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; });
+  }
+  const effectivePage = split && route.page === 'list' ? 'chat' : route.page;
+  const file = () => nav({ ...route, page: 'file' });
+  const focusEditor = () => requestAnimationFrame(() => document.querySelector<HTMLElement>('.compose-editor [contenteditable]')?.focus({ preventScroll: true }));
+  function quoteFile(text: string) {
+    edit({ ...draft, quote: text });
+    focusOnReturn.current = true;
+    history.go(history.state.chatDepth - history.state.depth);
+  }
+  const inbox = <Inbox mode={route.mode} selected={room.id} rooms={rooms} changeMode={mode} open={open} create={p => newChat(p)}
+    settings={() => nav({ ...route, page: 'settings' })} />;
+  return <div className="studio">
+    <nav className="preview-tools" aria-label="设计稿预览"><div className="switcher"><button aria-pressed={width === 'phone'} onClick={() => setWidth('phone')}><Glyph name="smartphone" />手机</button>
+      <button aria-pressed={width === 'tablet'} onClick={() => setWidth('tablet')}><Glyph name="layout-column" />平板</button></div>
+      <IconButton label="切换明暗主题" name={theme === 'light' ? 'moon' : 'palette'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} /></nav>
+    <main className={'device' + (split ? ' split' : '')}>
+      <div className="list-pane" hidden={!split && effectivePage !== 'list'}>{inbox}</div>
+      {effectivePage !== 'list' && <section key={effectivePage + room.id} className="screen content">
+        <header className="page-bar">
+          {(!split || effectivePage !== 'chat') && <IconButton name="arrow-left" label="返回" onClick={back} />}
+          {effectivePage === 'chat' ? <><div className="room-title">
+            <Face names={room.people} size={group ? 22 : 30} /><span><strong>{room.title}</strong><small>{group ? room.people.length + ' 位成员' : room.mode === 'work' ? '演示项目' : room.people[0]}</small></span></div>
+            <div className="bar-actions"><Services /><IconButton name={group ? 'group' : 'layout-right'} label="会话详情" onClick={() => nav({ ...route, page: 'details' })} /></div></> :
+            <h1>{effectivePage === 'file' ? fileName : effectivePage === 'settings' ? '设置' : group ? '群聊详情' : '会话详情'}</h1>}
+        </header>
+        {effectivePage === 'chat' ? <>
+          <div ref={scroll} className="screen-body conversation-scroll" onScroll={event => offsets.current.set(room.id, event.currentTarget.scrollTop)}>
+            {room.messages.length ? <Timeline room={room} openFile={file} answer={answer} quote={m => { edit({ ...draft, quote: m.who + ' · ' + m.text }); focusEditor(); }} branch={i => newChat(undefined, i)} /> :
+              <div className="welcome"><Face names={room.people} size={54} /><h2>{room.mode === 'work' ? '我们要做什么？' : '和' + room.people[0] + '聊点什么'}</h2></div>}
+          </div><Compose room={room} draft={draft} change={edit} send={send} model={models[room.id] ?? 'DeepSeek V4.1 Flash'} setModel={v => setModels({ ...models, [room.id]: v })}
+            effort={efforts[room.id] ?? '高'} setEffort={v => setEfforts({ ...efforts, [room.id]: v })} /></> :
+          <div className="screen-body">{effectivePage === 'file' ? <DocumentPage reply={quoteFile} /> : effectivePage === 'settings' ?
+            <div className="detail-body"><h3>外观</h3><div className="switcher">{['light', 'dark'].map(v => <button key={v} aria-pressed={theme === v} onClick={() => setTheme(v)}>{v === 'dark' ? '深色' : '浅色'}</button>)}</div></div> :
+            <RoomDetails room={room} open={open} openFile={file} files={diffOpen} setFiles={setDiffOpen}
+              selectedTab={route.tab} selectTab={tab => nav({ ...route, tab }, true)} />}</div>}
+      </section>}
+    </main>
+  </div>;
+}
+createRoot(document.getElementById('root')!).render(<App />);
