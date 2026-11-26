@@ -178,6 +178,7 @@ export function ThreadComposer({ editorRef, value, onChange, interactions, model
   const settings = (section?: string) => { const ui = useUIStore.getState(); ui.setSettingsDialogOpen(true); if (section) ui.setSettingsPage(section as Parameters<typeof ui.setSettingsPage>[0]); };
   const chooseModel = async (provider: string, model: string, thinking: ThreadThinkingLevel, complete = false) => {
     const capturedScope = scope;
+    setCommandError(undefined);
     try { await onModelChange(provider, model, thinking); if (complete && capturedScope === currentIdentity.current) consumeFragment(); }
     catch (cause) { if (capturedScope === currentIdentity.current) setCommandError(cause instanceof Error ? cause.message : String(cause)); }
   };

@@ -200,7 +200,7 @@ export function registerThreadRoutes(app: Express, adapter: ThreadAdapter, requi
     'source/set-default': ['runtime', 'threadId', 'branchId', 'source', 'expectedRevision'],
     'source/files': ['runtime', 'threadId', 'branchId', 'source', 'query', 'type', 'limit', 'cursor'],
     'source/draft-files': ['source', 'query', 'type', 'limit', 'cursor'],
-    'source/list': ['runtime', 'threadId', 'branchId'],
+    'source/list': ['runtime', 'threadId', 'branchId', 'refresh'],
     'source/resolve': ['runtime', 'threadId', 'branchId', 'resourceOwner', 'path'],
     'source/prepare': ['selection', 'resourceOwner', 'runtime', 'threadId', 'branchId', 'key', 'workspaceId', 'mode', 'content', 'captureScopes'],
     'context/compact': ['runtime', 'threadId', 'branchId', 'key', 'throughId', 'expectedRevision', 'model'],
