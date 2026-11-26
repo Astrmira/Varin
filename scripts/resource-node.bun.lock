@@ -58,7 +58,7 @@
     },
     "packages/web": {
       "name": "@varin/web",
-      "version": "0.9.53",
+      "version": "0.9.54",
       "dependencies": {
         "@simplewebauthn/server": "14.1.0",
         "@varin/application-client": "workspace:*",
