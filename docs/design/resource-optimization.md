@@ -131,7 +131,7 @@ The 0.9.3 storage worker opens with the current engine first. When the main file
 | 0.8 database with a valid checkpoint and pending v3 WAL | Open normally and recover committed entries and links. |
 | Damaged main file with a v3 WAL | Report the original corruption. The WAL header is identical in all three samples. |
 
-The old addon and its Windows loader patch have been removed from the runtime. Fixed file groups exercise direct migration, the WAL-only guidance, corruption, and the result of opening the same WAL in Varin 0.9.53. [Database fixtures and tests](../../packages/web/application-host/lib/knowledge/database.test.ts) · [Desktop native preparation](../../packages/electron/scripts/prepare-trivium-runtime.mjs)
+The old addon and its Windows loader patch have been removed from the runtime. Fixed file groups exercise direct migration, the WAL-only guidance, corruption, and the result of opening the same WAL in Varin 0.9.53. [Database fixtures and tests](../../packages/web/application-host/lib/knowledge/database.native.test.ts) · [Desktop native preparation](../../packages/electron/scripts/prepare-trivium-runtime.mjs)
 
 ## Build footprint and module ownership
 

@@ -1,9 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { openKnowledgeDatabase } from './database.js';
 import { knowledgeDatabaseExists } from './database-files.js';
 import { createSemanticStoreEngine } from './semantic/store-engine.js';
@@ -11,12 +9,6 @@ import { createHashEmbedder } from './semantic/embedder.js';
 import { semanticGenerationDir, spaceIdOf, workspaceScope } from './semantic/identity.js';
 
 const roots: string[] = [];
-beforeAll(() => {
-  if (process.env.VARIN_TDB_MIGRATOR_PATH) return;
-  const prepare = fileURLToPath(new URL('../../../../../scripts/prepare-trivium-migrator.mjs', import.meta.url));
-  vi.stubEnv('VARIN_TDB_MIGRATOR_PATH', execFileSync(process.execPath, [prepare], { encoding: 'utf8' }).trim());
-});
-afterAll(() => vi.unstubAllEnvs());
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const options = { dim: 8, syncMode: 'full' as const, autoBuildQuiver: false, loadTextIndex: false, payloadCacheMb: 0 };
 function installFileGroup(fixtureName: string, directory: string, filename = 'knowledge.tdb') {
