@@ -219,7 +219,7 @@ import { createDocumentRootGuard } from './lib/documents/allowed-roots.js';
 import { createWorkspaceConfig } from './lib/workspace/workspace-config.js';
 
 import { openWorkspaceKnowledge, type KnowledgeStore } from './lib/knowledge/store.js';
-import { knowledgeDatabaseExists } from './lib/knowledge/database-files.js';
+import { knowledgeDatabaseExists, LEGACY_CHECKPOINT_REQUIRED } from './lib/knowledge/database-files.js';
 
 import { createKnowledgeContextRuntime } from './lib/knowledge/context-runtime.js';
 import { createContextObservationPublication } from './lib/knowledge/context-publication.js';
@@ -3020,7 +3020,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     getLegacyStore: async workspaceId => await knowledgeStoreExistsForScope(workspaceId) ? getKnowledgeStoreForScope(workspaceId) : null,
     onError: error => console.error('[ContextObservations] Original legacy import awaits recovery:', errorMessage(error)),
     onUnavailable: (error, owner) => console.error('[ContextObservations] Workspace notifications unavailable; conversation continues:',
-      { workspaceId: error.workspaceId, runId: owner.runId, reason: error.reason }),
+      { workspaceId: error.workspaceId, runId: owner.runId, reason: error.reason,
+        ...(error.cause instanceof Error && 'code' in error.cause && error.cause.code === LEGACY_CHECKPOINT_REQUIRED
+          ? { recovery: error.cause.message } : {}) }),
   });
   const knowledgeContextRuntime = createKnowledgeContextRuntime({
     recallContextForThread: botRecallContext,

@@ -124,6 +124,7 @@ try {
   // (e.g., HTML templates, static fixtures). Copy them to staging.
   const copyAssets = (srcDir, destDir) => {
     if (!fs.existsSync(srcDir)) return;
+    if (srcDir === path.join(sourceDir, 'lib', 'knowledge', 'fixtures')) return;
     // Local inference is an explicitly installed component. Cached development
     // model weights must not enter a normal Host build or desktop installer.
     if (srcDir === path.join(sourceDir, 'lib', 'knowledge', 'semantic', 'runtime')) return;

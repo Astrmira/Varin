@@ -2,6 +2,8 @@ import { statSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
+export const LEGACY_CHECKPOINT_REQUIRED = 'VARIN_KNOWLEDGE_CHECKPOINT_REQUIRED';
+
 // The migrator publishes a whole directory. Keep its staging and coordination
 // files private to this store, outside the original .tdb file group.
 export const knowledgeMigrationRoot = (file: string) => join(dirname(file), basename(file, '.tdb') + '.store');

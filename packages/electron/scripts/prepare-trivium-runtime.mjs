@@ -5,16 +5,12 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { patchTriviumArm64Loader } from './patch-trivium-arm64-loader.mjs';
 import release from '../../../scripts/trivium-release.json' with { type: 'json' };
 import { windowsMsvcEnvironment } from '../../../scripts/windows-msvc.cjs';
 
 const require = createRequire(import.meta.url);
 const { detectKernelBinaryIdentity, normalizeKernelArchitecture } = require('../../../scripts/kernel-binary-identity.cjs');
-const packages = [
-  { name: 'triviumdb', version: release.version, commit: release.revision },
-  { name: 'triviumdb-upgrade-0.8', version: '0.8.10', commit: '221a628209838483e20296d29bcf35fc3e2dd156' },
-];
+const { version: VERSION, revision: COMMIT } = release;
 const TARGET = 'aarch64-pc-windows-msvc';
 const BINARY = 'triviumdb.win32-arm64-msvc.node';
 const RECIPE = 1;
@@ -31,13 +27,8 @@ export function prepareTriviumRuntime() {
   const platform = process.env.VARIN_TARGET_PLATFORM || process.platform;
   const architecture = normalizeKernelArchitecture(process.env.VARIN_TARGET_ARCH || process.arch);
   if (platform !== 'win32' || architecture !== 'arm64') return;
-  for (const recipe of packages) preparePackage(recipe);
-  patchTriviumArm64Loader();
-}
-
-function preparePackage({ name, version: VERSION, commit: COMMIT }) {
   const webRequire = createRequire(new URL('../../web/package.json', import.meta.url));
-  const packageRoot = path.dirname(webRequire.resolve(`${name}/package.json`));
+  const packageRoot = path.dirname(webRequire.resolve('triviumdb/package.json'));
   const installedVersion = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
   if (installedVersion !== VERSION) {
     throw new Error(`TriviumDB source recipe is for ${VERSION}, but the installed package is ${installedVersion}.`);

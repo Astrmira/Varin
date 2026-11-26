@@ -57,10 +57,10 @@ On first writable use the Host converts older knowledge stores with the bundled 
 
 ## Legacy TriviumDB 0.8 Knowledge Stores
 
-Varin **0.9.53** retains the 0.8 WAL-only conversion bridge. A dormant knowledge store may
-still need it even if the same Host has already opened and converted other stores. Stop the
-affected store's writers and keep an untouched copy of the complete data file group,
-including its WAL. On a separate writable copy, open the affected store under 0.9.53,
-let the storage owner finish recovery, then close normally before testing a later release.
-A read-only open does not perform this conversion. Do not remove a WAL or treat an old WAL
-header as proof of missing checkpoint: a damaged database can have the same header.
+If Varin reports that a particular store contains only a TriviumDB 0.8 WAL, use **Varin 0.9.53** to create its first checkpoint.
+
+1. Stop Varin and any other writer. Back up the complete data directory, including the WAL at the path in the message.
+2. Start 0.9.53 on a separate writable copy of that data. Open the affected Bot or knowledge store for writing, then close Varin normally.
+3. Open that copy with the current Varin. Its bundled 0.9.3 migrator converts the checkpoint on first writable access.
+
+An existing 0.8 checkpoint, including one with pending WAL entries, can go directly through automatic migration.
