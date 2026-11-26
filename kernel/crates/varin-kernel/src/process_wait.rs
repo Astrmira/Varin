@@ -24,7 +24,7 @@ struct ReadHandle {
     mode: crate::process::text::Mode,
     encoding: Option<String>,
 }
-fn interacts(name: &str) -> bool {
+pub(crate) fn interacts(name: &str) -> bool {
     matches!(name, "process_write" | "process_resize")
 }
 fn observes(name: &str) -> bool {
@@ -74,12 +74,7 @@ pub(crate) fn declarations(
     resources: KernelResourceClient,
 ) -> Vec<varin_runtime::composition::tools::ToolDeclaration> {
     let selected = crate::tools::KernelToolExecutor::selected_schemas(&binding.enabled_tools);
-    let resources = resources.with_reference_catalog(catalog.clone());
-    let endpoint = Arc::new(ProcessWaitTools {
-        catalog,
-        binding,
-        resources,
-    });
+    let endpoint = endpoint(catalog, binding, resources);
     schemas(selected)
         .into_iter()
         .filter(|schema| {
@@ -89,6 +84,10 @@ pub(crate) fn declarations(
             varin_runtime::composition::tools::ToolDeclaration::new(schema, endpoint.clone())
         })
         .collect()
+}
+pub(crate) fn endpoint(catalog: Arc<Mutex<Catalog>>, binding: ToolBinding, resources: KernelResourceClient) -> Arc<dyn ToolExecutor> {
+    let resources = resources.with_reference_catalog(catalog.clone());
+    Arc::new(ProcessWaitTools { catalog, binding, resources })
 }
 struct ProcessWaitTools {
     catalog: Arc<Mutex<Catalog>>,
@@ -174,8 +173,10 @@ impl ProcessWaitTools {
             .launch_metadata(&c.run_id)
             .map_err(error)?
             .ok_or_else(|| error("process observation requires saved launch"))?;
-        if launch.selection.source.as_ref()
-            != Some(&self.binding.source_selection().map_err(error)?)
+        let expected = if launch.selection.lazy_work_location.is_some() && source.run_id == c.run_id {
+            source.resource_source.as_ref()
+        } else { launch.selection.source.as_ref() };
+        if expected != Some(&self.binding.source_selection().map_err(error)?)
         {
             return Err(error("process observation source changed"));
         }
@@ -378,6 +379,7 @@ impl ToolExecutor for ProcessWaitTools {
         _: &CancellationToken,
     ) -> Result<Box<dyn PreparedToolCall>, ExecutionError> {
         Ok(Box::new(ProcessCall {
+            source: self.binding.source_selection().map_err(error)?,
             owner: self,
             call: call.clone(),
             frozen: frozen.clone(),
@@ -658,13 +660,14 @@ impl LazyProcess {
     fn operation(&self, c: &ToolExecutionContext, call: &ToolCall, cancel: &CancellationToken)
         -> Result<(String, varin_runtime::OperationMetadata, varin_runtime::catalog::launches::SourceSelection, Value), ExecutionError>
     {
-        if cancel.is_cancelled() || c.run_id != self.run_id || !matches!(c.origin, ToolOrigin::ModelStep { .. }) {
+        if cancel.is_cancelled() || c.run_id != self.run_id {
             return Err(error("process control requires the original active Run"));
         }
         let db = self.catalog.lock().map_err(error)?;
         db.validate_resource_snapshot_owner(&c.run_id, db.epoch(), &c.origin).map_err(error)?;
         let run = db.run(&c.run_id).map_err(error)?;
-        if !db.thread_has_host_authority(&run.thread_id).map_err(error)?
+        if !crate::work_locations::model_origin(&db, &c.run_id, &c.origin)
+            || !db.thread_has_host_authority(&run.thread_id).map_err(error)?
             || !db.launch_metadata(&c.run_id).map_err(error)?.is_some_and(|l| l.selection.lazy_work_location.is_some())
         {
             return Err(error("process control requires an admitted lazy launch"));
@@ -753,11 +756,15 @@ impl ToolExecutor for LazyProcess {
 }
 
 struct ProcessCall {
+    source: varin_runtime::catalog::launches::SourceSelection,
     owner: Arc<ProcessWaitTools>,
     call: ToolCall,
     frozen: FrozenToolContext,
 }
 impl PreparedToolCall for ProcessCall {
+    fn resource_source(&self) -> Option<&varin_runtime::catalog::launches::SourceSelection> {
+        interacts(&self.call.name).then_some(&self.source)
+    }
     fn executor_owner(&self) -> varin_runtime::ExecutorOwner {
         if interacts(&self.call.name) {
             if let Some(remote) = &self.owner.binding.remote_authority {

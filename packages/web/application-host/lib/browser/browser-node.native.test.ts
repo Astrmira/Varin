@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it as test } from 'vitest';
 import { WebSocketServer } from 'ws';
+import type { BrowserResource } from '@varin/protocol';
 import { startBrowserNode } from '../../browser-node.js';
 import { pairNodeRoleClient, revokeNodeRoleClient } from '../node-role-auth.js';
 import { createManagedRemoteTargetRegistry } from '../harness/managed-remote-client.js';
@@ -91,7 +92,8 @@ it('discovers a dormant browser through its paired role, then reacquires a fresh
     expect(node.hostId).toBe(hostId);
     expect(connected).toBe(1);
     const acquire = await request('/browser/resources/configured-cdp/acquire', browser.token, {});
-    const second = (await acquire.json()).resources[0];
+    expect(acquire.status).toBe(200);
+    const { resources: [second] } = await acquire.json() as { resources: [BrowserResource] };
     expect(second.instanceId).not.toBe(first.instanceId);
     expect(second.browserId).toBe('configured-cdp');
     expect((await listing(first)).status).toBe(409);

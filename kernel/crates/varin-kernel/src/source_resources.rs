@@ -1138,7 +1138,7 @@ pub(crate) fn prepare_request(
                 let call = &input.call;
                 if record.operation_id.as_deref() != Some(call.operation_id.as_str())
                     || record.result.scope.run_id() != Some(call.run_id.as_str())
-                    || !matches!(call.origin, varin_runtime::execution::ToolOrigin::ModelStep { .. })
+                    || !matches!(call.origin, varin_runtime::execution::ToolOrigin::ModelStep { .. } | varin_runtime::execution::ToolOrigin::NestedCall { .. })
                     || call.origin.operation_id(&call.call_id) != call.operation_id
                     || record.result.tool_binding.as_ref().is_none_or(|binding| !binding.enabled_tools.iter().any(|tool| tool.name() == call.name))
                     || crate::work_locations::validate_location_path(&call.name, &call.arguments).is_err() {

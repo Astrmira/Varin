@@ -127,7 +127,7 @@ test('cancelling one acquisition waiter cannot cancel the selected owner or disp
       : { state: 'disconnected', activation: 'connect', capabilities: ['tabs'] },
     prepareResource: async () => { calls++; starting.release(); await accept.wait; ready = true; },
     subscribe: () => () => undefined,
-  } as BrowserOwner, 'Browser', 'Device');
+  } satisfies Pick<BrowserOwner, 'browserId' | 'resource' | 'prepareResource' | 'subscribe'> as unknown as BrowserOwner, 'Browser', 'Device');
   await registry.list();
   expect(calls).toBe(0);
   const controller = new AbortController();

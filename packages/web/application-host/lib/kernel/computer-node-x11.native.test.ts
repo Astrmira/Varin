@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
-import type { ComputerActor, ComputerDesktopFrame } from '@varin/protocol';
+import type { ComputerActor, ComputerDesktop, ComputerDesktopFrame } from '@varin/protocol';
+import { expectOk as json } from '../computer/role-http.test-helper.js';
 import { pairComputerNode, startComputerNode } from '../../computer-node.js';
 import { createComputerService, type DesktopViewEvent } from '../computer/computer-service.js';
 import { computerDriverDir, localDriverSpawnSpec } from '../computer/driver-host.js';
@@ -64,12 +65,6 @@ it.skipIf(!optedIn)('captures a real isolated X11 desktop through a separate coo
       ...(payload ? { body: JSON.stringify(payload) } : {}),
       signal: AbortSignal.timeout(10_000),
     });
-    const json = async (response: Promise<Response>) => {
-      const result = await response;
-      const value = await result.json();
-      expect(result.status, JSON.stringify(value)).toBe(200);
-      return value;
-    };
     const identity = '/api/harness/managed-execution/v1/identity';
     const hostId = role.hostId;
     expect(await json(request(identity))).toMatchObject({ hostId, role: 'computer' });
@@ -86,7 +81,7 @@ it.skipIf(!optedIn)('captures a real isolated X11 desktop through a separate coo
       expect(item, 'coordinator must discover original role identity').toBeDefined();
       return item!;
     };
-    const claim = () => json(request(api + '/assignment', { origin, assignmentId: 'fixture-control',
+    const claim = () => json<{ token: string }>(request(api + '/assignment', { origin, assignmentId: 'fixture-control',
       access: 'control', actor, op: 'claim' }));
 
     async function capture(desktopId: string) {
@@ -116,7 +111,7 @@ it.skipIf(!optedIn)('captures a real isolated X11 desktop through a separate coo
         controller.abort();
       }
     }
-    expect((await json(request(api + '/probe', {}))).desktop.capabilities).toMatchObject({ platform: 'linux', sessionType: 'x11', screenshot: true });
+    expect((await json<{ desktop: ComputerDesktop }>(request(api + '/probe', {}))).desktop.capabilities).toMatchObject({ platform: 'linux', sessionType: 'x11', screenshot: true });
     const original = await catalog();
     await capture(original.id);
     const lease = (await claim()).token as string;

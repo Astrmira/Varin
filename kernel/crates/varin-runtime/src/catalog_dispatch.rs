@@ -107,7 +107,7 @@ impl DispatchInput {
         if name != "code_retrieval" { return Err(RuntimeError::Invalid("Not a delegated Agent invocation".into())); }
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct Query { question: String, paths: Option<Vec<String>> }
+        struct Query { question: String, paths: Option<Vec<String>>, #[serde(rename = "resource_context")] _resource_context: Option<String> }
         let query: Query = serde_json::from_value(arguments.clone())?;
         if query.question.trim().is_empty() || query.question.contains('\0')
             || query.paths.as_ref().is_some_and(|paths| paths.is_empty() || paths.iter().any(|path|path.is_empty() || path.starts_with('/') || path.contains('\0') || path.contains('\\') || path.contains(':') || path.split('/').any(|p|matches!(p,".."|".") || p.is_empty()))) {
@@ -549,7 +549,7 @@ fn agent_source_identity(db:&Connection, identity:&str)->Result<(String,Option<S
     } else {Ok((super::threads::resolve(db,identity)?,None))}
 }
 pub(super) fn validate_agent_source(db: &Connection, parent: &Run, source_agent: Option<&str>,
-    handoff: Option<&super::collaboration::ChildSourceHandoff>) -> Result<()> {
+    handoff: Option<&super::collaboration::ChildSourceHandoff>, operation_source: Option<&launches::SourceSelection>) -> Result<()> {
     let launch: super::launch_content::LaunchMetadata = record(db,"run_launches",&parent.id)?;
     if let Some(identity)=source_agent {
         let (thread,exact_run)=agent_source_identity(db,identity)?;
@@ -567,7 +567,7 @@ pub(super) fn validate_agent_source(db: &Connection, parent: &Run, source_agent:
             || handoff.source.workspace_id!=parent_source.workspace_id || handoff.source.resource_owner!=parent_source.resource_owner {
             return Err(RuntimeError::Conflict("Agent source differs from its original workspace".into()));
         }
-    } else if launch.selection.source.as_ref()!=handoff.map(|h|&h.source) || handoff.is_some_and(|h|h.source_run_id.is_some()) {
+    } else if operation_source.or(launch.selection.source.as_ref()) != handoff.map(|h|&h.source) || handoff.is_some_and(|h|h.source_run_id.is_some()) {
         return Err(RuntimeError::Conflict("child source differs from the frozen invocation".into()));
     }
     Ok(())
@@ -592,7 +592,7 @@ impl Catalog {
         let handoff=super::collaboration::ChildSourceHandoff {retention_pin:None,source_path:None,refresh:None,
             source_run_id:Some(selected.run_id.clone()),source:selected.source.clone(),operation_id:String::new(),resource_authority:None,
             root:super::collaboration::ChildSourceRoot::Physical{root:launches::LiveRoot{host_id:String::new(),root_id:String::new(),canonical_root:String::new()}}};
-        validate_agent_source(&self.db,&parent,Some(identity),Some(&handoff))?;
+        validate_agent_source(&self.db,&parent,Some(identity),Some(&handoff),None)?;
         Ok(Some(selected))
     }
     pub fn agent_source(&self, run_id: &str, identity: &str) -> Result<AgentSourceSelection> {
@@ -606,7 +606,7 @@ impl Catalog {
         let selected=AgentSourceSelection{run_id,source};
         let handoff=super::collaboration::ChildSourceHandoff{ retention_pin: None, source_path: None,refresh:None,source_run_id:Some(selected.run_id.clone()),source:selected.source.clone(),operation_id:String::new(),resource_authority:None,
             root:super::collaboration::ChildSourceRoot::Physical{root:launches::LiveRoot{host_id:String::new(),root_id:String::new(),canonical_root:String::new()}}};
-        validate_agent_source(&self.db,&parent,Some(identity),Some(&handoff))?;
+        validate_agent_source(&self.db,&parent,Some(identity),Some(&handoff),None)?;
         Ok(selected)
     }
 }
@@ -1092,6 +1092,7 @@ impl ChildDispatchRead {
 }
 
 pub struct ChildInvocationRead {
+    retrieval_source: Option<launches::SourceSelection>,
     organization_project_id: Option<String>,
     body: Value,
     context: crate::execution::ToolExecutionContext,
@@ -1156,6 +1157,12 @@ impl ChildInvocationRead {
             _publication: self._publication,
         }
         .load()?;
+        if selection.frozen.lazy_work_location.is_some() {
+            if let Some(source) = self.retrieval_source {
+                selection.frozen.source = Some(source);
+                selection.frozen.lazy_work_location = None;
+            }
+        }
         selection.history = history;
         selection.organization_project_id = self.organization_project_id;
         Ok(selection)
@@ -1264,6 +1271,11 @@ impl Catalog {
     ) -> Result<ChildInvocationRead> {
         use crate::execution::ToolOrigin;
         let organization_project_id:Option<String>=self.db.query_row("SELECT json_extract(target,'$.projectId') FROM model_bound_targets WHERE operation_id=?1 AND purpose='organization-default-project'",[&context.operation_id],|r|r.get(0)).optional()?.flatten();
+        let retrieval_source = match optional_record::<Operation>(&self.db, "operations", &context.operation_id)? {
+            Some(op) if op.run_id == context.run_id && op.resource_source.is_some()
+                && super::tool_content::ToolIntent::from_operation(&op)?.call().name == "code_retrieval" => op.resource_source,
+            _ => None,
+        };
         let context = super::tool_content::root_tool_context(&self.db, context, false)?;
         let body = match &context.origin {
             ToolOrigin::Driver { invocation_id } => {
@@ -1293,8 +1305,9 @@ impl Catalog {
             }
             ToolOrigin::NestedCall { .. } => unreachable!("resolved root invocation"),
         };
+
         Ok(ChildInvocationRead {
-            organization_project_id,
+            retrieval_source, organization_project_id,
             body,
             context: context.clone(),
             content: self.content.clone(),

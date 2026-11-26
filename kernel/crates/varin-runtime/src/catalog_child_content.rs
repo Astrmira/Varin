@@ -94,7 +94,7 @@ impl ChildAdmissionPreparation {
         let parent:Run=record(&database,"runs",&self.context.run_id)?;
         if original.project(&self.input)?.is_some() {
             if self.handoff.is_some(){return Err(RuntimeError::Conflict("Project dispatch cannot borrow the parent's source handoff".into()));}
-        } else {super::dispatch::validate_agent_source(&database,&parent,self.input.source_agent.as_deref(),self.handoff.as_ref())?;}
+        } else {super::dispatch::validate_agent_source(&database,&parent,self.input.source_agent.as_deref(),self.handoff.as_ref(),operation.resource_source.as_ref())?;}
         if let Some(handoff) = &self.handoff {
             handoff.source.validate()?;
             if handoff.source_path.as_deref() != self.input.source_path.as_deref().filter(|path| *path != ".") {

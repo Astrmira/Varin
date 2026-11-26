@@ -144,6 +144,13 @@ impl ToolKind {
         ]
         .into_iter()
     }
+    pub(crate) fn execution_class(name: &str) -> varin_runtime::execution_capacity::ExecutionClass {
+        use varin_runtime::execution_capacity::ExecutionClass;
+        match name {
+            "file_search" => ExecutionClass::LocalCompute,
+            _ => ExecutionClass::Unmetered,
+        }
+    }
     fn from_name(name: &str) -> Option<Self> {
         Self::all().find(|kind| kind.name() == name)
     }
@@ -2345,12 +2352,7 @@ impl ToolExecutor for KernelToolExecutor {
         call: &ToolCall,
         _: &ToolContract,
     ) -> varin_runtime::execution_capacity::ExecutionClass {
-        use varin_runtime::execution_capacity::ExecutionClass;
-        if call.name == "file_search" {
-            ExecutionClass::LocalCompute
-        } else {
-            ExecutionClass::Unmetered
-        }
+        ToolKind::execution_class(&call.name)
     }
     fn supports_policy_read(
         &self,

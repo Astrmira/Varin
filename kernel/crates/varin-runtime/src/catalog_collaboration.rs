@@ -579,7 +579,7 @@ impl Catalog {
             }
         };
         let parent: launch_content::LaunchMetadata = record(&tx, "run_launches", &run.id)?;
-        if !user_dispatch && prepared.project.is_none(){super::dispatch::validate_agent_source(&tx,&run,prepared.source_agent.as_deref(),handoff.as_ref())?;}
+        if !user_dispatch && prepared.project.is_none(){super::dispatch::validate_agent_source(&tx,&run,prepared.source_agent.as_deref(),handoff.as_ref(),op.resource_source.as_ref())?;}
         if parent.selection.tool_schema_generation != child_launch.tool_schema_generation
             || parent.selection.tools_ref != prepared.parent_tools_ref
         {

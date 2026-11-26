@@ -46,7 +46,7 @@ import { threadEventHub } from './event-hub.js';
 import { ownershipResolver } from './ownership-resolver.js';
 import type { DefaultWorkLocationSelection, LazyDefaultWorkLocation } from './default-work-location.js';
 
-const lazyWorkLocationTools = ['file_read','file_list','file_search','file_write','file_edit','process_spawn','process_inspect','process_read'];
+
 
 function splitDefaultLocation(selection: DefaultWorkLocationSelection) {
   return selection && 'lazyWorkLocation' in selection
@@ -277,7 +277,7 @@ export class ThreadAdapter {
               mode: source.mode, liveRoot: source.liveRoot ?? null,
               ...(source.mode === 'native_workspace' && source.nativeScope ? { nativeScope: source.nativeScope } : {}),
               ...(source.environmentRunId ? { environmentRunId: source.environmentRunId } : {}) } : null,
-              enabledTools: source?.tools ?? (lazyWorkLocation ? lazyWorkLocationTools : []), credentialScope, ...(lazyWorkLocation ? { lazyWorkLocation } : {}),
+              enabledTools: source?.tools ?? (lazyWorkLocation ? await this.runtime.sourceTools('live_root', signal) : []), credentialScope, ...(lazyWorkLocation ? { lazyWorkLocation } : {}),
               ...(childDispatch ? { childDispatch } : {}) } }, signal);
           void this.continueLaunch(receipt.run_id, { credentialOwner: model.credentialOwner, signal }).catch(() => undefined);
         } finally { model.credentialOwner.release(); }
@@ -1215,7 +1215,7 @@ export class ThreadAdapter {
           launch: { ...(input.agent ? { agent: { ...input.agent, name: null, tools: null } } : {}), inheritSource: input.source === undefined, source: candidateSource ? {
             resourceOwner: candidateSource.resourceOwner, workspaceId: candidateSource.workspaceId, executionWorkspaceId: candidateSource.executionWorkspaceId,
             ...(candidateSource.mode==='native_workspace'&&candidateSource.nativeScope?{nativeScope:candidateSource.nativeScope}:{}),branchId: candidateSource.branchId ?? null, revision: candidateSource.revision ?? null, mode: candidateSource.mode, liveRoot: candidateSource.liveRoot ?? null, ...(candidateSource.environmentRunId ? { environmentRunId: candidateSource.environmentRunId } : {}),
-          } : null, enabledTools: candidateSource?.tools ?? (lazyWorkLocation ? lazyWorkLocationTools : []), credentialScope,
+          } : null, enabledTools: candidateSource?.tools ?? (lazyWorkLocation ? await this.runtime.sourceTools('live_root') : []), credentialScope,
           ...(lazyWorkLocation ? { lazyWorkLocation } : {}) },
         };
         if (input.references?.length || input.contentReferences?.length || input.contentReferenceOccurrences?.length || input.skills?.length || parseExplicitSkillCommand(input.text) || this.prepareContext || this.prepareChildProfiles || input.agent) {

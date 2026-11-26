@@ -143,8 +143,8 @@ impl Catalog {
             {
                 return Err(RuntimeError::Conflict("Deferred script source differs from the original admitted invocation".into()));
             }
-        } else if !launch.selection.source.as_ref()
-            .is_some_and(|source| source.mode != SourceMode::FixedBranch || matches!(kind, ManagedProcessKind::ProcessJob))
+        } else if !matches!(kind, ManagedProcessKind::ProcessJob)
+            && !launch.selection.source.as_ref().is_some_and(|source| source.mode != SourceMode::FixedBranch)
         {
             return Err(RuntimeError::Conflict(
                 "Managed process requires its admitted source; script environments require a physical source".into(),
@@ -153,7 +153,8 @@ impl Catalog {
         if matches!(kind, ManagedProcessKind::ProcessJob) {
             // ProcessJob's first command may still be preparing its original
             // fixed source view in Storage. Binding records ownership, not cwd readiness.
-            let source = launch.selection.source.as_ref().expect("source checked");
+            let source = op.resource_source.as_ref().or(launch.selection.source.as_ref())
+                .ok_or_else(|| RuntimeError::Conflict("Process has no admitted execution source".into()))?;
             let matching = match (&source.resource_owner, &op.execution_owner) {
                 (launches::SourceResourceOwner::Local, Some(ExecutorOwner::Kernel)) => true,
                 (launches::SourceResourceOwner::ManagedHost{host_id,..}, Some(ExecutorOwner::External{identity,epoch})) => !epoch.is_empty() && identity.strip_prefix(&format!("source:{host_id}:source-authority:")).is_some_and(|suffix|!suffix.is_empty()),

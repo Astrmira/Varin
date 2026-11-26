@@ -97,6 +97,8 @@ pub(crate) fn select_frozen(
                 return Err(unsupported());
             }
             let granted = match original {
+                Some(tool) if selected.frozen.source.is_some() && catalogued()
+                    && crate::work_locations::wraps_lazy_native(tool, current) => Some(current),
                 Some(tool) if supports_frozen_builtin(tool, current)
                     || *tool == crate::memory::bot_schema(true) || *tool == crate::memory::bot_schema(false) => Some(tool),
                 // Keep the actual v3 declaration frozen in the parent. A child can inherit

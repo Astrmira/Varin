@@ -331,7 +331,10 @@ admission paths. A previous source-less launch without this selection stays
 source-less; it does not gain Host file or process access.
 
 The native location router resolves a saved default only for an admitted
-file or process operation and records that operation's actual target. The
+file, recovery, process or code retrieval operation and records its actual target.
+A terminal write or resize uses the process's original device and root.
+A retrieval investigation delegates the resolved source to its child and keeps
+the chosen path scope when reading files. The
 renderer addresses completed file actions through the recorded target.
 Ordinary location discovery and background labels use saved/cached facts;
 explicit refresh probes devices. If preparation discovers default-location

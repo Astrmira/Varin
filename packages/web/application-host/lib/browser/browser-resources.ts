@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { waitWithSignal } from '../cancellation.js';
 import {
   BrowserExecutionError, isBrowserExecutionError, type BrowserOwner, type BrowserPageUsage,
   type BrowserResource, type BrowserResourceBinding, type BrowserResourceCapability, type BrowserUseScope,
@@ -119,14 +120,8 @@ export class BrowserResources {
       provider.preparing = work;
       void work.finally(() => { if (provider.preparing === work) delete provider.preparing; }).catch(() => undefined);
     }
-    const work = provider.preparing;
-    if (!signal) { await work; return; }
-    await new Promise<void>((resolve, reject) => {
-      const abort = () => reject(signal.reason);
-      signal.addEventListener('abort', abort, { once: true });
-      void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-    });
-    signal.throwIfAborted();
+    await waitWithSignal(provider.preparing, signal);
+    signal?.throwIfAborted();
   }
 
   async acquire(browserId: string, signal?: AbortSignal, localOnly = false): Promise<BrowserResource> {

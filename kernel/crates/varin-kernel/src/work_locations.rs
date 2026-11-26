@@ -1,6 +1,5 @@
 //! Per-call workspace routing. The Catalog stores location observations, never permits.
 //! Resolve the target in the physical preparation lane and delegate to the native resource executor.
-#[cfg(test)]
 use crate::tools::ToolKind;
 use crate::tools::{KernelResourceClient, KernelToolExecutor, ToolBinding};
 use serde::{Deserialize, Serialize};
@@ -33,7 +32,10 @@ pub(crate) fn grant_capabilities(name: &str) -> Option<&'static [&'static str]> 
     }
 }
 pub(crate) fn lazy_tool(name: &str) -> bool {
-    alternate_tool(name) || matches!(name, "process_inspect" | "process_read")
+    ToolKind::all().any(|kind| kind.name() == name)
+}
+pub(crate) fn binds_location(name: &str) -> bool {
+    lazy_tool(name) && !matches!(name, "process_inspect" | "process_read")
 }
 fn routed_schema(mut original: ToolSchema) -> ToolSchema {
     if original.name == "file_read" {
@@ -130,7 +132,7 @@ pub(crate) fn add_location_schemas(tools: &mut Vec<ToolSchema>, lazy: bool) {
     if !tools.iter().any(|tool| tool.name == "file_read") {
         return;
     }
-    for tool in tools.iter_mut().filter(|tool| alternate_tool(&tool.name)) {
+    for tool in tools.iter_mut().filter(|tool| alternate_tool(&tool.name) || lazy && binds_location(&tool.name)) {
         *tool = route_schema(tool.clone(), lazy);
     }
     if lazy {
@@ -147,7 +149,11 @@ pub(crate) fn add_location_schemas(tools: &mut Vec<ToolSchema>, lazy: bool) {
 }
 
 fn route_schema(native: ToolSchema, lazy: bool) -> ToolSchema {
-    let mut routed = routed_schema(native);
+    let mut routed = if alternate_tool(&native.name) { routed_schema(native) } else { native };
+    if crate::process_wait::interacts(&routed.name) {
+        routed.requirements = None;
+        return routed;
+    }
     // The outer declaration resolves a physical tool before it runs. Keep the
     // original requirement on the exact inner executor selected after binding.
     if lazy {
@@ -169,7 +175,14 @@ fn add_context_revision(schema: &mut ToolSchema) {
     }
 }
 pub(crate) fn wraps_lazy_native(routed: &ToolSchema, native: &ToolSchema) -> bool {
-    alternate_tool(&native.name) && native.version == "2" && *routed == route_schema(native.clone(), true)
+    if native.version != "2" || routed.name != native.name { return false; }
+    if matches!(native.name.as_str(), "process_inspect" | "process_read") {
+        let mut dormant = native.clone();
+        dormant.requirements = None;
+        *routed == dormant
+    } else {
+        binds_location(&native.name) && *routed == route_schema(native.clone(), true)
+    }
 }
 pub(crate) fn child_schema(mut native: ToolSchema) -> ToolSchema {
     native.version = "4".into();
@@ -247,6 +260,21 @@ struct Transfer {
     move_source: bool,
 }
 
+/// A disclosed tool invoked through the model's tool_invoke gateway keeps the
+/// same model authority and its own durable nested Operation identity.
+pub(crate) fn model_origin(db: &Catalog, run_id: &str, origin: &ToolOrigin) -> bool {
+    match origin {
+        ToolOrigin::ModelStep { .. } => true,
+        ToolOrigin::NestedCall { parent_operation_id } => db.operation(parent_operation_id).is_ok_and(|parent| {
+            parent.run_id == run_id && !parent.cancel_requested
+                && parent.executor.as_deref() == Some(varin_runtime::tool_disclosure::INVOKE)
+                && varin_runtime::catalog::tool_content::ToolIntent::from_operation(&parent)
+                    .is_ok_and(|intent| matches!(intent.origin(), ToolOrigin::ModelStep { .. }))
+        }),
+        _ => false,
+    }
+}
+
 struct Owner {
     run_id: String,
     child: bool,
@@ -254,6 +282,8 @@ struct Owner {
     lazy: Option<LazyWorkLocation>,
     catalog: Arc<Mutex<Catalog>>,
     resources: KernelResourceClient,
+    retrieval: Option<Arc<crate::agent_runtime::control_commands::ControlCommands>>,
+    language: crate::language::LanguageBridge,
 }
 impl Owner {
     fn scope(
@@ -261,17 +291,14 @@ impl Owner {
         ctx: &ToolExecutionContext,
         cancel: &CancellationToken,
     ) -> Result<String, ExecutionError> {
-        if ctx.run_id != self.run_id
-            || cancel.is_cancelled()
-            || !matches!(ctx.origin, ToolOrigin::ModelStep { .. })
-        {
+        if ctx.run_id != self.run_id || cancel.is_cancelled() {
             return Err(denied(
                 "Location selection requires an active ordinary native model request",
             ));
         }
         let c = self.catalog.lock().map_err(denied)?;
         let run = c.run(&ctx.run_id).map_err(denied)?;
-        if run.state.terminal()
+        if run.state.terminal() || !model_origin(&c, &ctx.run_id, &ctx.origin)
             || !c
                 .thread_has_host_authority(&run.thread_id)
                 .map_err(denied)?
@@ -470,12 +497,16 @@ pub(crate) fn route_declarations(
     default: Option<SourceSelection>,
     lazy: Option<LazyWorkLocation>,
     lazy_native_schemas: Vec<ToolSchema>,
+    retrieval: Arc<crate::agent_runtime::control_commands::ControlCommands>,
+    language: crate::language::LanguageBridge,
     catalog: Arc<Mutex<Catalog>>,
     resources: KernelResourceClient,
 ) {
     let owner = Arc::new(Owner {
         run_id,
         child: false,
+        retrieval: Some(retrieval),
+        language,
         default,
         lazy,
         catalog,
@@ -511,9 +542,10 @@ pub(crate) fn route_declarations(
 }
 pub(crate) fn child_declarations(
     run_id: String, location: LazyWorkLocation, native_schemas: Vec<ToolSchema>,
+    language: crate::language::LanguageBridge,
     catalog: Arc<Mutex<Catalog>>, resources: KernelResourceClient,
 ) -> Vec<ToolDeclaration> {
-    let owner = Arc::new(Owner { run_id, child: true, default: None, lazy: Some(location), catalog, resources });
+    let owner = Arc::new(Owner { run_id, child: true, default: None, lazy: Some(location), catalog, resources, retrieval: None, language });
     native_schemas.into_iter().map(|native_schema| {
         let schema = child_schema(native_schema.clone());
         let router = Router { schema: schema.clone(), native_schema, native: None, owner: owner.clone() };
@@ -546,7 +578,6 @@ impl ToolExecutor for Owner {
         if c.schema_version != expected.version
             || !f.tools.contains(&expected)
             || f.source != self.default
-            || !matches!(f.origin, ToolOrigin::ModelStep { .. })
         {
             return Err(denied("Work locations are not selected for this request"));
         }
@@ -628,6 +659,7 @@ struct Alternate {
     owner: Arc<Owner>,
     location: Option<String>,
     resource_context: Option<String>,
+    process_id: Option<String>,
     call: ToolCall,
     frozen: FrozenToolContext,
 }
@@ -654,11 +686,7 @@ pub(crate) fn observe_original_process(
     authorize_only: bool,
     cancel: &CancellationToken,
 ) -> Result<Value, ExecutionError> {
-    if !matches!(caller.origin, ToolOrigin::ModelStep { .. }) {
-        return Err(denied(
-            "Cross-workspace process observation requires the conversation model",
-        ));
-    }
+
     let view = format!("process-view:{}", uuid::Uuid::new_v4());
     let result = resources.source_query(
         json!({"kind":"work_location_process_view","runId":caller.run_id,
@@ -747,7 +775,21 @@ impl ToolExecutor for Router {
             })
             .transpose()?
             .flatten();
-        let selection = if self.owner.child {
+        let process = if crate::process_wait::interacts(&call.name) {
+            let catalog = self.owner.catalog.lock().map_err(denied)?;
+            let handle = call.arguments["processId"].as_str().ok_or_else(|| denied("processId required"))?;
+            let id = crate::resource_references::process(&catalog, handle)?;
+            let operation = catalog.require_process_observation(&f.run_id, &id).map_err(denied)?;
+            if operation.run_id != f.run_id || operation.managed_process.as_ref().is_none_or(|p| p.is_environment()) {
+                return Err(denied("Process input requires a process started by this Run"));
+            }
+            let source = catalog.original_operation_source(&operation).map_err(denied)?
+                .filter(|s| eligible(Some(s))).ok_or_else(|| denied("Original process source unavailable"))?;
+            Some((id, source))
+        } else { None };
+        let selection = if let Some((_, source)) = &process {
+            Some((None, Some(source.clone())))
+        } else if self.owner.child {
             if call.arguments.get("ref").is_some() && original.is_none() {
                 return Err(denied("File reference has no original live location"));
             }
@@ -782,11 +824,6 @@ impl ToolExecutor for Router {
             return Err(denied("Resource context only applies to the recorded default"));
         }
         let (default, alternate) = if let Some((location, expected)) = selection {
-            if !matches!(f.origin, ToolOrigin::ModelStep { .. }) {
-                return Err(denied(
-                    "Location selection requires an ordinary model request",
-                ));
-            }
             (
                 None,
                 Some(Alternate {
@@ -794,6 +831,7 @@ impl ToolExecutor for Router {
                     location,
                     expected,
                     resource_context,
+                    process_id: process.map(|(id, _)| id),
                     call,
                     frozen,
                 }),
@@ -1025,7 +1063,9 @@ impl Routed {
             }
             None
         };
-        if let Some(key) = &key {
+        if let Some(process_id) = &a.process_id {
+            query["processId"] = json!(process_id);
+        } else if let Some(key) = &key {
             query["key"] = serde_json::to_value(key).map_err(denied)?;
         } else {
             query["default"] = json!(true);
@@ -1092,7 +1132,16 @@ impl Routed {
         } else {
             resources
         };
-        let executor = Arc::new(KernelToolExecutor::new(binding, resources)?);
+        frozen.source = Some(source);
+        let executor: Arc<dyn ToolExecutor> = if a.process_id.is_some() {
+            crate::process_wait::endpoint(a.owner.catalog.clone(), binding, resources)
+        } else {
+            let mut executor = KernelToolExecutor::new(binding, resources)?.with_language(a.owner.language.clone());
+            if let Some(owner) = &a.owner.retrieval {
+                executor = executor.with_internal_retrieval(owner.clone());
+            }
+            Arc::new(executor)
+        };
         self.prepared
             .set(executor.bind_call(&a.call, &frozen, t)?)
             .map_err(|_| denied("Read was already prepared"))
@@ -1125,6 +1174,11 @@ impl PreparedToolCall for Routed {
                 "file_list" | "file_search" => ("[\"discovery\",", Access::Read),
                 "file_write" | "file_edit" => ("[\"file\",", Access::Write),
                 "process_spawn" => ("[\"environment-writer-activity\",", Access::Read),
+                "process_write" => ("[\"process-input\",", Access::Write),
+                "process_resize" => ("[\"process-size\",", Access::Write),
+                "recovery_points" => ("[\"recovery-files\",", Access::Read),
+                "file_restore" => ("[\"recovery-files\",", Access::Write),
+                "code_retrieval" => ("[\"retrieval-view\",", Access::Read),
                 _ => ("[\"file\",", Access::Read),
             };
             return Ok(ToolPreparation::Resolve {
@@ -1132,7 +1186,7 @@ impl PreparedToolCall for Routed {
                     key_prefix: prefix.into(),
                     access,
                 }],
-                class: ExecutionClass::Unmetered,
+                class: ToolKind::execution_class(&alternate.call.name),
             });
         }
         Ok(match self.inner()?.plan(t)? {

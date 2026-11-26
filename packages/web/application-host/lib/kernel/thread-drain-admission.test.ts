@@ -11,7 +11,11 @@ import type { ThreadAdapter } from './thread-adapter.js';
 
 const input = { runtime:'agent',threadId:'alice-thread',branchId:'branch',key:'original-key',
   text:'text',expectedHead:null,model:{providerId:'p',modelId:'m'} };
-const gate = () => Promise.withResolvers<void>();
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
 function fixture(auth = Promise.resolve(), acknowledge = Promise.resolve()) {
   const authenticated = gate(), began = gate();
   const app = express();

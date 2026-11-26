@@ -46,7 +46,8 @@ import { registerAgentProfileRoutes } from './agent-profile-routes.js';
 import { ThreadAdapter } from './thread-adapter.js';
 import { createThreadContext, type ContextPreparer } from './thread-context.js';
 import { registerThreadRoutes } from './thread-routes.js';
-import { createThreadSourcePreparer, createThreadSourceAdmission } from './thread-sources.js';
+import { createThreadSourcePreparer, createThreadSourceAdmission, createThreadSourceDirectory } from './thread-sources.js';
+import { createModelWorkLocations } from './model-work-locations.js';
 import { KernelStorageAdapter, createKernelWorkspaceWorkingStateAccess } from './storage-adapter.js';
 import { createLiveSourceOwner } from './live-source.js';
 import { originalMaterializationLocation } from './source-launch.js';
@@ -1008,6 +1009,41 @@ it('selected read-only child owns its ordinary notes and plan through real Host 
     expect((await reopened.runtime.child(operationId)).report).toEqual(child.report);
     expect(h.errors.map(String)).toEqual([]); expect(reopened.errors.map(String)).toEqual([]);
   } finally { release.release(); }
+});
+
+it('runs an on-demand code investigation against its original directory and delivers the child report', async () => {
+  let childSteps = 0, parentSteps = 0;
+  const f = await fixture(async ({body, response}) => {
+    if (isParent(body)) {
+      if (++parentSteps === 1) return complete(response,[tool('tool_invoke',
+        {name:'code_retrieval', arguments:{question:'Find the marker in source.txt', paths:['source.txt']}},'investigate')]);
+      if (parentSteps === 2) {
+        const accepted = result(body,'code_retrieval');
+        expect(accepted, JSON.stringify(accepted)).toMatchObject({kind:'job_accepted'});
+        return complete(response,[tool('retrieval_control',{action:'wait',operationId:accepted!.operation_id},'wait')]);
+      }
+      expect(JSON.stringify(body.input)).toContain('Located RESOURCE_MARKER');
+      return complete(response,[answer('Investigation delivered','parent-report')]);
+    }
+    if (++childSteps === 1) return complete(response,[tool('file_read',{path:'source.txt'},'read-marker')]);
+    expect(JSON.stringify(result(body,'file_read'))).toContain('RESOURCE_MARKER');
+    complete(response,[answer('Located RESOURCE_MARKER in source.txt','child-report')]);
+  });
+  await fs.writeFile(path.join(f.workspace,'source.txt'),'RESOURCE_MARKER');
+  const h = await f.openHost();
+  h.runtime.principalCanUseHostResources = async () => true;
+  const directory = createThreadSourceDirectory({documents:h.documents});
+  h.kernel.setModelWorkLocationOwner(createModelWorkLocations({runtime:h.runtime,kernel:h.kernel,directory,prepare:h.adapter.prepareSource.bind(h.adapter)}).query);
+  h.adapter.bindDefaultDeviceSource(async () => ({lazyWorkLocation:{resourceOwner:{kind:'local'},path:f.workspace}}));
+  const identity = await h.api.create('dormant-retrieval');
+  const receipt = await h.api.submit({...identity,key:'investigate',expectedHead:null,text:'Run the focused investigation.',model});
+  await expect.poll(async () => (await h.runtime.run(receipt.run_id)).state,{timeout:20000}).toBe('completed').catch(async error => {
+    throw new Error(JSON.stringify({parentSteps,childSteps, errors:h.errors.map(String),children:(await h.runtime.children()).map(c=>({state:c.state,source:c.source,report:c.report,run:c.receipt?.run_id})),
+      events:(await h.runtime.events(0,300)).filter(e=>e.kind.includes('failed') || e.kind.includes('interrupted'))}),{cause:error});
+  });
+  expect(childSteps).toBe(2);
+  expect((await h.runtime.launch(receipt.run_id))?.selection.source).toBe(null);
+  expect((await h.runtime.children())[0]?.launch.source?.live_root?.canonicalRoot).toBe(await fs.realpath(f.workspace));
 });
 
 it.each(['quick','formal','isolated'] as const)('%s retrieval uses native search, structural reading and a fixed-source terminal without IDE services',async(mode)=>{

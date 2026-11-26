@@ -151,14 +151,21 @@ export class SupervisorJournal {
     if (!identifier(eventKey) || !validPage(page)) throw new Error('Invalid supervisor event page');
     const filename = hash(eventKey);
     const envelope: EventEnvelope = { version, owner: this.owner, eventKey, page };
-    const digest = hash(encode(envelope));
+    const archived = path.join(this.directory, filename + '.archived');
+    const pending = path.join(this.directory, filename + '.pending');
+    // Older journals only archived an event after delivery. Fix its identity
+    // before a new acceptance can race replay's removal of the pending name.
+    await link(pending, archived).catch(error => {
+      if (errorCode(error) !== 'ENOENT' && errorCode(error) !== 'EEXIST') throw error;
+    });
+    const digest = await this.put(filename + '.archived', envelope);
     const acknowledged = (await this.read(filename + '.ack'))?.value;
     if (acknowledged) {
-      const archived = await this.read(filename + '.archived');
       if (!object(acknowledged) || acknowledged.version !== version || acknowledged.owner !== this.owner
-        || acknowledged.digest !== digest || !archived || hash(archived.raw) !== digest) throw new Error('Supervisor journal key conflict');
+        || acknowledged.digest !== digest) throw new Error('Supervisor journal key conflict');
     } else {
-      await this.put(filename + '.pending', envelope);
+      await link(archived, pending).catch(error => { if (errorCode(error) !== 'EEXIST') throw error; });
+      await this.syncDirectory();
     }
     this.faults.afterEventCommit?.();
     return { version, owner: this.owner, digest };
@@ -190,7 +197,7 @@ export class SupervisorJournal {
           const result = await receive(value.page, signal);
           if (!isDeepStrictEqual(result.checkpoint.identity, value.page.identity) || result.checkpoint.cursor !== value.page.nextCursor
             || result.accepted + result.duplicates !== value.page.events.length) throw new Error('Invalid Catalog acknowledgement');
-        } catch (error) { if (signal?.aborted) throw signal.reason; retained++; continue; }
+        } catch { if (signal?.aborted) throw signal.reason; retained++; continue; }
         this.faults.afterCatalogReceipt?.();
         // Catalog's normal SQLite WAL acknowledgement does not prove that
         // the commit survived machine power loss. Keep the fsynced payload

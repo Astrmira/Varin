@@ -13,7 +13,11 @@ export interface CliEntryDependencies {
   defaultPort: number;
   managedLocalMode: string;
   parseServeCliOptions(input: ParseServeCliOptionsInput): ParsedServeCliArgs;
-  process: Pick<NodeJS.Process, 'argv' | 'env' | 'exit'> & Partial<Pick<NodeJS.Process, 'connected' | 'send' | 'once'>>;
+  process: Pick<NodeJS.Process, 'argv' | 'env' | 'exit'> & {
+    connected?: boolean;
+    send?: NodeJS.Process['send'];
+    once?(event: 'disconnect', listener: () => void): unknown;
+  };
   setExitOnShutdown(value: boolean): void;
   startServer(options: StartWebUiServerOptions): Promise<unknown>;
 }

@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { expect, it } from 'vitest';
-import type { ComputerActor } from '@varin/protocol';
+import type { ComputerActor, ComputerControlResult, ComputerDesktop, ComputerListResult } from '@varin/protocol';
+import { expectOk as ok } from './role-http.test-helper.js';
 import type { KernelRecordResult } from '../kernel/protocol.generated.js';
 import { computerDriverFixture } from './driver-fixture.test-helper.js';
 import { createComputerService } from './computer-service.js';
@@ -63,23 +64,20 @@ it('actual remote Computer owner scopes a loopback coordinator, driver and viewe
       headers: { ...(bearer ? { Authorization: 'Bearer ' + bearer } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {}),
     });
-    const ok = async (p: Promise<Response>) => {
-      const r = await p; const b = await r.json(); expect(r.status, JSON.stringify(b)).toBe(200); return b;
-    };
     expect((await req(base)).status).toBe(401);
     expect((await req(base + '/default-target', 'first', { desktopId: 'local-console' })).status).toBe(404);
     expect((await req('/api/harness/managed-execution/v1/shell/exec', 'first', {})).status).toBe(404);
     expect((await req(local + '/open', 'first', { command: 'arbitrary-command' })).status).toBe(403);
     expect((await req(local + '/browser', 'observer', { op: 'status', profile: '/ungranted/path' })).status).toBe(403);
     expect((await req(local + '/office', 'observer', { op: 'act', act: { kind: 'save' } })).status).toBe(403);
-    const firstRead = await ok(req(base, 'observer'));
-    expect(firstRead.desktops[0].status).toBe('unavailable');
+    const firstRead = await ok<ComputerListResult>(req(base, 'observer'));
+    expect(firstRead.desktops[0]?.status).toBe('unavailable');
     expect(calls).toEqual([]);
-    const probed = await ok(req(local + '/probe', 'observer', {}));
-    expect(probed.desktop.capabilities.driver).toBe('target-driver');
+    const probed = await ok<{ desktop: ComputerDesktop }>(req(local + '/probe', 'observer', {}));
+    expect(probed.desktop.capabilities?.driver).toBe('target-driver');
     const claim = { actor, origin: 'same-named-host', assignmentId: 'same-name', access: 'observe' };
-    const lease1 = (await ok(req(local + '/assignment', 'observer', { ...claim, op: 'claim' }))).token;
-    const lease2 = (await ok(req(local + '/assignment', 'second', { ...claim, op: 'claim' }))).token;
+    const lease1 = (await ok<{ token: string }>(req(local + '/assignment', 'observer', { ...claim, op: 'claim' }))).token;
+    const lease2 = (await ok<{ token: string }>(req(local + '/assignment', 'second', { ...claim, op: 'claim' }))).token;
     expect(lease1).not.toBe(lease2);
     const denied = await req(local + '/observe', 'second', { app: 'editor' }, { 'X-Varin-Computer-Lease': lease1 });
     expect(denied.status).toBe(409);
@@ -101,9 +99,9 @@ it('actual remote Computer owner scopes a loopback coordinator, driver and viewe
       expect(r.status).toBe(200);
       const reader = r.body!.getReader(); await reader.read(); reader.releaseLock();
     }
-    const takeover = await ok(req(local + '/takeover', 'first', { holderId: 'identical-name' }));
+    const takeover = await ok<ComputerControlResult>(req(local + '/takeover', 'first', { holderId: 'identical-name' }));
     expect(takeover.control.holderId).toBe('identical-name');
-    expect((await ok(req(local + '/control', 'second'))).control).not.toHaveProperty('holderId');
+    expect((await ok<ComputerControlResult>(req(local + '/control', 'second'))).control).not.toHaveProperty('holderId');
     expect((await req(local + '/input', 'second', { holderId: 'identical-name', controlEpoch: takeover.control.automationEpoch, input: { kind: 'text', text: 'must not dispatch' } })).status).toBe(409);
     expect(calls).not.toContain('inject_input');
     await ok(req(local + '/handback', 'first', { holderId: 'identical-name' }));

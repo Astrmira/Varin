@@ -96,7 +96,8 @@ export function ConnectedBrowserSurface({ binding, onBindingChange, onObservedPa
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [refresh, setRefresh] = React.useState(0);
-  const [acquiring, setAcquiring] = React.useState(false);
+  const [acquiringHost, setAcquiringHost] = React.useState<number>();
+  const acquiring = acquiringHost === host;
   const selection = React.useRef<AbortController | null>(null);
   React.useEffect(() => () => { selection.current?.abort(); selection.current = null; }, [host]);
   const resources = catalog?.host === host ? catalog.resources : [];
@@ -153,7 +154,7 @@ export function ConnectedBrowserSurface({ binding, onBindingChange, onObservedPa
     selection.current?.abort();
     const controller = new AbortController();
     selection.current = controller;
-    setAcquiring(true); setError('');
+    setAcquiringHost(host); setError('');
     try {
       const ready = await browserResources.acquire(next.browserId, controller.signal);
       if (controller.signal.aborted || host !== getRuntimeEndpointGeneration()) return;
@@ -161,7 +162,7 @@ export function ConnectedBrowserSurface({ binding, onBindingChange, onObservedPa
       if (ready.state !== 'online' || !ready.instanceId) throw new Error(t('browser.resource.offline'));
       onBindingChange({ browserId: ready.browserId, instanceId: ready.instanceId });
     } catch (cause) { if (!controller.signal.aborted) setError(errorText(cause)); }
-    finally { if (selection.current === controller) { selection.current = null; setAcquiring(false); } }
+    finally { if (selection.current === controller) { selection.current = null; setAcquiringHost(undefined); } }
   };
   return <div className="flex h-full min-h-0 flex-col bg-background">
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-[var(--surface-background)] px-2 py-1">
@@ -169,7 +170,7 @@ export function ConnectedBrowserSurface({ binding, onBindingChange, onObservedPa
       <Select value={binding?.browserId ?? 'preview'} onValueChange={value => {
         const next = resources.find(candidate => candidate.browserId === value);
         if (next) { void acquireBrowser(next); }
-        else { selection.current?.abort(); selection.current = null; setAcquiring(false); onBindingChange(undefined); }
+        else { selection.current?.abort(); selection.current = null; setAcquiringHost(undefined); onBindingChange(undefined); }
       }}>
         <SelectTrigger className="h-7 min-w-0 flex-1 typography-micro" aria-label={t('browser.resource.select')} disabled={acquiring}><SelectValue /></SelectTrigger>
         <SelectContent><SelectItem value="preview">{t('browser.resource.separatePreview')}</SelectItem>

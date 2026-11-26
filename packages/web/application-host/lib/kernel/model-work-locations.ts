@@ -6,7 +6,7 @@ import type { ThreadLocationDirectory, ThreadPreparedSource, ThreadPrepareSource
 import type { SourceResourceOwner } from '@varin/protocol';
 import type { AgentRuntimeClient } from './agent-runtime-client.js';
 import type { KernelClient } from './kernel-client.js';
-import type { LaunchSource, Run, SourceToolBinding } from './protocol.generated.js';
+import { toolOperationId, validToolOrigin, type LaunchSource, type Run, type SourceToolBinding } from './protocol.generated.js';
 import { SourceAdmissionError, sourceFailureCode } from './source-admission-error.js';
 import { resolveSourceTextPolicy } from './source-provenance.js';
 import { resourceSource } from './thread-context.js';
@@ -34,7 +34,7 @@ interface LocationDescription { id?: string; path: string; workspaceId?: string;
 interface LocationKey extends LocationDescription { workspaceId: string }
 interface Lease { binding: SourceToolBinding; operationId: string; release(): Promise<void> }
 interface PreparationFlight<T> { work: Promise<T>; controller: AbortController; consumers: number }
-type Runtime = Pick<AgentRuntimeClient, 'run' | 'thread' | 'launch' | 'operation' | 'managedSource' | 'coordinatorHostId' | 'principalCanUseHostResources' | 'childExecutionForRun'>;
+type Runtime = Pick<AgentRuntimeClient, 'run' | 'thread' | 'launch' | 'operation' | 'managedSource' | 'coordinatorHostId' | 'principalCanUseHostResources' | 'childExecutionForRun' | 'deviceFileAccess'>;
 export type ModelWorkLocationOwner = (query: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
 
 /** Use the already authorized resource snapshot, not a second path reader.
@@ -78,7 +78,12 @@ export function createModelWorkLocations(options: {
   const keyFor = (runId: string, operationId: string) => JSON.stringify([runId, operationId]);
   async function admit(query: Record<string, unknown>, signal: AbortSignal) {
     if (!nonempty(query.runId) || !nonempty(query.threadId) || !nonempty(query.callId) ||
-      !object(query.origin) || query.origin.kind !== 'model_step' || !nonempty(query.origin.request_id)) throw denied();
+      !validToolOrigin(query.origin) || !['model_step','nested_call'].includes(query.origin.kind)) throw denied();
+    if (query.origin.kind === 'nested_call') {
+      const parent = await runtime.operation(query.origin.parent_operation_id, signal);
+      if (parent.run_id !== query.runId || parent.phase !== 'running' || parent.cancel_requested || parent.executor !== 'tool_invoke' ||
+        !object(parent.intent) || !object(parent.intent.origin) || parent.intent.origin.kind !== 'model_step') throw denied();
+    }
     const run = await runtime.run(query.runId, signal);
     if (run.id !== query.runId || run.thread_id !== query.threadId || run.cancel_requested ||
       !['executing','generating','runnable','waiting'].includes(run.state) ||
@@ -110,7 +115,7 @@ export function createModelWorkLocations(options: {
         !isDeepStrictEqual(parentLaunch.selection.lazy_work_location,lazy)) throw denied();
     }
     signal.throwIfAborted();
-    return {run,lazy,tools};
+    return {run,lazy,tools, deviceFileAccess: runtime.deviceFileAccess && !thread.parent_thread_id};
   }
   async function prepareLocation(run: Run, operationId: string, row: Omit<Row, 'id'>, key: LocationKey, canonicalPath: string, signal: AbortSignal) {
     const identity = {runtime: 'agent' as const, threadId: run.thread_id, branchId: run.branch_id};
@@ -152,11 +157,12 @@ export function createModelWorkLocations(options: {
       if (!flight.consumers && locationPreparations.get(scope) === flight) flight.controller.abort();
     }
   }
-  async function lease(run: Run, operationId: string, tool: string, source: Awaited<ReturnType<typeof prepareLocation>>, key: LocationKey, signal: AbortSignal): Promise<Lease> {
+  async function lease(run: Run, operationId: string, tool: string, source: Awaited<ReturnType<typeof prepareLocation>>, key: LocationKey, signal: AbortSignal, deviceFileAccess: boolean): Promise<Lease> {
     if (!source.tools.includes(tool)) throw denied();
     const process = tool === 'process_spawn';
-    const capabilities = workLocationCapabilities(tool);
-    if (!capabilities) throw denied();
+    const alternateCapabilities = workLocationCapabilities(tool);
+    const capabilities = alternateCapabilities ?? ['storage.read', 'storage.write',
+      ...(['process_resize', 'process_write'].includes(tool) ? ['process'] : [])];
     const base = { runId: run.id, threadId: run.thread_id, workspaceId: source.workspaceId,
       executionWorkspaceId: source.executionWorkspaceId, resourceOwner: source.resourceOwner, sourceMode: 'live_root' as const,
       enabledTools: [tool], rootId: source.liveRoot.rootId, liveRoot: source.liveRoot };
@@ -165,7 +171,8 @@ export function createModelWorkLocations(options: {
       const coordinatorHostId = runtime.coordinatorHostId;
       // Do not abort an in-flight remote bind and lose its reply/retirement address.
       const bound = await client.bind({coordinatorHostId, scope: {kind:'run', threadId:run.thread_id, runId:run.id, epoch:run.epoch},
-        operationId, purpose: tool === 'file_read' ? 'work_location_read' : 'work_location', retention:'caller', source:{...source, tools:[tool]}});
+        operationId, purpose: alternateCapabilities ? (tool === 'file_read' ? 'work_location_read' : 'work_location') : 'source',
+        retention:'caller', source:{...source, tools:[tool]}});
       const address = {coordinatorHostId, authorityId:bound.authorityId, resourceEpoch:bound.resourceEpoch};
       const release = async () => { await client.release({...address, mode:'retire'}); };
       try {
@@ -183,7 +190,7 @@ export function createModelWorkLocations(options: {
     // The already registered root and exact tool determine this Operation's grant.
     const grant = await kernel.issueGrant({grantId:`work-location-read:${randomUUID()}`, threadId:run.thread_id,
       runId:run.id, operationId, owningWorkspace:key.workspaceId, executionWorkspace:key.workspaceId,
-      capabilities, pathScopes:['']}, signal);
+      capabilities: deviceFileAccess ? [...capabilities, 'filesystem.device'] : capabilities, pathScopes:['']}, signal);
     const release = async () => {
       // Old local grants cannot run in a new epoch. Cleanup must not restart
       // the local kernel when its transport has just exited.
@@ -218,7 +225,7 @@ export function createModelWorkLocations(options: {
         }
         return {};
       }
-      const {run,lazy,tools} = await admit(q, signal);
+      const {run,lazy,tools,deviceFileAccess} = await admit(q, signal);
       if (q.kind === 'work_location_process_view') {
         if (!nonempty(q.operationId) || !nonempty(q.processId) || !options.openProcessView) throw denied();
         const process = await runtime.operation(q.processId, signal);
@@ -241,7 +248,9 @@ export function createModelWorkLocations(options: {
         || q.instructionDirectories.some(dir=>typeof dir !== 'string'))) throw denied();
       const instructionDirectories = [...new Set((q.instructionDirectories ?? []) as string[])].map(normalizeWorkspaceRelativePath).filter(Boolean).sort();
       if (q.refresh !== undefined && (q.kind !== 'work_locations' || typeof q.refresh !== 'boolean')) throw denied();
-      const listed = q.default === true ? {targets: [], workspace: undefined}
+      const processInput = q.kind === 'work_location_bind' && (q.tool === 'process_write' || q.tool === 'process_resize');
+      if (processInput && (!lazy || !nonempty(q.processId) || q.default !== undefined || q.key !== undefined)) throw denied();
+      const listed = q.default === true || processInput ? {targets: [], workspace: undefined}
         : q.kind === 'work_locations' && q.refresh !== true && q.device === undefined && q.path === undefined
           ? await (directory.describe?.(signal) ?? directory.list(signal))
           : await directory.list(signal);
@@ -302,7 +311,7 @@ export function createModelWorkLocations(options: {
         return {locations:results, devices: listed.targets.map(target => ({ name: device(target), owner: target.resourceOwner }))};
       }
       if (!['work_location_bind', 'work_location_switch', 'work_location_transfer'].includes(String(q.kind)) || !nonempty(q.operationId)
-        || !object(q.origin) || q.operationId !== `${q.origin.request_id}:tool:${q.callId}`) throw denied();
+        || !validToolOrigin(q.origin) || typeof q.callId !== 'string' || q.operationId !== toolOperationId(q.origin,q.callId)) throw denied();
       if (q.kind === 'work_location_transfer') {
         if (!options.transfer || !object(q.from) || !object(q.to) || typeof q.move !== 'boolean'
           || !object(q.from.key) || !object(q.to.key)) throw denied();
@@ -318,8 +327,18 @@ export function createModelWorkLocations(options: {
         return { copied: result.copied, removed: result.removed, ...(result.error ? { error: 'The file transfer did not complete. Check both locations before retrying.' } : {}),
           from: device(from.target), to: device(to.target), path, destinationPath };
       }
-      if (!object(q.key) && q.default !== true) throw denied();
+      if (!object(q.key) && q.default !== true && !processInput) throw denied();
       const target = await (async () => {
+        if (processInput) {
+          const original = await runtime.operation(q.processId as string, signal);
+          const source = original.resource_source;
+          if (original.run_id !== run.id || original.managed_process?.purpose.kind !== 'process_job' ||
+              source?.mode !== 'live_root' || !source.live_root) throw denied();
+          const path = source.live_root.canonicalRoot;
+          const row = {name: 'Original process location', resourceOwner: source.resource_owner, path, workspaceId: source.workspace_id};
+          return {row, target: {resourceOwner: row.resourceOwner, label: row.name, capabilities: []},
+            key: {resourceOwner: row.resourceOwner, path, workspaceId: row.workspaceId}, canonicalPath: path};
+        }
         if (q.default !== true || !lazy) return resolveKey(q.key as Record<string, unknown>);
         const row = {name: 'Default work location',path:lazy.path,resourceOwner:lazy.resource_owner,
           ...(lazy.workspace_id ? {workspaceId: lazy.workspace_id} : {})};
@@ -335,9 +354,9 @@ export function createModelWorkLocations(options: {
         return { source: resourceSource(source), name: row.name, device: device(target.target), path: canonicalPath };
       }
       const tool = q.tool;
-      if (typeof tool !== 'string' || !workLocationCapabilities(tool)) throw denied();
-      if (q.default === true && !tools.some(schema => schema.name === tool)) throw denied();
-      if (q.default !== true && target.target.resourceOwner.kind === 'managed_host'
+      if (typeof tool !== 'string' || (q.default === true || processInput
+        ? !tools.some(schema => schema.name === tool) : !workLocationCapabilities(tool))) throw denied();
+      if (q.default !== true && !processInput && target.target.resourceOwner.kind === 'managed_host'
         && !target.target.capabilities.includes(tool === 'file_read' ? 'work-location-read' : 'work-location')) throw unavailable();
       const key = keyFor(run.id,q.operationId);
       if (leases.has(key) || preparing.has(key)) throw changed();
@@ -352,7 +371,7 @@ export function createModelWorkLocations(options: {
           await admit(q, active);
           if (context && context.revision !== q.resourceContext) return context;
         }
-        const entry = await lease(run,q.operationId,tool,source,actual,active);
+        const entry = await lease(run,q.operationId,tool,source,actual,active,q.default === true && deviceFileAccess);
         try {
           const current = await admit(q, active);
           if (current.run.epoch !== run.epoch || !isDeepStrictEqual(current.lazy,lazy)) throw changed();

@@ -1,13 +1,21 @@
 import { chmod, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { expect, it, vi } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt } from '@varin/protocol';
 import { SupervisorJournal } from './supervisor-journal.js';
 import { startSupervisorInbox } from './supervisor-inbox.js';
 import { waitForPublishedWake } from './local-supervisor.js';
 
 const owner = 'stable-original-owner';
+const it = test.skipIf(process.platform === 'win32');
+
+test.runIf(process.platform === 'win32')('reports unsupported directory durability before creating a journal', async () => {
+  await inDirectory(async folder => {
+    await expect(SupervisorJournal.open(folder, owner)).rejects.toThrow('POSIX directory sync');
+    await expect(readdir(folder)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
 const identity = { principalId: 'original-user', source: { extensionId: 'original.extension', sourceId: 'events', connectionId: 'connection', accountId: 'account' } };
 const page: FollowupEventReceiveParams = {
   identity, expectedCursor: null, nextCursor: 'first-original-cursor', status: null,

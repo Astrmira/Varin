@@ -86,6 +86,7 @@ impl RunAssembly {
         check_cancelled()?;
         let p = preparation.params;
         let tool_binding = preparation.tools;
+        let has_execution_source = tool_binding.is_some();
         let execution_environment = tool_binding.as_ref().and_then(|binding|binding.execution_environment.clone());
         let runtime = &self.runtime;
         let resources = &self.resources;
@@ -386,6 +387,9 @@ impl RunAssembly {
         let mut launch_source = None;
         let mut declarations = Vec::new();
         let mut collaboration_source = None;
+        let retrieval = Arc::new(crate::agent_runtime::control_commands::ControlCommands {
+            runtime: runtime.clone(), resources: resources.clone(), models: self.models.clone(), tools: self.tools.clone(),
+        });
         if is_context_job && !text_compaction {
             declarations.push(varin_runtime::composition::tools::ToolDeclaration::new(
                 varin_runtime::summary_tools::schema(),
@@ -411,9 +415,7 @@ impl RunAssembly {
                 .map_err(|e| KernelError::Authorization(e.to_string()))?
                 .with_language(language_bridge.clone())
                 .with_search_scope(search_scope)
-                .with_internal_retrieval(Arc::new(crate::agent_runtime::control_commands::ControlCommands {
-                    runtime: runtime.clone(), resources: resources.clone(), models: self.models.clone(), tools: self.tools.clone(),
-                }));
+                .with_internal_retrieval(retrieval.clone());
             start.binding.tool_schema_generation =
                 saved_schema_generation.unwrap_or(start.binding.configuration_generation);
             declarations.extend(tools.declarations(true));
@@ -424,13 +426,13 @@ impl RunAssembly {
             if !is_child && host_authority && (path_read && crate::work_locations::eligible(launch_source.as_ref()) || lazy_work_location.is_some()) {
                 let lazy_schemas = if let Some(launch) = saved_launch.as_ref().filter(|_| lazy_work_location.is_some()) {
                     let kinds = crate::tools::ToolKind::all().filter(|kind| {
-                        crate::work_locations::alternate_tool(kind.name())
+                        crate::work_locations::binds_location(kind.name())
                             && launch.selection.tools.iter().any(|tool| tool.name == kind.name())
                     }).collect();
                     crate::tools::KernelToolExecutor::selected_schemas(&kinds)
                 } else { Vec::new() };
                 crate::work_locations::route_declarations(&mut declarations, p.run_id.clone(), launch_source.clone(),
-                    lazy_work_location.clone(), lazy_schemas, runtime.catalog(),
+                    lazy_work_location.clone(), lazy_schemas, retrieval, language_bridge.clone(), runtime.catalog(),
                     resources.clone().with_journal_catalog(runtime.catalog()));
             }
             if let Some((location, launch)) = lazy_work_location.as_ref().zip(saved_launch.as_ref()).filter(|_| is_child) {
@@ -439,7 +441,7 @@ impl RunAssembly {
                         && launch.selection.tools.iter().any(|tool| tool.name == kind.name())
                 }).collect();
                 declarations.extend(crate::work_locations::child_declarations(
-                    p.run_id.clone(), location.clone(), crate::tools::KernelToolExecutor::selected_schemas(&kinds),
+                    p.run_id.clone(), location.clone(), crate::tools::KernelToolExecutor::selected_schemas(&kinds), language_bridge.clone(),
                     runtime.catalog(), resources.clone().with_journal_catalog(runtime.catalog()),
                 ));
             }
@@ -670,9 +672,13 @@ impl RunAssembly {
                 inner: start.context_preparation,
                 catalog: runtime.catalog(),
             });
-            start.context_preparation = Arc::new(crate::shell_environment::ExecutionPreparation {
-                inner: start.context_preparation, environment: execution_environment, bridge: self.context.clone(),
-            });
+            // A routed process_spawn resolves its shell on the actual target at
+            // tool admission. The conversation has no execution Host to probe yet.
+            if has_execution_source {
+                start.context_preparation = Arc::new(crate::shell_environment::ExecutionPreparation {
+                    inner: start.context_preparation, environment: execution_environment, bridge: self.context.clone(),
+                });
+            }
             start.context_preparation = Arc::new(crate::context::CapacityPreparation::new(
                 start.context_preparation,
                 runtime.catalog(),

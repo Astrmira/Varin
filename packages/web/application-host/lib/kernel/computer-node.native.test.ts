@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it as test } from 'vitest';
-import type { ComputerActor } from '@varin/protocol';
+import type { ComputerActor, ComputerDesktop, ComputerListResult } from '@varin/protocol';
+import { expectOk } from '../computer/role-http.test-helper.js';
 import { pairComputerNode, revokeComputerNodeClient, startComputerNode } from '../../computer-node.js';
 import { computerDriverFixture } from '../computer/driver-fixture.test-helper.js';
 import { createComputerService } from '../computer/computer-service.js';
@@ -56,11 +57,6 @@ it('runs a dedicated Computer node, scopes peer work/leases, and recovers the sa
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const api = '/api/computers', desktop = api + '/desktops/local-console';
-    const expectOk = async (r: Promise<Response>) => {
-      const response = await r, body = await response.json();
-      expect(response.status, JSON.stringify(body)).toBe(200);
-      return body;
-    };
     expect(await expectOk(request('/health'))).toMatchObject({ role: 'computer', control: 'ready' });
     expect((await request(api)).status).toBe(401);
     const identity = '/api/harness/managed-execution/v1/identity';
@@ -69,20 +65,20 @@ it('runs a dedicated Computer node, scopes peer work/leases, and recovers the sa
     expect((await request('/api/threads', other.token)).status).toBe(404);
     expect((await request('/api/harness/managed-execution/v1/shell/exec', other.token, {})).status).toBe(404);
     expect((await request(api + '/vms', other.token)).status).toBe(404);
-    const initial = await expectOk(request(api, observer.token));
+    const initial = await expectOk<ComputerListResult>(request(api, observer.token));
     expect(initial.desktops[0]).toMatchObject({ id: 'local-console', status: 'unavailable' });
     expect(calls).toEqual([]);
     expect((await request(desktop + '/input', observer.token, { holderId: 'first' })).status).toBe(403);
     expect((await request(desktop + '/open', other.token, { command: 'anything' })).status).toBe(403);
     expect((await request(desktop + '/browser', observer.token, { op: 'status', binary: '/not/a/role/input' })).status).toBe(403);
     expect(calls).toEqual([]);
-    const firstProbe = await expectOk(request(desktop + '/probe', observer.token, {}));
+    const firstProbe = await expectOk<{ desktop: ComputerDesktop }>(request(desktop + '/probe', observer.token, {}));
     expect(firstProbe.desktop).toMatchObject({ status: 'available', capabilities: { driver: 'fixture-driver', observeTree: true } });
     const work = { runtime: 'agent' as const, threadId: 'coordinator-thread', branchId: 'main' };
     const execution = { work, runId: 'coordinator-run' };
     const actor: ComputerActor = { execution, rootWork: work, rootExecution: execution, label: 'coordinator' };
     const assignment = { origin: 'coordinator-host:fixture', assignmentId: 'same-visible-assignment', access: 'observe', actor };
-    const firstLease = (await expectOk(request(desktop + '/assignment', observer.token, { ...assignment, op: 'claim' }))).token as string;
+    const firstLease = (await expectOk<{ token: string }>(request(desktop + '/assignment', observer.token, { ...assignment, op: 'claim' }))).token;
     const forged = await request(desktop + '/observe', other.token, { app: 'fixture-editor' }, { 'X-Varin-Computer-Lease': firstLease });
     expect(forged.status).toBe(409);
     expect(await forged.json()).toMatchObject({ computerExecution: { inputWriterStopped: true, receipt: { effect: 'none' } } });
@@ -112,7 +108,7 @@ it('runs a dedicated Computer node, scopes peer work/leases, and recovers the sa
     calls.length = 0;
     node = await start();
     expect(node.hostId).toBe(host);
-    const cached = await expectOk(request(api, observer.token));
+    const cached = await expectOk<ComputerListResult>(request(api, observer.token));
     expect(cached.desktops[0]).toMatchObject({ id: 'local-console', status: 'available', probedAt: firstProbe.desktop.probedAt });
     expect(calls).toEqual([]);
     expect((await request(desktop + '/observe', observer.token, { app: 'fixture-editor' }, { 'X-Varin-Computer-Lease': firstLease })).status).toBe(409);
