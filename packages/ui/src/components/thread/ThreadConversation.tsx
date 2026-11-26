@@ -164,7 +164,7 @@ export function ThreadConversation({ api, identity, onBranchCreated, initialWork
   const snapshotHost = React.useRef<number | undefined>(undefined);
   const historyWindow = React.useMemo(() => threadHistoryWindow(api, String(host), { runtime: identity.runtime, threadId: identity.threadId, branchId: identity.branchId }), [api, host, identity.runtime, identity.threadId, identity.branchId]);
   const history = React.useSyncExternalStore(historyWindow.subscribe, historyWindow.getSnapshot, historyWindow.getSnapshot);
-  const navigationEnabled = useUIStore(state => state.promptNavigatorEnabled);
+  const navigationEnabled = useUIStore(state => state.promptNavigatorEnabled && !state.isMobile);
   React.useEffect(() => { historyWindow.enableNavigation(navigationEnabled); }, [historyWindow, navigationEnabled]);
   const scrollMode = useTimelineViewStore(state => state.views[draftKey]?.scrollMode ?? 'following-end');
   const identityGeneration = React.useRef(0);
