@@ -33,7 +33,7 @@ try {
   assert.equal((await store.recall('release verification', 5))[0]?.node.id, upgradedId);
   await store.close(); store = null;
   const { TriviumDB } = require('triviumdb');
-  const reader = new TriviumDB(legacy, { dim: 8, accessMode: 'readOnly' });
+  const reader = new TriviumDB(path.join(path.dirname(legacy), 'legacy.store/current/database.tdb'), { dim: 8, accessMode: 'readOnly' });
   try { assert.equal(reader.getPayload(1).content, 'Original WAL data'); }
   finally { reader.close(); }
 } finally { await store?.close(); await fs.rm(dataDir, { recursive: true, force: true }); }

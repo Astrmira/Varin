@@ -1,8 +1,11 @@
-/** Native opens stay in the private storage owner. The old engine is used only
- * to finish a pre-0.9 WAL-only checkpoint, then exits before the current open. */
-import { execFileSync } from 'node:child_process';
+/** Native opens and offline conversions run in the private storage owner. */
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, statfsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { TriviumDBOptions } from 'triviumdb';
+import { knowledgeDatabasePath, knowledgeMigrationRoot, knowledgeMigrationTarget } from './database-files.js';
 
 const require = createRequire(import.meta.url);
 const { TriviumDB } = require('triviumdb') as typeof import('triviumdb');
@@ -46,30 +49,55 @@ const checkpointLegacyWal = `
   database.close();
 `;
 
-// The file-group format alone does not classify this as bridgeable: a
-// checkpointed database and a damaged main file can have the same WAL header.
-export function isLegacyWalOnlyCheckpointError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const { code, details } = error as { code?: unknown; details?: { reason?: unknown } };
-  return code === 'TDB_CORRUPTED_FILE' && typeof details?.reason === 'string'
-    && details.reason.includes('Typed checkpoint missing; recover and export with the original version');
+function migrate(file: string, options: TriviumDBOptions) {
+  const target = knowledgeMigrationTarget(file);
+  mkdirSync(knowledgeMigrationRoot(file), { recursive: true });
+  const executable = process.env.VARIN_TDB_MIGRATOR_PATH || fileURLToPath(new URL(
+    './native/triviumdb-migrate' + (process.platform === 'win32' ? '.exe' : ''), import.meta.url));
+  // The native tool computes required scratch space and checks actual free disk.
+  // Use the source volume's capacity for its CLI budgets instead of imposing a
+  // fixed 1 GiB limit on existing Varin data.
+  const volume = statfsSync(dirname(file), { bigint: true });
+  const capacityMiB = ((volume.blocks * volume.bsize) / 1048576n + 1n).toString();
+  const result = spawnSync(executable, ['--execute', '--source', file, '--destination', target,
+    '--source-dtype', options.dtype ?? 'f32', '--storage', options.storageMode ?? 'mmap',
+    '--max-source-mib', capacityMiB, '--max-work-mib', capacityMiB], { encoding: 'utf8', windowsHide: true });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    let failure;
+    try { failure = JSON.parse(result.stderr).error; } catch { /* Non-JSON process failure. */ }
+    throw Object.assign(new Error(`Knowledge migration failed for ${file}: ${failure?.message || result.stderr.trim() || result.signal || result.status}`),
+      failure && { code: failure.code, phase: failure.phase, outcome: failure.outcome, details: failure.details });
+  }
+  return new TriviumDB(join(target, 'database.tdb'), options);
 }
 
 export function openKnowledgeDatabase(file: string, options: TriviumDBOptions) {
+  const writable = options.accessMode !== 'readOnly' && options.accessMode !== 'immutable';
+  const current = knowledgeDatabasePath(file);
+  if (current !== file) {
+    if (writable && existsSync(current + '.migration')) return migrate(file, options);
+    if ((!existsSync(current) && !existsSync(current + '.publish')) || !existsSync(join(dirname(current), 'migration-report.json'))) {
+      throw new Error(`Incomplete migrated knowledge database at ${current}`);
+    }
+    return new TriviumDB(current, options);
+  }
   try { return new TriviumDB(file, options); }
   catch (error) {
-    if (options.accessMode === 'readOnly' || options.accessMode === 'immutable'
-      || !isLegacyWalOnlyCheckpointError(error)) throw error;
-    // The failed open has released its lease. Let the original engine recover
-    // its own WAL and publish a full checkpoint; never recreate the database
-    // or translate WAL bytes in the Host.
-    execFileSync(process.execPath, ['-e', checkpointLegacyWal,
-      require.resolve('triviumdb-upgrade-0.8'), file,
-      JSON.stringify({ dim: options.dim, dtype: options.dtype, syncMode: 'full',
-        autoBuildQuiver: false, loadTextIndex: false, payloadCacheMb: 0 })], {
-      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    });
-    return new TriviumDB(file, options);
+    const diagnostic = error as { code?: string; details?: { component?: string; found?: number } };
+    if (!writable || diagnostic.code !== 'TDB_MIGRATION_REQUIRED') throw error;
+    if (diagnostic.details?.component === 'wal' && diagnostic.details.found === 3 && !existsSync(file)) {
+      // 0.8 could acknowledge its first writes before publishing any main file.
+      // Only its original engine can turn that WAL into the migrator's required checkpoint.
+      const base = basename(file);
+      const orphan = readdirSync(dirname(file)).find(name => name.startsWith(base + '.') && name !== base + '.wal' && name !== base + '.lock');
+      if (orphan) throw new Error(`Missing knowledge checkpoint for ${file} with existing artifact ${orphan}`, { cause: error });
+      execFileSync(process.execPath, ['-e', checkpointLegacyWal, require.resolve('triviumdb-upgrade-0.8'), file,
+        JSON.stringify({ dim: options.dim, dtype: options.dtype, syncMode: 'full',
+          autoBuildQuiver: false, loadTextIndex: false, payloadCacheMb: 0 })], {
+        windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      });
+    }
+    return migrate(file, options);
   }
 }

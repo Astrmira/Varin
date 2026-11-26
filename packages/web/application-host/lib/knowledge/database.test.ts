@@ -1,13 +1,24 @@
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
-import { isLegacyWalOnlyCheckpointError, openKnowledgeDatabase } from './database.js';
+import { fileURLToPath } from 'node:url';
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
+import { openKnowledgeDatabase } from './database.js';
+import { knowledgeDatabaseExists } from './database-files.js';
+import { createSemanticStoreEngine } from './semantic/store-engine.js';
+import { createHashEmbedder } from './semantic/embedder.js';
+import { semanticGenerationDir, spaceIdOf, workspaceScope } from './semantic/identity.js';
 
 const require = createRequire(import.meta.url);
 const roots: string[] = [];
+beforeAll(() => {
+  if (process.env.VARIN_TDB_MIGRATOR_PATH) return;
+  const prepare = fileURLToPath(new URL('../../../../../scripts/prepare-trivium-migrator.mjs', import.meta.url));
+  vi.stubEnv('VARIN_TDB_MIGRATOR_PATH', execFileSync(process.execPath, [prepare], { encoding: 'utf8' }).trim());
+});
+afterAll(() => vi.unstubAllEnvs());
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const options = { dim: 8, syncMode: 'full' as const, autoBuildQuiver: false, loadTextIndex: false, payloadCacheMb: 0 };
 function legacy(checkpoint: boolean, dim = 8) {
@@ -31,13 +42,18 @@ function legacy(checkpoint: boolean, dim = 8) {
   return file;
 }
 
-it('recovers the previous release checkpoint and WAL together before publishing a new checkpoint', () => {
-  // Frozen file group from the published 0.9.0 addon: insert + createIndex + flush,
+function installCheckpoint(version: string, directory: string, filename = 'knowledge.tdb') {
+  // Frozen file groups from the published addons: insert + createIndex + flush,
   // then insert + link and immediate process exit. No old engine is shipped for this path.
-  const fixture = new URL('./fixtures/trivium-0.9.0-checkpoint-wal.json', import.meta.url);
+  const fixture = new URL(`./fixtures/trivium-${version}-checkpoint-wal.json`, import.meta.url);
   const files: Record<string, string> = JSON.parse(readFileSync(fixture, 'utf8'));
-  const root = mkdtempSync(join(tmpdir(), 'varin-tdb-v10-')); roots.push(root);
-  for (const [name, data] of Object.entries(files)) writeFileSync(join(root, name), Buffer.from(data, 'base64'));
+  for (const [name, data] of Object.entries(files)) writeFileSync(join(directory, name.replace('knowledge.tdb', filename)), Buffer.from(data, 'base64'));
+  return files;
+}
+
+it.each(['0.9.0', '0.9.1'])('recovers a %s checkpoint and its acknowledged WAL before publishing a new checkpoint', async version => {
+  const root = mkdtempSync(join(tmpdir(), 'varin-tdb-checkpoint-')); roots.push(root);
+  const files = installCheckpoint(version, root);
   const file = join(root, 'knowledge.tdb');
   const db = openKnowledgeDatabase(file, options);
   try {
@@ -46,11 +62,32 @@ it('recovers the previous release checkpoint and WAL together before publishing 
     expect(db.get(1)?.edges).toContainEqual(expect.objectContaining({ targetId: 2, label: 'related' }));
     db.updatePayload(2, { type: 'knowledge', content: 'after upgrade' });
   } finally { db.close(); }
+  // A restored installation can contain only the active migrated directory.
+  for (const [name, data] of Object.entries(files)) {
+    expect(readFileSync(join(root, name))).toEqual(Buffer.from(data, 'base64'));
+    unlinkSync(join(root, name));
+  }
+  expect(await knowledgeDatabaseExists(file)).toBe(true);
   const reader = openKnowledgeDatabase(file, { ...options, accessMode: 'readOnly' });
   try {
     expect(reader.getPayload(2)).toEqual({ type: 'knowledge', content: 'after upgrade' });
     expect(reader.get(1)?.edges).toContainEqual(expect.objectContaining({ targetId: 2, label: 'related' }));
   } finally { reader.close(); }
+});
+
+it('publishes a readable immutable semantic generation after migrating its writer', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'varin-tdb-semantic-')); roots.push(dataDir);
+  const scope = workspaceScope('project');
+  const space = { ...createHashEmbedder().space, dim: 8 };
+  const directory = semanticGenerationDir(dataDir, 'host', scope, spaceIdOf(space), 'g1');
+  mkdirSync(directory, { recursive: true });
+  installCheckpoint('0.9.1', directory, 'index.tdb');
+  const store = createSemanticStoreEngine({ dataDir, hostId: 'host', scope, space });
+  try {
+    const reader = await store.retainPublished();
+    expect(reader).toBeTruthy();
+    expect(await store.listDocumentStatesPinned(reader!.token)).toEqual([]);
+  } finally { await store.close(); }
 });
 
 it('upgrades a 0.8 checkpoint and its pending WAL without changing node identities or graph links', () => {
@@ -101,7 +138,7 @@ it('does not discard a corrupt legacy WAL during checkpoint upgrade', () => {
 });
 
 
-it('distinguishes the next-release guidance condition from normal WAL recovery and another corruption with the same header', () => {
+it('reports a corrupt base checkpoint even when its WAL header matches a recoverable old store', () => {
   const { TriviumDB } = require('triviumdb') as typeof import('triviumdb');
   const missing = legacy(false), intact = legacy(true), damaged = legacy(true);
   const damagedMain = Buffer.from('damaged 0.8 checkpoint');
@@ -113,12 +150,11 @@ it('distinguishes the next-release guidance condition from normal WAL recovery a
     return null;
   };
   const missingWal = readFileSync(`${missing}.wal`);
-  expect(isLegacyWalOnlyCheckpointError(diagnostic(missing))).toBe(true);
+  expect(diagnostic(missing)).toMatchObject({ code: 'TDB_MIGRATION_REQUIRED', details: { component: 'wal', found: 3 } });
   expect(readFileSync(`${missing}.wal`)).toEqual(missingWal);
-  expect(diagnostic(intact)).toBeNull();
+  expect(diagnostic(intact)).toMatchObject({ code: 'TDB_MIGRATION_REQUIRED', details: { component: 'database' } });
   const corruption = diagnostic(damaged);
   expect(corruption).toMatchObject({ code: 'TDB_CORRUPTED_FILE' });
-  expect(isLegacyWalOnlyCheckpointError(corruption)).toBe(false);
   expect(() => openKnowledgeDatabase(damaged, options)).toThrow(expect.objectContaining({
     message: (corruption as Error).message,
   }));

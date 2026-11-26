@@ -219,6 +219,7 @@ import { createDocumentRootGuard } from './lib/documents/allowed-roots.js';
 import { createWorkspaceConfig } from './lib/workspace/workspace-config.js';
 
 import { openWorkspaceKnowledge, type KnowledgeStore } from './lib/knowledge/store.js';
+import { knowledgeDatabaseExists } from './lib/knowledge/database-files.js';
 
 import { createKnowledgeContextRuntime } from './lib/knowledge/context-runtime.js';
 import { createContextObservationPublication } from './lib/knowledge/context-publication.js';
@@ -1786,8 +1787,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const memoryOrganizer = createMemoryOrganizer({
     sharedStoreIfPresent: async () => {
       if (userKnowledgeStore) return userKnowledgeStore;
-      try { await fsPromises.access(path.join(VARIN_DATA_DIR, 'knowledge', hostId, 'user.tdb')); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+      if (!await knowledgeDatabaseExists(path.join(VARIN_DATA_DIR, 'knowledge', hostId, 'user.tdb'))) return null;
       return getUserKnowledgeStore();
     },
     getInference: () => memoryInference,
@@ -1802,7 +1802,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     storeForScopeId: getKnowledgeStoreForScope,
     hasStoreForScope: async (scopeId) => {
       const storePath = path.join(VARIN_DATA_DIR, 'knowledge', hostId, `${knowledgeStoreKeyForScope(scopeId)}.tdb`);
-      return fsPromises.access(storePath).then(() => true, () => false);
+      return knowledgeDatabaseExists(storePath);
     },
     listScopeIds: async () => {
       return (await botService.list()).map((bot) => botScopeId(bot.id)).sort();
@@ -3009,13 +3009,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
 
   const knowledgeStoreExistsForScope = async (scopeId: string): Promise<boolean> => {
     const file = path.join(VARIN_DATA_DIR, 'knowledge', hostId, `${knowledgeStoreKeyForScope(scopeId)}.tdb`);
-    // A durable journal can exist before its first checkpoint. Opening that
-    // original store is recovery, whereas an entirely absent store stays absent.
-    for (const suffix of ['', '.wal', '.publish']) {
-      try { await fsPromises.access(`${file}${suffix}`); return true; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    }
-    return false;
+    return knowledgeDatabaseExists(file);
   };
 
   const environmentObservations = createEnvironmentObservationRuntime({
