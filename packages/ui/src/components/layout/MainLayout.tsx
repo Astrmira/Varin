@@ -350,7 +350,11 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ renderConversation, rend
                         )}
                     >
                         <main className="w-full h-full overflow-hidden bg-background relative" data-page-scroll-lock="true">
-                            <div className={cn('absolute inset-0', (!isChatActive || isSurfacePageOpen) && 'invisible')}>
+                            {/* Keep the composer's internal layers below the drawers. */}
+                            <div
+                                className={cn('absolute inset-0 isolate', (!isChatActive || isSurfacePageOpen) && 'invisible')}
+                                inert={mobileLeftDrawerOpen || mobileLeftDrawerVisible}
+                            >
                                 <ErrorBoundary>{conversation}</ErrorBoundary>
                             </div>
                             {secondaryView && (
