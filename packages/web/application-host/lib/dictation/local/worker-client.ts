@@ -205,12 +205,12 @@ export class DictationWorkerClient {
     const worker = this.worker;
     if (!worker) return Promise.resolve();
     // Publish retirement before disconnect/kill: those requests don't prove physical exit.
-    const close = this.workerExit!;
-    this.retiring = close;
+    const exited = this.workerExit!;
+    this.retiring = exited;
     if (reason) this.failConsumers(reason);
-    try { if (worker.connected) worker.disconnect(); } catch { /* wait for close */ }
-    try { if (!worker.killed) worker.kill(); } catch { /* wait for close */ }
-    return close;
+    try { if (worker.connected) worker.disconnect(); } catch { /* wait for exit */ }
+    try { if (!worker.killed) worker.kill(); } catch { /* wait for exit */ }
+    return exited;
   }
 
   private async sendRequest(
@@ -258,9 +258,16 @@ export class DictationWorkerClient {
     this.worker = worker;
     this.stderrTail = '';
     this.workerExit = new Promise<void>((resolve) => {
-      worker.once('close', (code, signal) => {
-        this.handleWorkerExit(worker, code, signal);
+      const settle = (code: number | null, signal: NodeJS.Signals | null, spawnError?: Error) => {
         resolve();
+        this.handleWorkerExit(worker, code, signal, spawnError);
+      };
+      // Retirement follows the process lifetime. After a parent-initiated
+      // disconnect and kill, Node may emit exit without emitting close.
+      worker.once('exit', settle);
+      worker.on('error', (error) => {
+        if (worker.pid === undefined) settle(null, null, error);
+        else if (worker === this.worker && !this.retiring) void this.retireWorker(error);
       });
     });
     worker.stderr?.on('data', (chunk) => {
@@ -274,9 +281,6 @@ export class DictationWorkerClient {
     worker.once('disconnect', () => {
       if (worker === this.worker && !this.retiring)
         void this.retireWorker(new Error('Dictation worker IPC disconnected'));
-    });
-    worker.once('error', (error) => {
-      if (worker === this.worker && !this.retiring) void this.retireWorker(error);
     });
     return worker;
   }
@@ -318,7 +322,7 @@ export class DictationWorkerClient {
     }
   }
 
-  private handleWorkerExit(worker: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
+  private handleWorkerExit(worker: ChildProcess, code: number | null, signal: NodeJS.Signals | null, spawnError?: Error): void {
     if (this.worker !== worker) return;
     const wasRetiring = this.retiring !== null;
     this.worker = null;
@@ -327,7 +331,7 @@ export class DictationWorkerClient {
     this.clearIdleTimer();
     if (!wasRetiring) {
       const stderr = this.stderrTail.trim();
-      this.failConsumers(new Error(
+      this.failConsumers(spawnError ?? new Error(
         `Dictation worker exited (code ${code ?? 'null'}${signal ? `, signal ${signal}` : ''}).` +
           (stderr ? ` Last stderr: ${stderr.slice(-500)}` : ''),
       ));

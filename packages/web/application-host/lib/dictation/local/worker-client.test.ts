@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { DictationWorkerClient, WorkerBackedTranscriptionSession } from './worker-client.js';
 
 class WorkerFixture extends EventEmitter {
+  pid: number | undefined = 1234;
   connected = true;
   killed = false;
   sent: Array<{ requestId: string; type: string }> = [];
@@ -25,7 +26,7 @@ class WorkerFixture extends EventEmitter {
     this.emit('message', { type: 'response', requestId: request.requestId, ok: true, result });
   }
   exit() {
-    this.emit('close', 0, null);
+    this.emit('exit', 0, null);
   }
 }
 const model = { modelsDir: '/test', modelId: 'fixture' };
@@ -41,7 +42,7 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 
-it('keeps admitted STT and TTS on one generation, then joins idle close before reacquisition', async () => {
+it('keeps active STT and TTS on one worker, then reacquires after idle exit without a close event', async () => {
   vi.useFakeTimers();
   const { workers, client } = fixture();
   const stt = new WorkerBackedTranscriptionSession(client, model);
@@ -68,6 +69,7 @@ it('keeps admitted STT and TTS on one generation, then joins idle close before r
   await Promise.resolve();
   expect(workers).toHaveLength(2);
   const second = workers[1]!;
+  first.emit('close', 0, null);
   second.finish({ audio: Buffer.from('new') });
   await expect(acquired).resolves.toMatchObject({ audio: Buffer.from('new') });
   const shutdown = client.shutdown();
@@ -75,6 +77,23 @@ it('keeps admitted STT and TTS on one generation, then joins idle close before r
   await shutdown;
   await expect(client.synthesizeSpeech(speak)).rejects.toThrow('shut down');
   expect(workers).toHaveLength(2);
+});
+
+it('settles a failed spawn and allows the next request to start a new worker', async () => {
+  const { workers, client } = fixture();
+  const failed = client.synthesizeSpeech(speak);
+  const first = workers[0]!;
+  first.pid = undefined;
+  first.emit('error', new Error('Could not spawn worker'));
+  await expect(failed).rejects.toThrow('Could not spawn worker');
+  expect(client.activity().state).toBe('cold');
+  const next = client.synthesizeSpeech(speak);
+  const second = workers[1]!;
+  second.finish({ audio: Buffer.from('new') });
+  await expect(next).resolves.toMatchObject({ audio: Buffer.from('new') });
+  const shutdown = client.shutdown();
+  second.exit();
+  await shutdown;
 });
 
 it('closes a late native session and retains timed-out physical requests until their receipts settle', async () => {

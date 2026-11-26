@@ -617,36 +617,37 @@ export function createExtensionTools(
       watches.set(slot, () => revoked.removeEventListener('abort', onRevoke));
       if (revoked.aborted) onRevoke();
     };
+    const requireDeclaredSource = (id: string, declarations: readonly VarinExtensionServiceProvision[]) => {
+      // Metadata suffices if no declared provider in the slot can use this Source.
+      // A mixed slot still resolves its exact route and validates that descriptor.
+      if (declarations.length && declarations.every(descriptor => !scriptCandidate(descriptor) && !sourceAvailable(descriptor.tool?.requirements, run.source)))
+        requireToolSource(id, declarations[0]!.tool?.requirements, run.source);
+    };
+    const retainSelected = async (id: string, selected: HostServiceBinding, candidateOptions: ExtensionToolOwnerOptions) => {
+      try {
+        signal.throwIfAborted();
+        if (!scriptCandidate(selected.descriptor) || runtime.services.getSnapshot().providers.find(provider => provider.providerId === selected.providerId)?.extensionId !== VARIN_BUILTIN_SCRIPT_EXTENSION_ID)
+          requireToolSource(id, selected.descriptor.tool?.requirements, run.source);
+        if (candidateOptions.configurationIdentity?.enabled?.(selected.descriptor) === false)
+          throw new ExtensionToolConfigurationError(id, 'Tool is disabled by its configuration');
+        return await retainExtensionTool(candidateOptions, selected, undefined, run.workFocus);
+      } catch (error) { selected.release(); throw error; }
+    };
     const prepare = async (
       id: string,
       version: number,
       routingRevision: number,
       declarations: readonly VarinExtensionServiceProvision[],
     ) => {
-      // Metadata suffices if no declared provider in the slot can use this Source.
-      // A mixed slot still resolves its exact route and validates that descriptor.
-      if (declarations.length && declarations.every(descriptor => !scriptCandidate(descriptor) && !sourceAvailable(descriptor.tool?.requirements, run.source)))
-        requireToolSource(id, declarations[0]!.tool?.requirements, run.source);
+      requireDeclaredSource(id, declarations);
       const candidateOptions = preparedOptions;
       const releasePreparation = candidateOptions.configurationIdentity?.retainPreparation?.();
       try {
-      const selected = await runtime.prepareService(
-        {
-          serviceId: id,
-          version,
-          method: 'execute',
-          args: [],
-          routing: routingScope,
-        },
-        { expectedRoutingRevision: routingRevision, signal },
-      );
-      try {
-        signal.throwIfAborted();
-        if (!scriptCandidate(selected.descriptor) || runtime.services.getSnapshot().providers.find(provider => provider.providerId === selected.providerId)?.extensionId !== VARIN_BUILTIN_SCRIPT_EXTENSION_ID)
-          requireToolSource(id, selected.descriptor.tool?.requirements, run.source);
-        if (!enabled(selected.descriptor)) throw new ExtensionToolConfigurationError(id, 'Tool is disabled by its configuration');
-        return await retainExtensionTool(candidateOptions, selected, undefined, run.workFocus);
-      } catch (error) { selected.release(); throw error; }
+        const selected = await runtime.prepareService(
+          { serviceId: id, version, method: 'execute', args: [], routing: routingScope },
+          { expectedRoutingRevision: routingRevision, signal },
+        );
+        return await retainSelected(id, selected, candidateOptions);
       } finally { releasePreparation?.(); }
     };
     const snapshot = await runtime.state();
@@ -695,18 +696,39 @@ export function createExtensionTools(
           throw new HostBindingRestoreError('tool', 'implementation_unavailable', binding.providerKey, { cause });
         }
       }
-      if (!required.length && !run.fixed) await Promise.all([...declaredSlots.values()].map(async entry => {
-        try {
-          if (entry.declarations.every(descriptor => !enabled(descriptor))) return;
-          // Prepare the first complete directory before the first model request.
-          // Later changes still publish only at a closed request boundary.
-          initial.push(await prepare(entry.id, entry.version, snapshot!.routing.document.revision, entry.declarations));
-        } catch (error) {
-          states.set(`${entry.id}@${entry.version}`, { serviceId: entry.id, version: entry.version,
-            declarations: entry.declarations, status: 'unavailable',
+      if (!required.length && !run.fixed) {
+        const candidates: Array<{ serviceId: string; version: number; declarations: VarinExtensionServiceProvision[] }> = [];
+        const unavailable = (serviceId: string, version: number, declarations: VarinExtensionServiceProvision[], error: unknown) => {
+          states.set(`${serviceId}@${version}`, { serviceId, version, declarations, status: 'unavailable',
             error: error instanceof ExtensionToolConfigurationError || error instanceof ExtensionToolSourceError ? error.message : 'extension_tool_preparation_failed' });
+        };
+        for (const { id, version, declarations } of declaredSlots.values()) {
+          try {
+            if (declarations.every(descriptor => !enabled(descriptor))) continue;
+            requireDeclaredSource(id, declarations);
+            candidates.push({ serviceId: id, version, declarations });
+          } catch (error) { unavailable(id, version, declarations, error); }
         }
-      }));
+        if (candidates.length) {
+          let releasePreparation: (() => void) | undefined;
+          try {
+            releasePreparation = preparedOptions.configurationIdentity?.retainPreparation?.();
+            // The first model request gets a complete directory. Live updates
+            // can still prepare unrelated changes independently.
+            const selected = await runtime.prepareDirectoryServices(candidates, routingScope, snapshot, signal);
+            for (const [index, candidate] of candidates.entries()) {
+              const { serviceId, version, declarations } = candidate, result = selected[index]!;
+              try {
+                if (result.status === 'rejected') throw result.reason;
+                initial.push(await retainSelected(serviceId, result.value, preparedOptions));
+              } catch (error) { unavailable(serviceId, version, declarations, error); }
+            }
+          } catch (error) {
+            signal.throwIfAborted();
+            for (const { serviceId, version, declarations } of candidates) unavailable(serviceId, version, declarations, error);
+          } finally { releasePreparation?.(); }
+        }
+      }
       signal.throwIfAborted();
     } catch (error) {
       for (const retained of initial) retained.lease.release();

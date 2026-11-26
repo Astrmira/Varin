@@ -36,6 +36,12 @@ function fixture(warm: boolean, configuration: Pick<ExtensionToolOwnerOptions, '
       return { assertAvailable() {}, release() { pins--; }, revocationSignal: signal, async invoke() { throw new Error('Preparation must not execute'); } };
     } } as unknown as HostServiceBinding;
   };
+  const prepareService = async (request: { serviceId: string; routing: VarinExtensionServiceRoutingContext }) => {
+    routing.push(structuredClone(request.routing));
+    const provider = providers.find(candidate => candidate.providerId === request.serviceId)!;
+    if (!live.includes(provider)) live.push(provider);
+    return bind(request.serviceId);
+  };
   const runtime = {
     async state() { return { revision: 1, catalog: { authoritative: true, extensions: [{ desired: { enabled: true }, integrity: 'fixture-artifact',
       manifest: { id: extensionId, entrypoints: { host: {} }, provides: { services: descriptors } } }] },
@@ -49,11 +55,9 @@ function fixture(warm: boolean, configuration: Pick<ExtensionToolOwnerOptions, '
       return {routingRevision:0,services:[{providerKey:provider.providerKey,
         descriptor:descriptors.find(descriptor=>descriptor.id===request.serviceId),composition}]};
     },
-    async prepareService(request: { serviceId: string; routing: VarinExtensionServiceRoutingContext }) {
-      routing.push(structuredClone(request.routing));
-      const provider = providers.find(candidate => candidate.providerId === request.serviceId)!;
-      if (!live.includes(provider)) live.push(provider);
-      return bind(request.serviceId);
+    prepareService,
+    prepareDirectoryServices(slots: { serviceId: string }[], scope: VarinExtensionServiceRoutingContext) {
+      return Promise.allSettled(slots.map(slot => prepareService({ serviceId: slot.serviceId, routing: scope })));
     },
     subscribe: () => () => {},
   } as unknown as ApplicationExtensionRuntime;
