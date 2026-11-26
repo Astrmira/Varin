@@ -268,11 +268,13 @@ it('records a saved original Host lazily and preserves concrete, lazy and chat-o
       mode: 'live_root', liveRoot: { hostId: input.resourceOwner.kind === 'local' ? 'a' : input.resourceOwner.hostId,
         rootId: 'original-root', canonicalRoot: '/project' }, tools: ['file_read'] },
   }));
+  const liveTools = ['file_read', 'process_spawn', 'process_write', 'process_resize', 'recovery_points', 'file_restore', 'code_retrieval'];
+  f.runtime.sourceTools.mockResolvedValue(liveTools);
   f.adapter.bindDefaultDeviceSource(createConversationWorkLocation({ agentRuntime: runtime, readWorkspaceSettings,
     prepare, sourceDirectory: { resolve }, botWorkingDirectory: async () => '/bots/home', servicePath: '/service' }));
   await f.adapter.submit(input);
   expect(f.runtime.submit).toHaveBeenLastCalledWith(expect.objectContaining({ launch: expect.objectContaining({
-    inheritSource: true, source:null, lazyWorkLocation:{resourceOwner:b,path:'/project',workspaceId:'same'}, enabledTools: expect.arrayContaining(['file_read','process_spawn']),
+    inheritSource: true, source:null, lazyWorkLocation:{resourceOwner:b,path:'/project',workspaceId:'same'}, enabledTools: liveTools,
   }) }));
   expect(resolve).not.toHaveBeenCalled(); expect(prepare).not.toHaveBeenCalled();
   checkpoint = {resources:{source:null}}; preferred = '0'; latest={id:'prior'};

@@ -1926,16 +1926,15 @@ impl Catalog {
                 let receipt = prepared_completion.as_ref().ok_or_else(|| {
                     RuntimeError::Invalid("prepared tool completion missing".into())
                 })?;
-                if matches!(completion, ToolCompletion::JobAccepted { .. })
-                    && matches!(
-                        op.execution_owner,
-                        Some(crate::ExecutorOwner::External { .. })
-                    )
-                    && op.call_completion.is_none()
-                {
-                    return Err(RuntimeError::Conflict(
-                        "Host job requires original trusted domain acceptance".into(),
-                    ));
+                if let (ToolCompletion::JobAccepted { operation_id, .. }, Some(crate::ExecutorOwner::External { epoch, .. }))
+                    = (completion, &op.execution_owner) {
+                    let accepted_process = op.managed_process.as_ref().is_some_and(|process|
+                        !process.is_environment() && process.kernel_epoch.as_ref() == Some(epoch) && operation_id == &op.id);
+                    if op.call_completion.is_none() && !accepted_process {
+                        return Err(RuntimeError::Conflict(
+                            "Host job requires original trusted domain acceptance".into(),
+                        ));
+                    }
                 }
                 if let Some(previous) = &op.call_completion {
                     if previous != receipt {

@@ -21,21 +21,18 @@ fn denied(reason: impl ToString) -> ExecutionError {
     ExecutionError::new("work_location_unavailable", reason.to_string())
 }
 pub(crate) fn alternate_tool(name: &str) -> bool {
-    grant_capabilities(name).is_some()
+    matches!(name, "file_read" | "file_list" | "file_search" | "file_write" | "file_edit" | "process_spawn")
 }
 pub(crate) fn grant_capabilities(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "file_read" | "file_list" | "file_search" => Some(&["storage.read"]),
         "file_write" | "file_edit" => Some(&["storage.read", "storage.write"]),
-        "process_spawn" => Some(&["storage.read", "storage.write", "process"]),
+        "process_spawn" | "process_write" | "process_resize" => Some(&["storage.read", "storage.write", "process"]),
         _ => None,
     }
 }
-pub(crate) fn lazy_tool(name: &str) -> bool {
-    ToolKind::all().any(|kind| kind.name() == name)
-}
 pub(crate) fn binds_location(name: &str) -> bool {
-    lazy_tool(name) && !matches!(name, "process_inspect" | "process_read")
+    ToolKind::all().any(|kind| kind.name() == name) && !matches!(name, "process_inspect" | "process_read")
 }
 fn routed_schema(mut original: ToolSchema) -> ToolSchema {
     if original.name == "file_read" {
@@ -260,21 +257,6 @@ struct Transfer {
     move_source: bool,
 }
 
-/// A disclosed tool invoked through the model's tool_invoke gateway keeps the
-/// same model authority and its own durable nested Operation identity.
-pub(crate) fn model_origin(db: &Catalog, run_id: &str, origin: &ToolOrigin) -> bool {
-    match origin {
-        ToolOrigin::ModelStep { .. } => true,
-        ToolOrigin::NestedCall { parent_operation_id } => db.operation(parent_operation_id).is_ok_and(|parent| {
-            parent.run_id == run_id && !parent.cancel_requested
-                && parent.executor.as_deref() == Some(varin_runtime::tool_disclosure::INVOKE)
-                && varin_runtime::catalog::tool_content::ToolIntent::from_operation(&parent)
-                    .is_ok_and(|intent| matches!(intent.origin(), ToolOrigin::ModelStep { .. }))
-        }),
-        _ => false,
-    }
-}
-
 struct Owner {
     run_id: String,
     child: bool,
@@ -298,7 +280,7 @@ impl Owner {
         }
         let c = self.catalog.lock().map_err(denied)?;
         let run = c.run(&ctx.run_id).map_err(denied)?;
-        if run.state.terminal() || !model_origin(&c, &ctx.run_id, &ctx.origin)
+        if run.state.terminal() || !c.model_tool_origin(&ctx.run_id, &ctx.origin).map_err(denied)?
             || !c
                 .thread_has_host_authority(&run.thread_id)
                 .map_err(denied)?
@@ -775,6 +757,9 @@ impl ToolExecutor for Router {
             })
             .transpose()?
             .flatten();
+        if location.is_some() && !alternate_tool(&call.name) {
+            return Err(denied("This tool uses its original location"));
+        }
         let process = if crate::process_wait::interacts(&call.name) {
             let catalog = self.owner.catalog.lock().map_err(denied)?;
             let handle = call.arguments["processId"].as_str().ok_or_else(|| denied("processId required"))?;

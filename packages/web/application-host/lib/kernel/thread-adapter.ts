@@ -46,8 +46,6 @@ import { threadEventHub } from './event-hub.js';
 import { ownershipResolver } from './ownership-resolver.js';
 import type { DefaultWorkLocationSelection, LazyDefaultWorkLocation } from './default-work-location.js';
 
-
-
 function splitDefaultLocation(selection: DefaultWorkLocationSelection) {
   return selection && 'lazyWorkLocation' in selection
     ? { source: null, lazyWorkLocation: selection.lazyWorkLocation }

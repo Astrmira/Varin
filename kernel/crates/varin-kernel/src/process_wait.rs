@@ -666,7 +666,7 @@ impl LazyProcess {
         let db = self.catalog.lock().map_err(error)?;
         db.validate_resource_snapshot_owner(&c.run_id, db.epoch(), &c.origin).map_err(error)?;
         let run = db.run(&c.run_id).map_err(error)?;
-        if !crate::work_locations::model_origin(&db, &c.run_id, &c.origin)
+        if !db.model_tool_origin(&c.run_id, &c.origin).map_err(error)?
             || !db.thread_has_host_authority(&run.thread_id).map_err(error)?
             || !db.launch_metadata(&c.run_id).map_err(error)?.is_some_and(|l| l.selection.lazy_work_location.is_some())
         {

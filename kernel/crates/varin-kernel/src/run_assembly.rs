@@ -323,8 +323,7 @@ impl RunAssembly {
                 .transpose()?;
             let lazy_work_location = selected.lazy_work_location.map(crate::work_locations::lazy_location).transpose()?;
             if lazy_work_location.is_some() && (!host_authority || is_child || source.is_some()
-                || !kinds.contains(&crate::tools::ToolKind::FileRead)
-                || kinds.iter().any(|kind| !crate::work_locations::lazy_tool(kind.name()))) {
+                || !kinds.contains(&crate::tools::ToolKind::FileRead)) {
                 return Err(KernelError::Authorization("lazy work requires owner-controlled native root, routed tools and no concrete source".into()));
             }
             if !is_child && host_authority && kinds.contains(&crate::tools::ToolKind::FileRead)

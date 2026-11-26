@@ -161,8 +161,7 @@ export function createModelWorkLocations(options: {
     if (!source.tools.includes(tool)) throw denied();
     const process = tool === 'process_spawn';
     const alternateCapabilities = workLocationCapabilities(tool);
-    const capabilities = alternateCapabilities ?? ['storage.read', 'storage.write',
-      ...(['process_resize', 'process_write'].includes(tool) ? ['process'] : [])];
+    const capabilities = alternateCapabilities ?? ['storage.read', 'storage.write'];
     const base = { runId: run.id, threadId: run.thread_id, workspaceId: source.workspaceId,
       executionWorkspaceId: source.executionWorkspaceId, resourceOwner: source.resourceOwner, sourceMode: 'live_root' as const,
       enabledTools: [tool], rootId: source.liveRoot.rootId, liveRoot: source.liveRoot };

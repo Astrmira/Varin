@@ -226,8 +226,7 @@ pub(super) fn selected_launch(
         })
         .transpose()?;
     let lazy_work_location = selected.lazy_work_location.map(crate::work_locations::lazy_location).transpose()?;
-    if lazy_work_location.is_some() && (source.is_some() || !kinds.contains(&crate::tools::ToolKind::FileRead)
-        || kinds.iter().any(|kind| !crate::work_locations::lazy_tool(kind.name()))) {
+    if lazy_work_location.is_some() && (source.is_some() || !kinds.contains(&crate::tools::ToolKind::FileRead)) {
         return Err(KernelError::Protocol("lazy work requires only routed native tools and no concrete source".into()));
     }
     if source.is_none() && lazy_work_location.is_none() && kinds.iter().any(|kind| *kind!=crate::tools::ToolKind::FileRead) {

@@ -1011,7 +1011,7 @@ it('selected read-only child owns its ordinary notes and plan through real Host 
   } finally { release.release(); }
 });
 
-it('runs an on-demand code investigation against its original directory and delivers the child report', async () => {
+it.each(['local','managed'] as const)('runs an on-demand code investigation on the %s host and delivers the child report', async placement => {
   let childSteps = 0, parentSteps = 0;
   const f = await fixture(async ({body, response}) => {
     if (isParent(body)) {
@@ -1029,12 +1029,18 @@ it('runs an on-demand code investigation against its original directory and deli
     expect(JSON.stringify(result(body,'file_read'))).toContain('RESOURCE_MARKER');
     complete(response,[answer('Located RESOURCE_MARKER in source.txt','child-report')]);
   });
-  await fs.writeFile(path.join(f.workspace,'source.txt'),'RESOURCE_MARKER');
-  const h = await f.openHost();
+  const target = placement === 'managed' ? await remoteExternalReviewTarget(f.root) : undefined;
+  if (target) cleanup.push(() => target.close());
+  const sourcePath = target?.directory ?? f.workspace;
+  await fs.writeFile(path.join(sourcePath,'source.txt'),'RESOURCE_MARKER');
+  const h = await f.openHost(target ? {managedFactory:target.registry} : {});
   h.runtime.principalCanUseHostResources = async () => true;
-  const directory = createThreadSourceDirectory({documents:h.documents});
+  const remote = h.managedRegistry && createManagedSourceConsumers({coordinatorHostId:()=>h.runtime.coordinatorHostId,registry:h.managedRegistry,
+    withRunAuthority:(runId,source,consume,signal)=>h.runtime.withManagedSourceAuthority(runId,source,consume,signal)});
+  const directory = createThreadSourceDirectory({documents:h.documents,...(remote ? {remote:remote.threads} : {})});
+  const resourceOwner = h.managedRegistry ? (await h.managedRegistry.sourceTargets()).targets[0]!.resourceOwner : {kind:'local' as const};
   h.kernel.setModelWorkLocationOwner(createModelWorkLocations({runtime:h.runtime,kernel:h.kernel,directory,prepare:h.adapter.prepareSource.bind(h.adapter)}).query);
-  h.adapter.bindDefaultDeviceSource(async () => ({lazyWorkLocation:{resourceOwner:{kind:'local'},path:f.workspace}}));
+  h.adapter.bindDefaultDeviceSource(async () => ({lazyWorkLocation:{resourceOwner,path:sourcePath}}));
   const identity = await h.api.create('dormant-retrieval');
   const receipt = await h.api.submit({...identity,key:'investigate',expectedHead:null,text:'Run the focused investigation.',model});
   await expect.poll(async () => (await h.runtime.run(receipt.run_id)).state,{timeout:20000}).toBe('completed').catch(async error => {
@@ -1043,7 +1049,7 @@ it('runs an on-demand code investigation against its original directory and deli
   });
   expect(childSteps).toBe(2);
   expect((await h.runtime.launch(receipt.run_id))?.selection.source).toBe(null);
-  expect((await h.runtime.children())[0]?.launch.source?.live_root?.canonicalRoot).toBe(await fs.realpath(f.workspace));
+  expect((await h.runtime.children())[0]?.launch.source).toMatchObject({resource_owner:resourceOwner,live_root:{canonicalRoot:await fs.realpath(sourcePath)}});
 });
 
 it.each(['quick','formal','isolated'] as const)('%s retrieval uses native search, structural reading and a fixed-source terminal without IDE services',async(mode)=>{
