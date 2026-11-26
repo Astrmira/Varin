@@ -19,6 +19,11 @@ import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import { previewRuntime } from './runtime';
 import { PreviewBotPanel } from './bot-panel';
 import { ConversationHeading } from './conversation-heading';
+import { usePreviewLattice, type ShellWave } from './usePreviewLattice';
+import { currentMotionLevel } from '@/hooks/usePrefersReducedMotion';
+import { activationPoint, trackRecentPointer, type RecentPointer } from '@/lib/motion/pointer';
+import { defaultVarinWorkbenchProfileDocument, VARIN_WORKBENCH_BOT_PROFILE_ID, VARIN_WORKBENCH_DEFAULT_PROFILE_ID } from '@varin/extension-contract';
+import { resolveTransitionDirection } from '@/lib/workbench/profile-transition';
 import './preview.css';
 import './conversation-motion.css';
 
@@ -26,12 +31,15 @@ const themeCss = new CSSVariableGenerator();
 const style = document.createElement('style');
 style.textContent = ':root{' + themeCss.generate(light as Theme) + '}:root.dark{' + themeCss.generate(dark as Theme) + '}';
 document.head.append(style);
+trackRecentPointer();
 
 type Page = 'list' | 'chat' | 'details' | 'file' | 'settings';
 type Route = { page: Page; id: string; mode: Mode; tab?: string };
 type Entry = { mobilePreview: true; route: Route; depth: number; chatDepth: number };
 type Notes = Record<string, Draft>;
 const initial: Route = { page: 'chat', id: 'outline', mode: 'bot' };
+const profileOrder = defaultVarinWorkbenchProfileDocument().profiles.map(profile => profile.id);
+const profileId = { bot: VARIN_WORKBENCH_BOT_PROFILE_ID, work: VARIN_WORKBENCH_DEFAULT_PROFILE_ID };
 function load<T,>(key: string, fallback: T): T {
   try { return JSON.parse(sessionStorage.getItem('design.' + key) ?? 'null') ?? fallback; } catch { return fallback; }
 }
@@ -49,21 +57,38 @@ if (!history.state?.mobilePreview) {
 function usePreviewRoute() {
   const [route, setRoute] = React.useState<Route>(history.state.route);
   const latest = React.useRef<Entry>(history.state);
+  const displayed = React.useRef<Entry>(history.state);
   const animation = React.useRef<ViewTransition | null>(null);
-  const show = React.useCallback((next: Entry) => {
-    const prior = latest.current;
+  const returnPoint = React.useRef<RecentPointer | null>(null);
+  const { play, stop, layer } = usePreviewLattice();
+  const show = React.useCallback((next: Entry, point: RecentPointer | null = null) => {
+    const prior = displayed.current;
     latest.current = next;
+    stop();
     animation.current?.skipTransition();
-    const changed = prior.route.page !== next.route.page || prior.route.id !== next.route.id;
-    if (!changed || document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const commit = () => {
+      if (latest.current !== next) return;
+      displayed.current = next;
       setRoute(next.route);
+    };
+    const switchingMode = prior.route.mode !== next.route.mode;
+    const changed = switchingMode || prior.route.page !== next.route.page || prior.route.id !== next.route.id;
+    const level = currentMotionLevel();
+    if (!changed || document.hidden || level === 'off') { commit(); return; }
+    const wave: ShellWave | null = switchingMode ? { kind: 'mode',
+      inward: resolveTransitionDirection(profileOrder, profileId[prior.route.mode], profileId[next.route.mode]) === 'backward' } :
+      prior.route.page !== next.route.page && (prior.route.page === 'settings' || next.route.page === 'settings') ?
+        { kind: 'settings', opening: next.route.page === 'settings' } : null;
+    if (wave) {
+      void play(wave, level, point, commit);
       return;
     }
+    if (level === 'reduced') { commit(); return; }
     const pages = [prior.route.page, next.route.page];
     const panel = prior.route.id === next.route.id && pages.includes('chat') && pages.includes('details');
     const direction = next.depth < prior.depth ? 'back' : 'forward';
     if (!document.startViewTransition) {
-      flushSync(() => setRoute(next.route));
+      flushSync(commit);
       const screen = document.querySelector('.device .content, .device:not(.split) .list-pane:not([hidden])');
       const offset = direction === 'back' ? -12 : 12;
       screen?.animate([{ opacity: .7, transform: panel ? 'translateY(' + offset + 'px)' : 'translateX(' + offset + 'px)' },
@@ -72,9 +97,7 @@ function usePreviewRoute() {
     }
     const root = document.documentElement;
     root.dataset.previewMotion = (panel ? 'panel-' : '') + direction;
-    const active = document.startViewTransition(() => {
-      if (latest.current === next) flushSync(() => setRoute(next.route));
-    });
+    const active = document.startViewTransition(() => flushSync(commit));
     animation.current = active;
     void active.ready.catch(() => {}); // Rapid navigation may skip the previous snapshot.
     void active.finished.finally(() => {
@@ -82,17 +105,21 @@ function usePreviewRoute() {
       animation.current = null;
       delete root.dataset.previewMotion;
     });
-  }, []);
+  }, [play, stop]);
   React.useEffect(() => {
-    const pop = () => { if (history.state?.mobilePreview) show(history.state); };
+    const pop = () => {
+      const point = returnPoint.current;
+      returnPoint.current = null;
+      if (history.state?.mobilePreview) show(history.state, point);
+    };
     window.addEventListener('popstate', pop);
     return () => { window.removeEventListener('popstate', pop); animation.current?.skipTransition(); };
   }, [show]);
-  return { route, show };
+  return { route, show, layer, returnPoint };
 }
 
 function App() {
-  const { route, show } = usePreviewRoute();
+  const { route, show, layer, returnPoint } = usePreviewRoute();
   const [rooms, setRooms] = React.useState(() => load('rooms', initialRooms));
   const [bots, setBots] = React.useState(() => load('bots', initialBots));
   const [notes, setNotes] = React.useState<Notes>(() => load('drafts', {}));
@@ -132,12 +159,12 @@ function App() {
       focusEditor();
     }
   }, [route, room.id]);
-  function nav(next: Route, replace = false) {
+  function nav(next: Route, replace = false, point: RecentPointer | null = null) {
     const depth = history.state?.depth ?? 0;
     const target = entry(next, replace ? depth : depth + 1);
     if (replace) history.replaceState(target, '');
     else history.pushState(target, '');
-    show(target);
+    show(target, point);
   }
   function back() {
     if (history.state?.depth) history.back();
@@ -199,7 +226,7 @@ function App() {
     history.go(history.state.chatDepth - history.state.depth);
   }
   const inbox = <Inbox mode={route.mode} selected={room.id} rooms={rooms} changeMode={mode} open={open} create={p => newChat(p)} createBot={createBot} createGroup={createGroup}
-    settings={() => nav({ ...route, page: 'settings' })} />;
+    settings={event => { if (history.state.route.page !== 'settings') nav({ ...route, page: 'settings' }, false, activationPoint(event)); }} />;
   return <Roster.Provider value={bots}><div className="studio">
     <nav className="preview-tools" aria-label="设计稿预览"><div className="switcher"><button aria-pressed={width === 'phone'} onClick={() => setWidth('phone')}><Glyph name="smartphone" />手机</button>
       <button aria-pressed={width === 'tablet'} onClick={() => setWidth('tablet')}><Glyph name="layout-column" />平板</button></div>
@@ -209,7 +236,8 @@ function App() {
       {effectivePage !== 'list' && <section key={effectivePage + room.id} className="screen content">
         {effectivePage === 'chat' ? <ConversationHeading room={room} back={split ? undefined : back}
           details={() => nav({ ...route, page: 'details' })} services={room.mode === 'work' && <Services />} /> : <header className="page-bar">
-          <IconButton name="arrow-left" label="返回" onClick={back} />
+          <IconButton name="arrow-left" label="返回" settingsOrigin={effectivePage === 'settings' ? 'return' : undefined}
+            onClick={event => { if (effectivePage === 'settings') returnPoint.current = activationPoint(event); back(); }} />
           <h1>{effectivePage === 'file' ? fileName : effectivePage === 'settings' ? '设置' : group ? '群聊详情' : room.mode === 'bot' ? 'Bot 面板' : '会话详情'}</h1>
         </header>}
         {effectivePage === 'chat' ? <>
@@ -225,6 +253,7 @@ function App() {
             <RoomDetails room={room} open={open} openFile={file} mention={mentionMember} files={diffOpen} setFiles={setDiffOpen}
               selectedTab={route.tab} selectTab={tab => nav({ ...route, tab }, true)} />}</div>}
       </section>}
+      {layer}
     </main>
   </div></Roster.Provider>;
 }

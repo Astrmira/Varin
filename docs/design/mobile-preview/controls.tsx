@@ -26,7 +26,7 @@ export function ModeMenu({ mode, change }: { mode: Mode; change(value: Mode): vo
   const label = (value: Mode) => value === 'bot' ? 'Varin' : '工作台';
   const icon = (value: Mode) => value === 'bot' ? <VarinLogo decorative width={16} height={16} /> : <Glyph name="workbench-agent" />;
   return <DropdownMenu><DropdownMenuTrigger asChild>
-    <Button variant="ghost" size="sm" className="h-7 gap-1.5 rounded-md bg-interactive-hover px-2 typography-meta font-medium" aria-label={'切换模式：' + label(mode)}>
+    <Button variant="ghost" size="sm" data-varin-workbench-switcher="" className="h-7 gap-1.5 rounded-md bg-interactive-hover px-2 typography-meta font-medium" aria-label={'切换模式：' + label(mode)}>
       {icon(mode)}{label(mode)}<Icon name="arrow-down-s" className="size-3.5 opacity-60" />
     </Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="min-w-44">
       <DropdownMenuRadioGroup value={mode} onValueChange={value => change(value as Mode)}>
@@ -34,8 +34,10 @@ export function ModeMenu({ mode, change }: { mode: Mode; change(value: Mode): vo
       </DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>;
 }
 
-export function IconButton({ name, label, onClick }: { name: IconProps['name']; label: string; onClick(): void }) {
-  return <Button type="button" variant="ghost" size="icon" aria-label={label} title={label} onClick={onClick}><Glyph name={name} /></Button>;
+export function IconButton({ name, label, onClick, settingsOrigin }: {
+  name: IconProps['name']; label: string; onClick: React.MouseEventHandler<HTMLButtonElement>; settingsOrigin?: 'open' | 'return';
+}) {
+  return <Button type="button" variant="ghost" size="icon" data-varin-settings-origin={settingsOrigin} aria-label={label} title={label} onClick={onClick}><Glyph name={name} /></Button>;
 }
 
 export function Flyout({ label, trigger, children, align = 'end', side = 'bottom' }: {

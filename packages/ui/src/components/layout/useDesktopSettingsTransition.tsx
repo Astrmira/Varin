@@ -1,13 +1,11 @@
 import React from 'react';
 import { LatticeStage } from '@/components/ui/workbench-lattice-stage';
-import { latticeOrigin, type LatticePoint } from '@/components/ui/workbench-lattice';
+import { latticeOrigin, SETTINGS_WAVE_SCALE, type LatticePoint } from '@/components/ui/workbench-lattice';
 import { useMotionLevel } from '@/hooks/usePrefersReducedMotion';
 import { importWithChunkRecovery, lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import { WorkbenchReplacement, WORKBENCH_REPLACEMENT_TARGETS } from '@/lib/extensions/workbench-registry';
 import { useUIStore } from '@/stores/useUIStore';
 
-// Give each wave time to travel from the button across the content area.
-const SETTINGS_WAVE_SCALE = 0.7;
 let SettingsWindow: typeof import('@/components/views/SettingsWindow').SettingsWindow | undefined;
 const loadWindow = async () => {
   const module = await import('@/components/views/SettingsWindow');

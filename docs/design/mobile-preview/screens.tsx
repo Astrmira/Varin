@@ -9,7 +9,7 @@ import { ConversationPortraits } from './conversation-heading';
 import type { BotAppearance } from '@varin/application-client';
 
 export function Inbox({ mode, changeMode, rooms, selected, open, create, settings, createBot, createGroup }: {
-  mode: Mode; changeMode(m: Mode): void; rooms: Room[]; selected: string; open(id: string): void; create(name?: Person): void; settings(): void;
+  mode: Mode; changeMode(m: Mode): void; rooms: Room[]; selected: string; open(id: string): void; create(name?: Person): void; settings: React.MouseEventHandler<HTMLButtonElement>;
   createBot(name: string, appearance?: BotAppearance): void; createGroup(name: string, ids: string[]): void;
 }) {
   const { bots, display } = useRoster();
@@ -20,7 +20,7 @@ export function Inbox({ mode, changeMode, rooms, selected, open, create, setting
   const visible = rooms.filter(r => r.mode === mode && (mode === 'work' || filter === '全部' || r.people.some(p => p === filter))
     && (r.title + r.people.map(display).join('') + r.messages.map(m => m.text).join('')).toLowerCase().includes(query.trim().toLowerCase()));
   return <section className="screen inbox">
-    <header className="page-bar"><ModeMenu mode={mode} change={m => { setQuery(''); changeMode(m); }} /><div className="bar-actions"><IconButton name="settings-3" label="设置" onClick={settings} />
+    <header className="page-bar"><ModeMenu mode={mode} change={m => { setQuery(''); changeMode(m); }} /><div className="bar-actions"><IconButton name="settings-3" label="设置" settingsOrigin="open" onClick={settings} />
       {mode === 'bot' ? <><IconButton name="folder-add" label="新建分组" onClick={() => setAction('folder')} />
         <Flyout label="新建" trigger={<Glyph name="chat-new" />}>{close => ([
           ['chat', 'chat-new', '新建会话'], ['group', 'group', '新建群聊'],
