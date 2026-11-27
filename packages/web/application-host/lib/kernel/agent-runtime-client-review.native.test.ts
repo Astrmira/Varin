@@ -109,6 +109,20 @@ it('recovers the original inbox admission from Catalog after losing the coordina
   } finally { await reopened.close(); }
 }, 30_000);
 
+it('archives a durably accepted receiver page under its original checkpoint after the arrangement ends', async () => {
+  const { runtimeClient } = await fixture();
+  const identity = { principalId: 'owner', source: { extensionId: 'fixture.mail', sourceId: 'messages', connectionId: 'mailbox', accountId: 'account' } };
+  const page = { identity, expectedCursor: null, nextCursor: 'next', status: null, events: [{
+    eventId: 'event', objectId: null, senderId: null, revision: null, occurredAtMs: Date.now(), attributes: {},
+    content: { data: null, parts: [] }, files: [], echoOf: null,
+  }] };
+  await expect(runtimeClient.receiveDurablePluginEvents(page)).rejects.toThrow(/no active arrangement/i);
+  await runtimeClient.updateEventSourceStatus({ identity, status: { code: 'connecting', message: null, coverage: null, lastConnectedAtMs: null } });
+  await expect(runtimeClient.receivePluginEvents(page)).rejects.toThrow(/no active arrangement/i);
+  await expect(runtimeClient.receiveDurablePluginEvents(page)).resolves.toMatchObject({ accepted: 1, checkpoint: { identity, cursor: 'next' } });
+  await expect(runtimeClient.receiveDurablePluginEvents(page)).resolves.toMatchObject({ accepted: 0, duplicates: 1, checkpoint: { cursor: 'next' } });
+}, 30_000);
+
 it('framed IPC rejects malformed parameters and stale or grant-scoped authority', async () => {
   const f = await fixture();
   for (const request of [
