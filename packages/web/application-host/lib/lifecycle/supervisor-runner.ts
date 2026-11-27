@@ -2,10 +2,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { SupervisorJournal } from './supervisor-journal.js';
-
-export const SUPERVISOR_LAUNCH = 'VARIN_LOCAL_SUPERVISOR_LAUNCH_ID';
-export const validSupervisorLaunch = (value: string | undefined): value is string =>
-  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value);
+import { openSupervisorGateway } from './supervisor-gateway.js';
+import { PARK_EXIT_CODE, SUPERVISOR_LAUNCH, SUPERVISOR_PARKING } from './host-parking.js';
 
 interface Exit { code: number | null; signal: NodeJS.Signals | null }
 export interface SupervisorRunnerOptions {
@@ -18,6 +16,8 @@ export interface SupervisorRunnerOptions {
   pollMs?: number;
   startupMs?: number;
   stopMs?: number;
+  parking?: { listenPort: number; idleMs: number };
+  listening?(port: number): void;
 }
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -30,7 +30,8 @@ const wait = (ms: number, signal: AbortSignal) => delay(ms, undefined, { signal 
 function launch(options: SupervisorRunnerOptions) {
   const launchId = randomUUID();
   const child = spawn(process.execPath, [options.entry], {
-    env: { ...options.env, VARIN_HOST: '127.0.0.1', VARIN_LOCAL_SUPERVISOR: '1', [SUPERVISOR_LAUNCH]: launchId },
+    env: { ...options.env, VARIN_HOST: '127.0.0.1', VARIN_LOCAL_SUPERVISOR: '1', [SUPERVISOR_LAUNCH]: launchId,
+      [SUPERVISOR_PARKING]: options.parking ? '1' : '0', ...(options.parking && { VARIN_PORT: '0' }) },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   let exit: Exit | undefined;
@@ -38,6 +39,8 @@ function launch(options: SupervisorRunnerOptions) {
   let ready = false;
   let park: number | undefined;
   let invalidPark = false;
+  let parkRequestedAt: number | undefined;
+  let canPark = false;
   const ended = new AbortController();
   const exited = new Promise<Exit>(resolve => {
     // close follows process exit and IPC closure; do not start another Host earlier.
@@ -51,8 +54,8 @@ function launch(options: SupervisorRunnerOptions) {
   child.on('message', (message: unknown) => {
     if (!object(message)) return;
     if (message.type === 'varin:ready' && livePort(message.port) && port === undefined) port = message.port;
-    // Reserved for a future lossless owner close. A clean OS exit, external
-    // file, unauthenticated network response, or wrong process cannot substitute.
+    if (message.type === 'varin:supervisor-can-park' && message.launchId === launchId) canPark = true;
+    if (message.type === 'varin:supervisor-park-declined' && message.launchId === launchId && park === undefined) parkRequestedAt = undefined;
     if (message.type === 'varin:supervisor-parked') {
       if (!ready || message.launchId !== launchId || message.owner !== options.journal.owner ||
           message.pid !== child.pid || !revision(message.wakeRevision) || park !== undefined) {
@@ -79,7 +82,16 @@ function launch(options: SupervisorRunnerOptions) {
     signal: cycleSignal,
     exited,
     exit: () => exit,
+    launchId,
     parkRevision: () => invalidPark ? undefined : park,
+    canPark: () => canPark,
+    port: () => ready && parkRequestedAt === undefined ? port : undefined,
+    parkTimedOut: () => parkRequestedAt !== undefined && performance.now() - parkRequestedAt >= (options.stopMs ?? 60_000),
+    requestPark() {
+      if (parkRequestedAt !== undefined || !child.connected) return;
+      parkRequestedAt = performance.now();
+      child.send({ type: 'varin:try-park' }, error => { if (error) parkRequestedAt = undefined; });
+    },
     responsive,
     async awaitReady(): Promise<boolean> {
       // Monotonic time for the process-startup budget; wake deadlines use UTC.
@@ -105,6 +117,14 @@ function launch(options: SupervisorRunnerOptions) {
 }
 
 export async function runLocalSupervisor(options: SupervisorRunnerOptions): Promise<{ stoppedCleanly: boolean }> {
+  const gateway = options.parking ? await openSupervisorGateway(options.parking.listenPort) : undefined;
+  try {
+    if (gateway) options.listening?.(gateway.port);
+    return await supervise(options, gateway);
+  } finally { await gateway?.close(); }
+}
+
+async function supervise(options: SupervisorRunnerOptions, gateway?: Awaited<ReturnType<typeof openSupervisorGateway>>): Promise<{ stoppedCleanly: boolean }> {
   const interval = options.pollMs ?? 1000;
   let start = true; // A fresh supervisor conservatively reconciles the original Host.
   let failures = 0;
@@ -112,9 +132,11 @@ export async function runLocalSupervisor(options: SupervisorRunnerOptions): Prom
     if (!start) {
       const wanted = await options.journal.currentWake();
       // Crash replay stays with the child Catalog; no journal body leaves this process.
-      if (!await options.journal.hasPendingEvents() && (wanted?.nextWakeAtMs == null || wanted.nextWakeAtMs > Date.now())) {
+      if (!gateway?.hasDemand() && !await options.journal.hasPendingEvents() && (wanted?.nextWakeAtMs == null || wanted.nextWakeAtMs > Date.now())) {
         const untilWake = wanted?.nextWakeAtMs == null ? interval : Math.max(1, wanted.nextWakeAtMs - Date.now());
-        await wait(Math.min(interval, untilWake), options.signal);
+        const delayMs = Math.min(interval, untilWake);
+        if (gateway) await gateway.waitForDemand(delayMs, options.signal);
+        else await wait(delayMs, options.signal);
         continue;
       }
     }
@@ -126,10 +148,20 @@ export async function runLocalSupervisor(options: SupervisorRunnerOptions): Prom
       options.status?.('started', child.pid);
       if (await child.awaitReady()) {
         readyAt = performance.now();
+        let lastParkAttempt = readyAt;
         options.status?.('ready', child.pid);
         let receiptRevision: number | undefined;
         const noReceipt = new Error('Original Host is not ready');
         while (!child.signal.aborted) {
+          if (gateway && options.parking) {
+            if (child.parkTimedOut()) break;
+            gateway.setTarget(child.port());
+            if (child.port() && child.canPark() && gateway.quietFor() >= options.parking.idleMs && performance.now() - lastParkAttempt >= options.parking.idleMs) {
+              lastParkAttempt = performance.now();
+              gateway.setTarget(undefined);
+              child.requestPark();
+            }
+          }
           const publication = await options.journal.currentWake();
           if (publication && publication.nextWakeAtMs != null && publication.nextWakeAtMs <= Date.now() &&
               receiptRevision !== publication.revision) {
@@ -142,15 +174,17 @@ export async function runLocalSupervisor(options: SupervisorRunnerOptions): Prom
         }
       }
     } catch (error) { fault = error; }
+    gateway?.setTarget(undefined);
     const naturalExit = child.exit();
     const result = naturalExit ?? await child.stop();
+    const claimed = child.parkRevision();
+    const parked = naturalExit?.code === PARK_EXIT_CODE && result.signal === null && fault === undefined && child.pid !== undefined &&
+      claimed !== undefined && await options.journal.consumePark({ launchId: child.launchId, pid: child.pid, revision: claimed }).catch(() => false);
     if (options.signal.aborted) {
       options.status?.('stopped', child.pid);
-      return { stoppedCleanly: result.code === 0 && result.signal === null };
+      return { stoppedCleanly: parked || result.code === 0 && result.signal === null };
     }
-    const claimed = child.parkRevision();
-    if (naturalExit && result.code === 0 && result.signal === null && fault === undefined &&
-        claimed !== undefined && (await options.journal.currentWake())?.revision === claimed) {
+    if (parked) {
       options.status?.('parked', child.pid);
       start = false;
       failures = 0;

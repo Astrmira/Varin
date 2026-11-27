@@ -87,6 +87,15 @@ pub(crate) fn drive(
         let Some(runtime) = owner.upgrade() else {
             break;
         };
+        let _pass = loop {
+            match runtime.continuation_pass() {
+                Ok(Some(guard)) => break guard,
+                // Release explicitly notifies the original waiter. Run the
+                // pass with that notification, even without a timer deadline.
+                Ok(None) => if !matches!(wakes.wait(None), Ok(true)) { return; },
+                Err(_) => return,
+            }
+        };
         // Resolve short Wait facts before any content/Goal/followup work. A committed trigger
         // is naturally excluded from the next deadline query, including when its consumer
         // subsequently fails. An unrelated owner failure cannot disarm other future deadlines.

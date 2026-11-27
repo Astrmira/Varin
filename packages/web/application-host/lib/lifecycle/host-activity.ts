@@ -15,6 +15,8 @@ interface ActivityOwners {
   draining(): boolean;
   observationStreams(): number;
   threadWrites?(): number;
+  httpRequests?(): number;
+  parkingSupported?: boolean;
   externalIngressActive(): boolean;
   admission(signal: AbortSignal): Promise<Pick<AdmissionSummary, 'localComputeActive' | 'queued'> & { nextWakeAtMs?: number | null }>;
   calendar(signal: AbortSignal): Promise<CalendarActivity>;
@@ -56,6 +58,8 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
   const execution = sameEpoch && executionResult?.status === 'fulfilled' ? executionResult.value : undefined;
   const observations = owners.observationStreams();
   const threadWrites = owners.threadWrites?.() ?? null;
+  const httpRequests = owners.httpRequests?.() ?? 0;
+  const parkingSupported = owners.parkingSupported === true;
   const ingress = owners.externalIngressActive();
   const draining = owners.draining();
   const browser = owners.browser?.() ?? null;
@@ -77,15 +81,16 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
     ...(!admission ? ['catalog-admission-unavailable'] : []),
     ...(admission?.active ? ['catalog-local-compute'] : []),
     ...(admission?.queued ? ['catalog-queued-work'] : []),
-    ...(admission?.nextWakeAtMs != null ? ['catalog-wake-not-transferred'] : []),
+    ...(!parkingSupported && admission?.nextWakeAtMs != null ? ['catalog-wake-not-transferred'] : []),
     ...(!calendar ? ['calendar-unavailable'] : []),
     ...(calendar?.activeOccurrences ? ['calendar-active-occurrence'] : []),
     ...(calendar?.pendingDelivery ? ['calendar-pending-delivery'] : []),
     ...(calendar?.pendingPreparation || calendar?.unresolvedSchedules ? ['calendar-reconciliation'] : []),
     ...(calendar?.watchingAssets ? ['calendar-asset-watch'] : []),
-    ...(admission?.nextWakeAtMs === undefined && calendar?.nextWakeAtMs != null ? ['calendar-wake-not-transferred'] : []),
+    ...(!parkingSupported && admission?.nextWakeAtMs === undefined && calendar?.nextWakeAtMs != null ? ['calendar-wake-not-transferred'] : []),
     ...(observations ? ['http-observation-streams'] : []),
     ...(threadWrites ? ['http-thread-writes'] : []),
+    ...(httpRequests ? ['http-requests'] : []),
     ...(ingress ? ['external-ingress-active'] : []),
     ...(browser && (browser.preparing || browser.activePageWrites || browser.waitingPageWrites || browser.outstandingStopConfirmations)
       ? ['browser-owner-activity'] : []),
@@ -108,8 +113,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
     ...(relay && (relay.running || relay.reconciling) ? ['relay-owner-activity'] : []),
     ...(knowledgeRequests ? ['knowledge-owner-activity'] : []),
     ...(installingComponent ? ['local-component-installing'] : []),
-    'owner-coverage-incomplete',
-    'durable-supervisor-handoff-unavailable',
+    ...(!parkingSupported ? ['owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'] : []),
   ];
   return {
     version: 1,
@@ -146,7 +150,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
       relay: relay && {running:relay.running,reconciling:relay.reconciling},
       knowledgeRequests, installingComponent,
     },
-    parking: { supported: false, eligible: false },
+    parking: { supported: parkingSupported, eligible: parkingSupported && retentionReasons.length === 0 },
   } as const;
 };
 

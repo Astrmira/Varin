@@ -4,6 +4,7 @@ import { link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt } from '@varin/protocol';
+import { validSupervisorLaunch } from './host-parking.js';
 
 const maxRecordBytes = 4 * 1024 * 1024;
 const version = 1;
@@ -130,6 +131,23 @@ export class SupervisorJournal {
     this.faults.afterWakeCommit?.();
     if ((await this.currentWake())?.revision !== input.revision) throw new Error('Stale wake registration');
     return { revision: input.revision, digest };
+  }
+
+  async recordPark(input: { launchId: string; pid: number; revision: number }): Promise<void> {
+    if (!validSupervisorLaunch(input.launchId) || !integer(input.pid) || input.pid === 0 ||
+      (await this.currentWake())?.revision !== input.revision) throw new Error('Invalid Host park receipt');
+    await this.put('park-' + input.launchId + '.json', { version, owner: this.owner, ...input });
+  }
+
+  async consumePark(input: { launchId: string; pid: number; revision: number }): Promise<boolean> {
+    if (!validSupervisorLaunch(input.launchId)) return false;
+    const name = 'park-' + input.launchId + '.json';
+    const marker = (await this.read(name))?.value;
+    if (!isDeepStrictEqual(marker, { version, owner: this.owner, ...input }) ||
+      (await this.currentWake())?.revision !== input.revision) return false;
+    await unlink(path.join(this.directory, name));
+    await this.syncDirectory();
+    return true;
   }
 
   /** Reconcile (not fire business schedules): the caller owns a real process supervisor. */

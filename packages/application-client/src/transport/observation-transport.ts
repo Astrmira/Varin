@@ -1,5 +1,5 @@
-import { getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from './runtime-auth.js';
-import { getRuntimeEndpointGeneration } from './runtime-switch.js';
+import { configureBackgroundUrlAuthRefresh, getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from './runtime-auth.js';
+import { getRuntimeEndpointGeneration, subscribeRuntimeEndpointChanged } from './runtime-switch.js';
 import { getRuntimeUrlResolver } from './runtime-url.js';
 import { decodeObservationData, isAllowedObservationRequest, OBSERVATION_WINDOW_BYTES, OBSERVATION_WEBSOCKET_PATH, type ObservationClientMessage, type ObservationServerMessage } from './observation-protocol.js';
 
@@ -36,8 +36,8 @@ const resolveTarget = (input: RequestInfo | URL, method: string, headers: Header
       async websocketUrl() {
         // The handshake cannot carry a bearer header. Mint with this captured
         // Host's normal auth path, and fence the async result before dispatch.
-        await refreshRuntimeUrlAuthToken(`${activeApi.origin}${mount}`);
-        if (needsRealtimeProxy && localOrigin) await refreshLocalRuntimeUrlAuthToken(localOrigin);
+        await refreshRuntimeUrlAuthToken(`${activeApi.origin}${mount}`, { observation: true });
+        if (needsRealtimeProxy && localOrigin) await refreshLocalRuntimeUrlAuthToken(localOrigin, { observation: true });
         if (generation !== getRuntimeEndpointGeneration() || resolver !== getRuntimeUrlResolver()) {
           throw new Error('Application Host changed before observation dispatch');
         }
@@ -61,7 +61,7 @@ const resolveTarget = (input: RequestInfo | URL, method: string, headers: Header
       const endpoint = new URL(OBSERVATION_WEBSOCKET_PATH, target.origin);
       const token = target.searchParams.get('varin_url_token')
         || headers.get('X-Varin-Application-Token')
-        || (target.origin !== window.location.origin ? await refreshLocalRuntimeUrlAuthToken(target.origin) : '');
+        || (target.origin !== window.location.origin ? await refreshLocalRuntimeUrlAuthToken(target.origin, { observation: true }) : '');
       if (token) endpoint.searchParams.set('varin_url_token', token);
       return websocketUrl(endpoint);
     },
@@ -82,6 +82,79 @@ interface Observation {
 
 const connections = new Map<string, ObservationConnection>();
 const abortError = (): DOMException => new DOMException('The observation was aborted', 'AbortError');
+
+const activeConnectionKey = () => {
+  const base = new URL(getRuntimeUrlResolver().api('/api'), window.location.href);
+  return 'host:' + base.origin + base.pathname.slice(0, -'/api'.length);
+};
+let parkAware: { generation: number; key: string; page: Document; signal: AbortSignal; resume?: Promise<void>; dispose(): void } | undefined;
+
+export function enableParkingObservations(generation: number, wake: () => Promise<unknown>) {
+  if (typeof document === 'undefined' || generation !== getRuntimeEndpointGeneration() || parkAware?.generation === generation) return;
+  parkAware?.dispose();
+  const page = document;
+  const ended = new AbortController();
+  let resumeAuthRefresh = true;
+  const unsubscribe = subscribeRuntimeEndpointChanged(() => state.dispose());
+  const manageRefresh = () => configureBackgroundUrlAuthRefresh(() => !ended.signal.aborted && !resumeAuthRefresh);
+  const state: NonNullable<typeof parkAware> = {
+    generation, key: activeConnectionKey(), page, signal: ended.signal,
+    dispose() {
+      page.removeEventListener('visibilitychange', reconcile);
+      ended.abort();
+      unsubscribe();
+      if (parkAware === state) parkAware = undefined;
+      manageRefresh();
+    },
+  };
+  const reconcile = () => {
+    if (generation !== getRuntimeEndpointGeneration()) { state.dispose(); return; }
+    resumeAuthRefresh = false;
+    manageRefresh();
+    if (page.visibilityState === 'hidden') {
+      connections.get(state.key)?.suspend();
+    } else {
+      // A foreground read is wake demand. Reconnects by themselves never wake
+      // a Host, including their URL-token refresh.
+      const pending = wake().then(() => undefined, () => undefined);
+      state.resume = pending;
+      void pending.then(() => {
+        if (ended.signal.aborted || state.resume !== pending) return;
+        delete state.resume;
+        if (page.visibilityState === 'hidden') return;
+        resumeAuthRefresh = true;
+        manageRefresh();
+      });
+    }
+  };
+  parkAware = state;
+  page.addEventListener('visibilitychange', reconcile);
+  if (page.visibilityState === 'hidden') reconcile();
+}
+
+async function waitForParkingVisibility(target: ObservationTarget, signal?: AbortSignal | null) {
+  const state = parkAware;
+  if (!state || state.generation !== getRuntimeEndpointGeneration() || state.key !== target.key) return;
+  const until = signal ? AbortSignal.any([signal, state.signal]) : state.signal;
+  for (;;) {
+    until.throwIfAborted();
+    const ready = state.page.visibilityState !== 'hidden';
+    if (ready && !state.resume) return;
+    const resume = state.resume;
+    await new Promise<void>((resolve, reject) => {
+      const clean = () => {
+        state.page.removeEventListener('visibilitychange', visible);
+        until.removeEventListener('abort', abort);
+      };
+      const finish = () => { clean(); resolve(); };
+      const visible = () => { if (state.page.visibilityState !== 'hidden') finish(); };
+      const abort = () => { clean(); reject(until.reason); };
+      until.addEventListener('abort', abort, { once: true });
+      if (ready) void resume!.then(finish);
+      else state.page.addEventListener('visibilitychange', visible);
+    });
+  }
+}
 
 class ObservationConnection {
   private socket: WebSocket | null = null;
@@ -163,6 +236,8 @@ class ObservationConnection {
     for (const observation of this.observations.values()) this.rejectObservation(observation, error);
     this.socket?.close();
   }
+
+  suspend(): void { this.fail(new Error('Application Host observation suspended while this page is hidden')); }
 
   private receive(raw: unknown): void {
     try {
@@ -274,6 +349,7 @@ export const tryObservationFetch = (input: RequestInfo | URL, init?: RequestInit
   const signal = init?.signal ?? request?.signal;
   return (async () => {
     signal?.throwIfAborted();
+    await waitForParkingVisibility(target, signal);
     let body: string | undefined;
     if (init?.body != null) {
       if (typeof init.body === 'string') body = init.body;

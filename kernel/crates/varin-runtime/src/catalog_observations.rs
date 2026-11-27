@@ -169,6 +169,13 @@ pub(super) fn advance(tx: &Transaction<'_>, run: &mut Run) -> Result<()> {
     Ok(())
 }
 impl Catalog {
+    pub fn has_runnable_work_for_parking(&self) -> Result<bool> {
+        Ok(self.db.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM runs WHERE {} AND json_extract(body,'$.state')!='waiting')", super::attention::OPEN_RUN),
+            [], |row| row.get(0),
+        )?)
+    }
+
     pub fn continuation_deadlines(&self) -> [(&'static str, Result<Option<u64>>); 4] {
         [
             ("waits", self.nearest_wait_deadline()),

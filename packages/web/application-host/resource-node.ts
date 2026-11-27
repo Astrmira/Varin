@@ -7,6 +7,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import express from 'express';
 import { ExtensionCatalogStore } from '@varin/extension-host';
+import { VARIN_BUILTIN_LANGUAGE_SERVERS_EXTENSION_ID, VARIN_BUILTIN_TYPESCRIPT_LANGUAGE_EXTENSION_ID } from '@varin/extension-builtins';
+import { bundledLanguageProviders, bundledTypescriptProvider, VARIN_BUILTIN_EXTENSION_PACKAGE_ROOTS } from '@varin/extension-builtins/host';
 import { readProjectTrust } from '@varin/settings-store';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
@@ -39,6 +41,7 @@ import { createOfficeRenderer } from './lib/office/renderer.js';
 import { registerGitRoutes } from './lib/git/routes.js';
 import { drainWorktreeBootstraps, hasActiveWorktreeBootstrap } from './lib/git/service.js';
 import { createManagedProjectManagementOwner } from './lib/projects/managed-project-management.js';
+import { createHostLanguage } from './lib/lsp/host-language.js';
 
 const liveProjectOperations = new Set([
   'git-command', 'git-branches', 'git-root-context', 'worktrees', 'worktree-create', 'worktree-validate',
@@ -167,6 +170,15 @@ export async function startResourceNode(options: NodeOptions) {
     documents.bindDurableMutationStorage(async (id, work) => work(await storage.kernelRecoveryStore.workspaceStorageContext(id)));
     const execution = createHostResourceExecution(kernel, documents, () => console.error('[ResourceNode] Native process observation unavailable'));
     cleanup.push(() => execution.kernelProcesses.dispose(), () => execution.kernelCompute.dispose());
+    const language = createHostLanguage({ kernel, hostId, dataDir, documents, isTrusted: guard, processes: execution.kernelProcesses });
+    cleanup.push(() => language.tools.dispose(), () => language.servers.dispose(), () => language.supervisor.dispose());
+    // Resource Nodes use the shipped language assets without starting a full extension Host.
+    const typescriptRoot = VARIN_BUILTIN_EXTENSION_PACKAGE_ROOTS.get(VARIN_BUILTIN_TYPESCRIPT_LANGUAGE_EXTENSION_ID)!;
+    const languageRoot = VARIN_BUILTIN_EXTENSION_PACKAGE_ROOTS.get(VARIN_BUILTIN_LANGUAGE_SERVERS_EXTENSION_ID)!;
+    for (const descriptor of [bundledTypescriptProvider(file => path.join(typescriptRoot, file)),
+      ...bundledLanguageProviders(file => path.join(languageRoot, file))]) {
+      language.supervisor.registerProvider({ ...descriptor, source: 'host' });
+    }
     const documentReadingDirectory = path.join(dataDir, 'document-reading');
     await fs.mkdir(documentReadingDirectory, { recursive: true });
     const documentProcesses = createPrivateProcessService(kernel, `document-reading:${hostId}`, documentReadingDirectory);
@@ -186,6 +198,7 @@ export async function startResourceNode(options: NodeOptions) {
     const projectTrusted = (cwd: string) => readProjectTrust(dataDir, cwd) === true;
     const sourceQuery = createSourceQueryService({
       kernel, documents, storage: storage.kernelStorageAdapter, validateLiveSource: liveSources.validate,
+      languageSupervisor: language.supervisor,
       resourceOwners: {
         dataDirectory: dataDir, projectOnly: true, homeDir: workspaceRoot, documents,
         workingStates: createKernelWorkspaceWorkingStateAccess(storage.kernelStorageAdapter),

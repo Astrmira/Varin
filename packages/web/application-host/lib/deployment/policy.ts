@@ -45,6 +45,7 @@ export interface DeploymentPolicy {
   readonly externalAgents?: ExternalAgentDeploymentPolicy;
   readonly resourceProvider?: { readonly id: string; readonly socketPath: string; readonly credentialFile: string };
   readonly execution?: {
+    readonly mode?: 'local' | 'none';
     readonly defaultWorkspace?: { readonly resourceId: string; readonly hostId: string; readonly path: string };
   };
   readonly background?: {
@@ -191,18 +192,27 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
   if (extensions?.brokeredTransport === 'sandbox' && !resourceProvider) throw new Error('The extension sandbox requires a resourceProvider');
   let execution: DeploymentPolicy['execution'];
   if (input.execution !== undefined) {
-    const rule = fields(input.execution, 'execution', ['defaultWorkspace']);
+    const rule = fields(input.execution, 'execution', ['mode', 'defaultWorkspace']);
+    if (rule.mode !== undefined && rule.mode !== 'local' && rule.mode !== 'none') throw new Error('execution.mode must be local or none');
+    if (rule.mode === 'none' && rule.defaultWorkspace === undefined) throw new Error('Managed execution requires a default provider workspace');
+    if (rule.mode !== undefined) execution = { mode: rule.mode };
     if (rule.defaultWorkspace !== undefined) {
       if (!resourceProvider) throw new Error('execution.defaultWorkspace requires a resourceProvider');
       const workspace = fields(rule.defaultWorkspace, 'execution.defaultWorkspace', ['resourceId', 'hostId', 'path']);
       const root = requiredName(workspace.path, 'execution.defaultWorkspace.path');
       if (!path.posix.isAbsolute(root) && !path.win32.isAbsolute(root)) throw new Error('execution.defaultWorkspace.path must be absolute on the Resource Node');
-      execution = { defaultWorkspace: {
+      execution = { ...execution, defaultWorkspace: {
         resourceId: requiredName(workspace.resourceId, 'execution.defaultWorkspace.resourceId'),
         hostId: requiredName(workspace.hostId, 'execution.defaultWorkspace.hostId'),
         path: root,
       } };
     }
+  }
+  if (execution?.mode === 'none') {
+    if (extensions?.brokeredTransport === 'child') throw new Error('Managed execution requires the sandbox transport for third-party Host extensions');
+    extensions = { ...extensions, brokeredTransport: 'sandbox' };
+    mcp = { transports: mcp?.transports ?? ['http', 'stdio'], stdioPlacement: 'managed' };
+    externalAgents = { ...externalAgents, placement: 'managed' };
   }
   return { version: 1, ...(modelCredentials && { modelCredentials }), ...(egress && { egress }), ...(background && { background }),
     ...(mcp && { mcp }), ...(localInference && { localInference }), ...(extensions && { extensions }), ...(externalAgents && { externalAgents }),

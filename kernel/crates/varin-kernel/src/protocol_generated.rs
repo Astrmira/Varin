@@ -225,6 +225,8 @@ pub(crate) const KERNEL_CONTROL_METHODS: &[&str] = &[
     "authority.grant.revoke",
     "authority.grant.retire",
     "runtime.status",
+    "runtime.park.reserve",
+    "runtime.park.release",
     "runtime.tools.select",
     "runtime.run.inspect",
     "runtime.run.failure",
@@ -5850,6 +5852,12 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
             .map(|_| ())
             .map_err(|error| error.to_string()),
         "runtime.status" => serde_json::from_value::<RuntimeStatusParams>(params.clone())
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        "runtime.park.reserve" => serde_json::from_value::<KernelEmptyParams>(params.clone())
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        "runtime.park.release" => serde_json::from_value::<KernelEmptyParams>(params.clone())
             .map(|_| ())
             .map_err(|error| error.to_string()),
         "runtime.material.retention" => {

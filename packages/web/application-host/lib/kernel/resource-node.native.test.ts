@@ -116,6 +116,7 @@ it('pairs offline, serves an actual original live file and process, and reopens 
   try {
     await fs.mkdir(workspaceRoot);
     await fs.writeFile(path.join(workspaceRoot, 'note.txt'), 'original node bytes');
+    await fs.writeFile(path.join(workspaceRoot, 'symbols.ts'), 'export function onlyOnNode(): number { return 42; }\n');
     await fs.writeFile(path.join(workspaceRoot, 'AGENTS.md'), 'Instructions from the resource workspace.');
     await fs.writeFile(path.join(dir, 'AGENTS.md'), 'Outside workspace instructions.');
     const reader = await creds('read', false, false), worker = await creds('work', true, true);
@@ -177,6 +178,9 @@ it('pairs offline, serves an actual original live file and process, and reopens 
         operation: { kind: 'document_read', operationId: 'document-capture', path: 'note.txt' } }));
     expect(Buffer.from(originalDocument.bytesBase64, 'base64').toString('utf8')).toBe('original node bytes');
     expect(originalDocument.fileObservation).toEqual({ path: 'note.txt', readVersion: expect.any(String) });
+    const symbols = await accepted(source('service', worker.token, { ...address, requestId: 'language-symbols',
+      operation: { kind: 'language', query: { method: 'document_symbols', path: 'symbols.ts' } } }));
+    expect(symbols).toMatchObject({ status: 'ready', items: expect.arrayContaining([expect.objectContaining({ name: 'onlyOnNode' })]) });
     const execute = async (name: string, args: unknown) => {
       const declaration = binding.capabilities.tools.find(tool => tool.name === name);
       if (!declaration) throw new Error(`The node did not admit ${name}`);

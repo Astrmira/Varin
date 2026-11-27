@@ -600,6 +600,7 @@ COMMANDS:
   connect-url    Generate URL/QR for connecting another client
   clients        Issue or revoke a gateway credential with the Host stopped
   resource-provider  Serve an operator-configured local container resource provider
+  supervisor         Run a private Application Host supervisor on POSIX
   preflight          Inspect storage formats before upgrading a stopped Host
   update         Check for and install updates
 

@@ -822,11 +822,15 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
         ...(input.journal ? { journal: input.journal } : {}) }, signal);
     },
     async service(principal, input, signal) {
-      if (options.liveSourceOnly && !['validate', 'resources_prepare', 'resource_read', 'resource_list', 'document_read', 'binary_write', 'mcp'].includes(input.operation.kind)) {
+      if (options.liveSourceOnly && !['validate', 'resources_prepare', 'resource_read', 'resource_list', 'document_read', 'binary_write', 'mcp', 'language', 'language_release'].includes(input.operation.kind)) {
         if (input.operation.kind !== 'native_resource' || !['read', 'process_observation', 'reconcile_mutation'].includes(input.operation.action.kind))
           throw new SourceAdmissionError('source_unavailable');
         if (input.operation.action.kind === 'reconcile_mutation' && !principal.capabilities.includes('filesystem:write'))
           throw new SourceAdmissionError('source_authority_denied');
+      }
+      if (options.liveSourceOnly && input.operation.kind === 'language' && input.operation.query.method !== 'structure'
+        && !['terminal:use', 'process:control'].every(capability => principal.capabilities.includes(capability))) {
+        throw new SourceAdmissionError('source_authority_denied');
       }
       if (['attachment_cleanup', 'attachment_discard'].includes(input.operation.kind) && !principal.capabilities.includes('filesystem:write')) throw new SourceAdmissionError('source_authority_denied');
       const mcpRelease = input.operation.kind === 'mcp' && input.operation.action.kind === 'release';

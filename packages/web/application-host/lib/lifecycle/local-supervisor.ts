@@ -5,6 +5,7 @@ import path from 'node:path';
 import { SupervisorJournal } from './supervisor-journal.js';
 import { runLocalSupervisor } from './supervisor-runner.js';
 import type { FollowupEventReceiveParams } from '@varin/protocol';
+import { readDeploymentPolicy } from '../deployment/policy.js';
 
 async function readPage(): Promise<FollowupEventReceiveParams> {
   const chunks: Buffer[] = [];
@@ -60,7 +61,19 @@ async function main(argv: string[]): Promise<unknown> {
     return journal.publishWake({revision: Number(args[0]), nextWakeAtMs: args[1] === 'none' ? null : Number(args[1])});
   }
   if (action === 'status' && !args.length) return { wake: await journal.currentWake(), pending: await journal.hasPendingEvents() };
-  if (action === 'run' && !args.length) {
+  if (action === 'run') {
+    let parking: { idleMs: number; listenPort: number } | undefined;
+    if (args.length) {
+      const [idleFlag, idle, portFlag, port] = args;
+      const idleMs = Number(idle), listenPort = Number(port);
+      if (args.length !== 4 || idleFlag !== '--park-after-ms' || portFlag !== '--listen-port'
+        || !Number.isSafeInteger(idleMs) || idleMs <= 0 || !Number.isInteger(listenPort) || listenPort <= 0 || listenPort > 65_535) {
+        throw new Error('Use run --park-after-ms <milliseconds> --listen-port <loopback port>');
+      }
+      parking = { idleMs, listenPort };
+      const policy = await readDeploymentPolicy(process.env.VARIN_DEPLOYMENT_POLICY, path.dirname(journal.directory));
+      if (policy?.ingress?.mode !== 'gateway') throw new Error('Host parking requires a deployment policy with private gateway ingress');
+    }
     const stop = new AbortController();
     const requestStop = () => stop.abort();
     process.on('SIGTERM', requestStop);
@@ -68,6 +81,7 @@ async function main(argv: string[]): Promise<unknown> {
     try {
       const outcome = await runLocalSupervisor({ journal, entry: fileURLToPath(new URL('../../index.js', import.meta.url)),
         env: { ...process.env, VARIN_DATA_DIR: path.dirname(journal.directory) }, signal: stop.signal,
+        ...(parking && { parking, listening: port => console.log(JSON.stringify({ supervisor: 'listening', port })) }),
         status: (state, pid) => console.log(JSON.stringify({ supervisor: state, ...(pid === undefined ? {} : { pid }) })) });
       if (!outcome.stoppedCleanly) throw new Error('Application Host did not drain cleanly');
       return { supervisor: 'stopped' };
@@ -91,9 +105,17 @@ async function main(argv: string[]): Promise<unknown> {
   throw new Error('Invalid supervisor command');
 }
 
+export async function supervisorCommand(argv: string[]): Promise<void> {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log('Usage: varin supervisor <DATA_DIR>/supervisor-wake <HOST_ID> run [--park-after-ms <milliseconds> --listen-port <port>]');
+    return;
+  }
+  console.log(JSON.stringify(await main(argv)));
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  void main(process.argv.slice(2)).then(
-    result => console.log(JSON.stringify(result)),
-    () => { console.error('Local supervisor command failed'); process.exitCode = 1; },
-  );
+  void supervisorCommand(process.argv.slice(2)).catch(error => {
+    console.error(error instanceof Error ? error.message : 'Local supervisor command failed');
+    process.exitCode = 1;
+  });
 }

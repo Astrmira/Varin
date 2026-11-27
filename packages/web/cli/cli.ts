@@ -186,6 +186,10 @@ async function main(): Promise<void> {
     const { providerCommand } = await import('./lib/commands-resource-provider.js');
     return providerCommand(process.argv.slice(3));
   }
+  if (process.argv[2] === 'supervisor') {
+    const { supervisorCommand } = await import('#application-host/lib/lifecycle/local-supervisor.js');
+    return supervisorCommand(process.argv.slice(3));
+  }
   const parsed = parseArgs();
   const { command, subcommand, tunnelAction, startupAction, scheduleAction, threadAction, externalAccessAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
   activeCommandOptions = options;

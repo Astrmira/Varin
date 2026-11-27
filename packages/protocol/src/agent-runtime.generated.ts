@@ -3100,6 +3100,12 @@ export interface RuntimeStatus {
   nextWakeAtMs?: number | null;
 }
 
+export interface RuntimeParkReservation {
+  reserved: boolean;
+  nextWakeAtMs: number | null;
+  eventCursor: number | null;
+}
+
 export interface InputSubmitReceipt {
   thread_id: string;
   branch_id: string;

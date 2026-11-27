@@ -121,6 +121,12 @@ the operator addresses or file paths.
   installations and update checks. `placement: "managed"` requires a managed resource
   with a selected work location, including for preparation and reconnection. Apply profile
   controls on the execution Host as well if that Host is reachable by other coordinators.
+- For a coordinator with a resource provider, set `execution.mode` to `none` and set
+  `execution.defaultWorkspace` to the node's `resourceId`, `hostId` and absolute `path`.
+  New threads use that workspace when they start a tool that needs it. Local workspace
+  execution, local process spawning and local MCP stdio are refused by the coordinator.
+  Source-backed language queries run on the selected Resource Node. Bot homes and
+  attachments still use the Host's own data storage.
 - Set the individual `localInference` switches to `false` to disable local embeddings
   (`embedding`), local dictation and TTS (`speech`), inference model downloads
   (`componentDownloads`), Host tokenizer paths (`tokenizerFiles`), or llama.cpp decision
@@ -129,6 +135,26 @@ the operator addresses or file paths.
   read-only JSON files outside `VARIN_DATA_DIR`. They use the existing model directory and plugin
   discovery cache formats. The Host uses the supplied snapshots for catalog reads and leaves
   the user's own caches available for personal mode.
+
+### Application Host parking (POSIX)
+
+Run the supervisor on the same machine and under the same OS account as the Application
+Host. Give it the policy above with gateway ingress. Use the `hostId` from the existing
+data directory's `extensions/identity.json`. The external gateway connects to the
+stable loopback port rather than to the Host's temporary port.
+
+```sh
+varin supervisor /absolute/varin-data/supervisor-wake HOST_ID run \
+  --park-after-ms 300000 --listen-port 3000
+```
+
+The idle period is operator-selected. The Host waits for active owners, publishes the earliest
+scheduled wake and closes its stores before the supervisor treats it as parked. Foreground
+traffic waits for the Host and is forwarded once readiness returns. `/live` probes the
+supervisor and `/health` reports the Host's readiness. Pending event pages submitted to
+the local supervisor journal also wake the Host. Active extension receivers and file
+watches keep the Host running. User sends and attachment uploads wait for the Host's
+normal receipt after wake.
 
 ### Resource Node (`docker-compose.resource-node.yml`)
 
@@ -145,6 +171,9 @@ Expose a dev/test machine's files and commands to an existing Agent Host without
 Command-enabled credentials also support JavaScript script sessions and project MCP over stdio. Both execute on the node under the selected live workspace. The node reads project instructions from that workspace. To enable its `.mcp.json`, record the node's canonical workspace path in `project-trust.json` in the node state directory, for example `{"/home/varin/workspaces": true}`.
 
 Project Git commands also run on the node when the project uses its live workspace. They use Git, configuration and credentials on that machine. Git writes require write-enabled pairing.
+
+Agent language queries use the node's bundled language servers or its local Go, Rust
+and C/C++ toolchains. They need command-enabled pairing and access to the whole project.
 
 External Agent conversations can use a Resource Node's live workspace. Install and authenticate the CLI on the node. Its built-in profiles are discovered from the node's environment. For a custom executable or arguments, edit `external-agents.json` in the node's state directory while the node is stopped. It contains `agents` (the existing external Agent configurations) and `defaultAgent` (a configured ID or `null`). For example, `{"agents":[{"id":"codex","name":"Codex","harness":"codex","command":"codex","args":[],"enabled":true}],"defaultAgent":null}`.
 
