@@ -500,6 +500,7 @@ export type KernelMethod =
   | "runtime.mcp.resource.access"
   | "runtime.mcp.resource.release_source"
   | "source.authority.inspect_scope"
+  | "source.retention"
   | "source.authority.release_scope"
   | "source.service.call"
   | "source.resource.cancel"
@@ -8136,6 +8137,7 @@ export type KernelMethodParams = {
   "source.service.call": SourceServiceCallParams;
   "source.authority.release_scope": SourceAuthorityScopeReleaseParams;
   "source.authority.inspect_scope": SourceAuthorityScopeParams;
+  "source.retention": KernelEmptyParams;
   "source.authority.handoff": SourceHandoffInspectParams;
   "source.authority.claim_handoff": SourceHandoffClaimParams;
   "source.integration.receipt": SourceEffectReceiptParams;
@@ -12654,6 +12656,15 @@ export type KernelRequest =
       id: string;
       method: "source.authority.inspect_scope";
       params: SourceAuthorityScopeParams;
+      epoch?: string;
+      grantId?: string;
+    }
+  | {
+      v: typeof KERNEL_PROTOCOL_VERSION;
+      kind: "request";
+      id: string;
+      method: "source.retention";
+      params: KernelEmptyParams;
       epoch?: string;
       grantId?: string;
     }

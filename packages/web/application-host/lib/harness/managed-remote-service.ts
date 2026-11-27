@@ -208,6 +208,7 @@ export function createManagedRemoteExecutionService(options: ManagedRemoteExecut
       protocolVersion: MANAGED_REMOTE_PROTOCOL_VERSION,
       requestHostIdentity: true,
       hostId: options.hostId,
+      ...(options.liveSourceOnly && { role: 'resources' as const }),
       capabilities: options.liveSourceOnly
         ? (sourceOwner ? ['sources', 'work-location-read', 'work-location'] : [])
         : ['materials', 'process', 'attach', 'cancel', 'logs', 'outputs', 'resource-admission', 'remote-shell',

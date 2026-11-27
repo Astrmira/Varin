@@ -1,5 +1,6 @@
 /** Standalone managed live-directory node. No Agent, UI backend, extension activation or outbound connections. */
 import crypto from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -21,6 +22,9 @@ import { SourceAdmissionError } from './lib/kernel/source-admission-error.js';
 import { createPrincipalStore } from './lib/ui-auth/principals.js';
 import { createUiAuth } from './lib/ui-auth/ui-auth.js';
 import { canonicalizePathIdentity, isPathWithinRoot } from './lib/workspace/path-safety.js';
+import { createPlatformEnvironmentRuntime } from './lib/platform/environment-runtime.js';
+import { createTerminalRuntime } from './lib/terminal/runtime.js';
+import { createManagedTerminalOwner } from './lib/terminal/managed-owner.js';
 
 interface NodeDirectories { dataDir: string; workspaceRoot: string; kernelPath?: string }
 interface NodeOptions extends NodeDirectories { host?: string; port?: number; releaseId?: string }
@@ -144,11 +148,17 @@ export async function startResourceNode(options: NodeOptions) {
     documents.bindDurableMutationStorage(async (id, work) => work(await storage.kernelRecoveryStore.workspaceStorageContext(id)));
     const execution = createHostResourceExecution(kernel, documents, () => console.error('[ResourceNode] Native process observation unavailable'));
     cleanup.push(() => execution.kernelProcesses.dispose(), () => execution.kernelCompute.dispose());
+    const environment = createPlatformEnvironmentRuntime();
+    const terminal = createTerminalRuntime({ fs: fsSync, path, documents,
+      buildAugmentedPath: environment.buildAugmentedPath, searchPathFor: environment.searchPathFor, isExecutable: environment.isExecutable,
+      loadPtyProvider: async () => execution.kernelProcesses.ptyProvider });
+    cleanup.push(() => terminal.shutdown());
     const liveSources = createLiveSourceOwner({ documents, kernel });
     const target = createManagedResourceTarget({ kernel, liveSourceOnly: true, storageAvailable: false,
       onError: () => console.error('[ResourceNode] Managed resource observation unavailable') });
     cleanup.push(() => target.dispose());
     target.attachSources({ documents, deviceFileAccess: false, validateLiveSource: liveSources.validate,
+      terminal: createManagedTerminalOwner({ terminal: () => terminal, documents }),
       workspaceFiles: createResourceFilesOwner(documents, storage.kernelRecoveryFileResources, { restrictedRoot: workspaceRoot }),
       async prepareSource(input, signal) {
         if (input.mode !== 'live_root' || input.resourceOwner.kind !== 'local' || input.selection?.mode === 'native_workspace')
@@ -173,9 +183,15 @@ export async function startResourceNode(options: NodeOptions) {
       res.status(ready ? 200 : 503).json({ status: ready ? 'ok' : 'unavailable', role: 'resources',
         control: ready ? 'ready' : 'unavailable', releaseId: options.releaseId ?? version });
     });
+    app.get('/api/harness/managed-execution/v1/retention', auth.requireAuth, async (_req, res) => {
+      res.setHeader('x-varin-managed-host', hostId);
+      res.setHeader('Cache-Control', 'no-store');
+      if (draining) { res.status(503).json({ code: 'host-draining' }); return; }
+      res.json(await kernel.sourceRequest('source.retention', {}));
+    });
     app.use((req, res, next) => {
       if (draining) { res.status(503).json({ code: 'host-draining' }); return; }
-      if (req.path === '/api/harness/managed-execution/v1/sources/processSubscribe') {
+      if (['/api/harness/managed-execution/v1/sources/processSubscribe', '/api/harness/managed-execution/v1/sources/terminalStream'].includes(req.path)) {
         observers.add(res); res.once('close', () => observers.delete(res));
       }
       next();

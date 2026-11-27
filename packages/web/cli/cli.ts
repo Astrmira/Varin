@@ -178,6 +178,10 @@ const commands: CliCommands = {
 
 async function main(): Promise<void> {
   if (process.argv[2] === 'clients') return clientsCommand(process.argv.slice(3));
+  if (process.argv[2] === 'resource-provider') {
+    const { providerCommand } = await import('./lib/commands-resource-provider.js');
+    return providerCommand(process.argv.slice(3));
+  }
   const parsed = parseArgs();
   const { command, subcommand, tunnelAction, startupAction, scheduleAction, threadAction, externalAccessAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
   activeCommandOptions = options;

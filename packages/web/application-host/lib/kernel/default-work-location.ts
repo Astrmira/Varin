@@ -46,31 +46,34 @@ async function resolveWorkLocation(location: WorkLocation, directory: Pick<Sourc
 }
 
 export function listWorkLocations(settings: { workspaceLocations?: unknown; defaultWorkspaceLocationId?: unknown },
-  projects: ProjectEntry[], servicePath: string): ThreadLocationDirectory & { projects: ThreadLocationDirectory['locations'] } {
+  projects: ProjectEntry[], servicePath: string, providerDefault?: LazyDefaultWorkLocation): ThreadLocationDirectory & { projects: ThreadLocationDirectory['locations'] } {
   const favorites = parseWorkspaceLocations(settings.workspaceLocations ?? []);
-  return { servicePath, defaultId: parseDefaultWorkspaceLocationId(settings.defaultWorkspaceLocationId ?? null),
+  const defaultId = parseDefaultWorkspaceLocationId(settings.defaultWorkspaceLocationId ?? null);
+  const providerLocation = providerDefault && { id: 'deployment:workspace', name: 'Managed workspace', ...providerDefault };
+  return { servicePath, defaultId: defaultId ?? providerLocation?.id ?? null,
     projects: projects.filter(project => !favorites.some(row => row.kind === 'project' && row.projectId === project.id)).map(project => {
       const id = `project:${project.id}`;
       return { id, ...workspaceLocationSource({ kind: 'project', id, projectId: project.id }, projects) };
     }),
-    locations: favorites.map(row => {
+    locations: [...(providerLocation ? [providerLocation] : []), ...favorites.map(row => {
       if (row.kind === 'project' && !projects.some(project => project.id === row.projectId)) {
         return { id: row.id, name: row.projectId, unavailable: 'Project no longer registered' };
       }
       const { name, resourceOwner, path, workspaceId, selection } = workspaceLocationSource(row, projects);
       return { id: row.id, name, resourceOwner, path, ...(workspaceId ? { workspaceId } : {}), ...(selection ? { selection } : {}) };
-    }) };
+    })] };
 }
 
 /** The ordinary native input and cold work paths share this resolver. A completed
  * branch, even with no source, is not eligible for creation preferences. */
-export function createConversationWorkLocation({ agentRuntime, sourceDirectory, readWorkspaceSettings, prepare, botWorkingDirectory, servicePath }: {
+export function createConversationWorkLocation({ agentRuntime, sourceDirectory, readWorkspaceSettings, prepare, botWorkingDirectory, servicePath, providerDefault }: {
   agentRuntime: Pick<AgentRuntimeClient, 'context' | 'launch' | 'sourceTools' | 'principalCanUseHostResources' | 'organizationCreationDefaults'>;
   sourceDirectory: Pick<SourceDirectory, 'resolve'>;
   readWorkspaceSettings(): Promise<{ projects: ProjectEntry[]; workspaceLocations?: unknown; defaultWorkspaceLocationId?: unknown }>;
   prepare(input: ThreadPrepareSource, signal?: AbortSignal): Promise<ThreadPreparedSource>;
   botWorkingDirectory(id: string): Promise<string>;
   servicePath: string;
+  providerDefault?: LazyDefaultWorkLocation;
 }) {
   async function creationLocation(thread: ThreadSummary, signal?: AbortSignal): Promise<WorkLocation> {
     const defaults = await agentRuntime.organizationCreationDefaults(thread.thread_id, signal);
@@ -82,11 +85,11 @@ export function createConversationWorkLocation({ agentRuntime, sourceDirectory, 
         ...(project.source ? { workspaceId: project.source.workspaceId } : {}), selection: freezeProjectSourceSelection(project) };
     }
     if (thread.bot_id) {
-      return { resourceOwner: { kind: 'local' }, path: await botWorkingDirectory(thread.bot_id) };
+      return providerDefault ?? { resourceOwner: { kind: 'local' }, path: await botWorkingDirectory(thread.bot_id) };
     }
     const saved = await readWorkspaceSettings();
     const preferred = preferredWorkLocation(saved, saved.projects);
-    return preferred ?? { resourceOwner: { kind: 'local' }, path: servicePath };
+    return preferred ?? providerDefault ?? { resourceOwner: { kind: 'local' }, path: servicePath };
   }
 
   return async (identity: ThreadIdentity, thread: ThreadSummary, signal?: AbortSignal): Promise<DefaultWorkLocationSelection> => {

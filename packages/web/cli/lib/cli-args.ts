@@ -599,6 +599,7 @@ COMMANDS:
   logs           Tail Varin logs
   connect-url    Generate URL/QR for connecting another client
   clients        Issue or revoke a gateway credential with the Host stopped
+  resource-provider  Serve an operator-configured local container resource provider
   update         Check for and install updates
 
 OPTIONS:

@@ -360,6 +360,7 @@ import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteA
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { hostEnvironment } from './lib/security/host-environment.js';
 import { DeploymentPolicyDeniedError, readDeploymentJson, readDeploymentPolicy } from './lib/deployment/policy.js';
+import { createSocketResourceProvider, providerResourceOwner } from './lib/deployment/resource-provider.js';
 import { createExtensionAdmission } from './lib/deployment/extension-admission.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
@@ -792,6 +793,17 @@ const platformRoutesRuntime = createPlatformRoutesRuntime({ clientReloadDelayMs:
 async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerController> {
   hostEnvironment.capture();
   const deployment = await readDeploymentPolicy(process.env.VARIN_DEPLOYMENT_POLICY, VARIN_DATA_DIR);
+  const providerOptions = deployment?.resourceProvider;
+  let resourceProvider;
+  if (providerOptions) {
+    const credentials = await readDeploymentJson(providerOptions.credentialFile, VARIN_DATA_DIR, 'resourceProvider.credentialFile');
+    const bearer = credentials && typeof credentials === 'object' && 'token' in credentials ? credentials.token : null;
+    if (typeof bearer !== 'string' || !bearer || /\s/u.test(bearer)) throw new Error('resourceProvider.credentialFile must contain a token');
+    resourceProvider = createSocketResourceProvider({ ...providerOptions, bearer });
+  }
+  const workspace = deployment?.execution?.defaultWorkspace;
+  const providerDefault = resourceProvider && workspace ? { path: workspace.path,
+    resourceOwner: providerResourceOwner(resourceProvider.id, { id: workspace.resourceId, hostId: workspace.hostId }) } : undefined;
   const gatewayOnly = deployment?.ingress?.mode === 'gateway';
   const constrainedEgress = deployment?.egress?.userDestinations === 'public' || Boolean(deployment?.egress?.requiredProxy);
   const background = deployment?.background;
@@ -1090,8 +1102,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   uiAuthController = bootstrapResult.uiAuthController;
   app.get('/api/system/deployment-policy', uiAuthController.requireAuth, (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    const { egress, background, extensions, ...policy } = deployment ?? {};
-    res.json(deployment ? { ...policy, ...(egress && { egress: {
+    const { egress, background, extensions, resourceProvider, execution, ...policy } = deployment ?? {};
+    res.json(deployment ? { ...policy, ...(resourceProvider && { resourceProvider: { id: resourceProvider.id } }),
+      ...(execution?.defaultWorkspace && { execution: { managedDefaultWorkspace: true } }), ...(egress && { egress: {
       userDestinations: egress.userDestinations, proxyRequired: Boolean(egress.requiredProxy),
     } }), ...(extensions && { extensions: {
       sources: extensions.sources, realms: extensions.realms, agentStaging: extensions.agentStaging,
@@ -1405,6 +1418,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     resources: resourceService,
     readSettings: async () => await readSettingsFromDisk() as unknown as Record<string, unknown>,
     ...(constrainedEgress && { fetch: (url, init) => egressRuntime.fetch(String(url), init) }),
+    ...(resourceProvider && { provider: resourceProvider }),
     // A reconnected target re-attaches to its durable jobs — the attempt
     // records already carry the backend job identity, so the experiment
     // reconcile inspects and re-polls rather than resubmitting.
@@ -2496,7 +2510,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const sourceDirectory = createThreadSourceDirectory({ documents: documentsAuthority, remote: managedSourceConsumers.threads,
     localLabel: os.hostname(), workspace: async () => {
       const saved = await readSettingsFromDisk();
-      return listWorkLocations(saved, sanitizeProjects(saved.projects) ?? [], workspaceConfig.root);
+      return listWorkLocations(saved, sanitizeProjects(saved.projects) ?? [], workspaceConfig.root, providerDefault);
     } });
   const modelWorkLocations = createModelWorkLocations({runtime: agentRuntime, kernel: kernelClient, directory: sourceDirectory,
     prepare: prepareThreadSource, executionEnvironment: () => executionEnvironment.snapshot(),
@@ -2577,6 +2591,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   threads.bindCreationDefaults((identity, signal) => agentRuntime.organizationCreationDefaults(identity.threadId, signal));
   threads.bindOrganizationCreation((identity, placement) => conversationOrganization.creationDefaults(currentRequestPrincipal() ?? null, identity.threadId, placement));
   threads.bindDefaultDeviceSource(createConversationWorkLocation({ agentRuntime, sourceDirectory, servicePath: workspaceConfig.root,
+    ...(providerDefault && { providerDefault }),
     prepare: (input, signal) => threads.prepareSource(input, signal),
     botWorkingDirectory: async id => {
       const bot = await botService.get(id);

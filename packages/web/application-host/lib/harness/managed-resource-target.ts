@@ -51,7 +51,7 @@ export function createManagedResourceTarget(options: {
         const posts = new Set([...['workspace/resolve', 'read', 'resource/identity'].map(name => '/documents/' + name),
           ...['capabilities', 'resolve', 'prepare', 'bind', 'authorize', 'execute', 'observe', 'cancel', 'release',
             'service', 'cancelService', 'releaseReceipt', 'inspectScope', 'releaseScope', 'inspectReadScope', 'closeReadScope', 'fileReceipt',
-            'processAccess', 'processControl', 'processWrite', 'processResize', 'processSubscribe',
+            'processAccess', 'processControl', 'processWrite', 'processResize', 'processSubscribe', 'terminal', 'terminalStream',
             'workspace', 'workspaceUpload', 'workspaceAsset'].map(name => '/sources/' + name)]);
         app.use('/api/harness/managed-execution/v1', (req, res, next) => {
           if (req.method === 'GET' && req.path === '/identity' || req.method === 'POST' && posts.has(req.path)) return next();

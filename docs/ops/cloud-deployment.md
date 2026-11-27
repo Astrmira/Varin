@@ -143,6 +143,77 @@ Expose a dev/test machine's files and commands to an existing Agent Host without
 
 The node image stages only the JavaScript and assets reachable by its compiled Resource Node entrypoint, a role-specific frozen Bun lock, and the workspace packages reachable by that role. Its build follows the frozen installed dependency graph and rejects unrelated installed packages. Use `bun run update:resource-node-lock` for dependency/version metadata changes; for a changed import graph, build the Cloud Runtime first, then run `node scripts/build-resource-node.mjs artifacts/cloud-runtime artifacts/resource-node --update-lock` before rebuilding the image. The node health check probes its live resource kernel control channel without starting a kernel or acquiring a workspace.
 
+### On-demand Resource Node provider
+
+Run `varin resource-provider --config /private/provider.json` as a separate process on the
+engine machine. The provider owns Docker or Podman access. The Application Host uses
+only the authenticated control socket and leased HTTP endpoint. With the local provider,
+run the Host in the same network namespace as its loopback data listener.
+
+Prepare separate directories for the workspace and the Resource Node state. Use the
+matching Resource Node image to pair offline once with both directories mounted at
+`/home/varin/workspaces` and `/home/varin/.config/varin`. Keep the pairing output
+outside both trees. The state directory's `extensions/identity.json` records the
+durable `hostId`. The provider control credential is a separate private JSON file
+containing a randomly generated `token`.
+
+```json
+{
+  "version": 1,
+  "id": "local-engine",
+  "socketPath": "/private/provider.sock",
+  "credentialFile": "/private/provider-token.json",
+  "engine": "docker",
+  "leaseDurationMs": 120000,
+  "startupTimeoutMs": 60000,
+  "idleRetentionMs": 300000,
+  "resources": [
+    {
+      "id": "workspace",
+      "hostId": "RESOURCE_NODE_HOST_ID",
+      "label": "Managed workspace",
+      "image": "ghcr.io/astrmira/varin-node:YOUR_VERSION",
+      "workspace": "/srv/varin/workspaces/user-a",
+      "state": "/srv/varin/node-state/user-a",
+      "credentialFile": "/private/user-a-node-pair.json"
+    }
+  ]
+}
+```
+
+This policy fragment registers that provider and makes its workspace the fallback
+for new chats and Bots. The path is interpreted on the Resource Node.
+
+```json
+{
+  "resourceProvider": {
+    "id": "local-engine",
+    "socketPath": "/private/provider.sock",
+    "credentialFile": "/private/provider-token.json"
+  },
+  "execution": {
+    "defaultWorkspace": {
+      "resourceId": "workspace",
+      "hostId": "RESOURCE_NODE_HOST_ID",
+      "path": "/home/varin/workspaces"
+    }
+  }
+}
+```
+
+Listing locations reads the control socket without starting a container. A file or
+command request acquires the node. Bound Sources and response streams retain their
+leases. Idle retirement requires the native node to report that its authorities,
+writers and compute have drained. The engine stops the original container and
+confirms its removal before the provider reports volume detach. The next generation
+uses the same state and workspace, and the saved location keeps its identity.
+Leave `idleRetentionMs` absent to keep the node running after use. On Windows,
+use a private named pipe such as `\\\\.\\pipe\\varin-provider` for `socketPath`.
+
+The local provider currently serves the Resource Node's live file, terminal and process
+operations. Standalone Browser and Computer roles continue to use their own
+connection owners. The default workspace setting selects a location for new work.
+It does not disable Host-local execution for another explicitly selected location.
 
 ### Runtime Environment
 

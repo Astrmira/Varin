@@ -6887,6 +6887,9 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
+        "source.retention" => serde_json::from_value::<KernelEmptyParams>(params.clone())
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
         "source.authority.handoff" => {
             serde_json::from_value::<SourceHandoffInspectParams>(params.clone())
                 .map(|_| ())

@@ -42,6 +42,10 @@ export interface DeploymentPolicy {
   readonly localInference?: LocalInferencePolicy;
   readonly extensions?: ExtensionDeploymentPolicy;
   readonly externalAgents?: ExternalAgentDeploymentPolicy;
+  readonly resourceProvider?: { readonly id: string; readonly socketPath: string; readonly credentialFile: string };
+  readonly execution?: {
+    readonly defaultWorkspace?: { readonly resourceId: string; readonly hostId: string; readonly path: string };
+  };
   readonly background?: {
     readonly modelDirectorySnapshot?: string;
     readonly pluginCatalogSnapshot?: string;
@@ -69,6 +73,11 @@ function names(value: unknown, field: string): string[] {
   return [...new Set<string>(value)];
 }
 
+function requiredName(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim()) throw new Error(field + ' must be a nonempty string');
+  return value;
+}
+
 function httpOrigin(value: unknown, field: string): string {
   if (typeof value === 'string') {
     let url: URL | undefined;
@@ -80,7 +89,7 @@ function httpOrigin(value: unknown, field: string): string {
 }
 
 export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
-  const input = fields(value, 'policy', ['version', 'modelCredentials', 'ingress', 'egress', 'background', 'mcp', 'localInference', 'extensions', 'externalAgents']);
+  const input = fields(value, 'policy', ['version', 'modelCredentials', 'ingress', 'egress', 'background', 'mcp', 'localInference', 'extensions', 'externalAgents', 'resourceProvider', 'execution']);
   if (input.version !== 1) throw new Error('Unsupported deployment policy version (expected 1)');
   let modelCredentials: ModelCredentialPolicy | undefined;
   if (input.modelCredentials !== undefined) {
@@ -167,8 +176,32 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
       ...(rule.placement && { placement: rule.placement }),
     };
   }
+  let resourceProvider: DeploymentPolicy['resourceProvider'];
+  if (input.resourceProvider !== undefined) {
+    const rule = fields(input.resourceProvider, 'resourceProvider', ['id', 'socketPath', 'credentialFile']);
+    const socketPath = requiredName(rule.socketPath, 'resourceProvider.socketPath');
+    const credentialFile = requiredName(rule.credentialFile, 'resourceProvider.credentialFile');
+    if (!path.isAbsolute(socketPath) || !path.isAbsolute(credentialFile)) throw new Error('Resource provider socket and credential paths must be absolute');
+    resourceProvider = { id: requiredName(rule.id, 'resourceProvider.id'), socketPath, credentialFile };
+  }
+  let execution: DeploymentPolicy['execution'];
+  if (input.execution !== undefined) {
+    const rule = fields(input.execution, 'execution', ['defaultWorkspace']);
+    if (rule.defaultWorkspace !== undefined) {
+      if (!resourceProvider) throw new Error('execution.defaultWorkspace requires a resourceProvider');
+      const workspace = fields(rule.defaultWorkspace, 'execution.defaultWorkspace', ['resourceId', 'hostId', 'path']);
+      const root = requiredName(workspace.path, 'execution.defaultWorkspace.path');
+      if (!path.posix.isAbsolute(root) && !path.win32.isAbsolute(root)) throw new Error('execution.defaultWorkspace.path must be absolute on the Resource Node');
+      execution = { defaultWorkspace: {
+        resourceId: requiredName(workspace.resourceId, 'execution.defaultWorkspace.resourceId'),
+        hostId: requiredName(workspace.hostId, 'execution.defaultWorkspace.hostId'),
+        path: root,
+      } };
+    }
+  }
   return { version: 1, ...(modelCredentials && { modelCredentials }), ...(egress && { egress }), ...(background && { background }),
     ...(mcp && { mcp }), ...(localInference && { localInference }), ...(extensions && { extensions }), ...(externalAgents && { externalAgents }),
+    ...(resourceProvider && { resourceProvider }), ...(execution && { execution }),
     ...(input.ingress !== undefined && { ingress: { mode: 'gateway' as const } }) };
 }
 
