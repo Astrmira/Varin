@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,7 +50,11 @@ async function fixture(run: (f: {
   const launch = () => runner ??= runLocalSupervisor({ journal, entry, signal: signal.signal, pollMs: 30,
     startupMs: 5000, stopMs: 2000, env: { ...process.env, TEST_SUPERVISOR_ROOT: folder },
     status: (...event) => events.push(event) });
-  const command = async (pid: number, value: object) => { await writeFile(path.join(folder, String(pid)), JSON.stringify(value)); };
+  const command = async (pid: number, value: object) => {
+    const target = path.join(folder, String(pid));
+    await writeFile(target + '.tmp', JSON.stringify(value));
+    await rename(target + '.tmp', target);
+  };
   try { await run({ folder, journal, events, signal, launch, command }); }
   finally {
     signal.abort();
