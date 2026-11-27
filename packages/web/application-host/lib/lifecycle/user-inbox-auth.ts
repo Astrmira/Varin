@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import { parseAttachmentSelections } from '@varin/protocol';
 import { parseContentReferenceInput, type ContentReferenceInput, type ThreadInboxRejection } from '@varin/application-client';
@@ -17,6 +17,26 @@ export function rejectedInboxDraft(input: Record<string, unknown>): NonNullable<
   const clientTime = read(() => parseClientTime(input.clientTime));
   return { text, ...(materials && { materials }), ...(attachments && { attachments }), ...(clientTime && { clientTime }),
     ...read(() => parseContentReferenceInput(input as ContentReferenceInput, text)) };
+}
+
+export async function requestInboxReplayProof(): Promise<string> {
+  const nonce = randomUUID();
+  return await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      process.off('message', receive);
+      process.off('disconnect', disconnected);
+    };
+    const disconnected = () => { cleanup(); reject(new Error('Supervisor disconnected during inbox bootstrap')); };
+    const receive = (message: unknown) => {
+      if (!message || typeof message !== 'object' || !('nonce' in message) || message.nonce !== nonce ||
+          !('proof' in message) || typeof message.proof !== 'string') return;
+      cleanup();
+      resolve(message.proof);
+    };
+    process.on('message', receive);
+    process.once('disconnect', disconnected);
+    process.send!({ type: 'varin:inbox-proof', nonce }, error => { if (error) disconnected(); });
+  });
 }
 
 export function createInboxReplayAuth(launchId: string, isOwner: (principal: string) => Promise<boolean>) {

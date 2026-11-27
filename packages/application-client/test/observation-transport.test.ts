@@ -129,7 +129,8 @@ it('never connects an already aborted observation and never replays or HTTP-fall
   headers(freshSocket, opens(freshSocket)[0]!.id); await (await fresh).body!.cancel();
 });
 
-it('releases only a parking-enabled Host observation while hidden and wakes before reconnecting', async () => {
+it('releases a parking-enabled Host observation after visible idle time and wakes on interaction', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const page = Object.assign(new EventTarget(), { visibilityState: 'visible' });
   Object.defineProperty(globalThis, 'document', { configurable: true, value: page });
@@ -153,7 +154,9 @@ it('releases only a parking-enabled Host observation while hidden and wakes befo
     headers(socket, opens(socket)[0]!.id);
     const stream = (await first).body!.getReader();
     const suspended = assert.rejects(stream.read(), /observation suspended/);
-    page.visibilityState = 'hidden'; page.dispatchEvent(new Event('visibilitychange'));
+    context.mock.timers.tick(59_000);
+    assert.equal(socket.readyState, 1);
+    context.mock.timers.tick(1_000);
     await suspended;
     assert.equal(socket.readyState, 3);
     const reconnect = runtimeFetch('/api/threads/observe', { signal: abort.signal });
@@ -161,7 +164,7 @@ it('releases only a parking-enabled Host observation while hidden and wakes befo
     await flush();
     assert.equal(Socket.instances.length, 1);
     assert.deepEqual(network, ['https://remote.test/mount/api/system/info']);
-    page.visibilityState = 'visible'; page.dispatchEvent(new Event('visibilitychange'));
+    page.dispatchEvent(new Event('pointerdown'));
     await flush();
     assert.equal(network.at(-1), 'https://remote.test/mount/api/version');
     assert.equal(Socket.instances.length, 1);

@@ -673,6 +673,7 @@ export interface ThreadsAPI {
   resumeContext(identity: ThreadIdentity, runId: string): Promise<void>;
   submit(input: ThreadSubmit, observation?: ThreadInputObservation): Promise<InputSubmitReceipt & { mode?: InputMode }>;
   enqueue(input: ThreadIdentity & ContentReferenceInput & { key: string; text: string; images?: ImageAttachment[]; materials?: ThreadMaterialAttachment[]; attachments?: import('@varin/protocol').AttachmentSelection[]; attachmentImageReferences?: Record<string, number>; skills?: ThreadSkillSelection[]; references?: ThreadObjectReference[]; mode: InputMode; clientTime?: import('@varin/protocol').MessageTimeObservation }, observation?: ThreadInputObservation): Promise<InputReceipt>;
+  dismissInboxRejection?(identity: ThreadIdentity, inboxId: string): Promise<{ ok: boolean }>;
   observeInbox?(inboxId: string, signal?: AbortSignal): Promise<InputSubmitReceipt | InputReceipt>;
   editInput(inputId: string, expectedRevision: number, text: string, images?: ImageAttachment[], skills?: ThreadSkillSelection[], quotes?: ContentReferenceInput): Promise<QueuedInput>;
   cancelInput(inputId: string, expectedRevision: number): Promise<QueuedInput>;

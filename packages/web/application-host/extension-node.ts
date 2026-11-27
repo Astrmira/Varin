@@ -12,7 +12,7 @@ import { extract } from 'tar';
 import WebSocket, { WebSocketServer } from 'ws';
 import { isVarinExtensionId } from '@varin/extension-contract';
 import { ExtensionArtifactStore } from '@varin/extension-host';
-import { brokerFrame, extensionBrokerPath, extensionIntegrity, extensionNodeBase, extensionNodeCredential, extensionSandboxProtocolVersion } from './lib/deployment/extension-sandbox-protocol.js';
+import { brokerFrame, extensionChannelToken, parseExtensionBrokerRoute, parseExtensionIdentityRoute, extensionIntegrity, extensionNodeBase, extensionNodeCredential, extensionSandboxProtocolVersion } from './lib/deployment/extension-sandbox-protocol.js';
 
 async function makeArtifactReadable(directory: string): Promise<void> {
   // The relay owns this tree. The extension UID has read access and can write only to its own scratch.
@@ -48,30 +48,45 @@ export async function receiveExtensionArtifact(store: ExtensionArtifactStore, ex
 }
 
 export async function startExtensionNode(options: {
-  extensionId: string; hostId: string; token: string; workerUid: number; workerGid: number; host?: string; port?: number;
+  extensionId?: string; hostId: string; token: string; host?: string; port?: number;
 }) {
-  const { extensionId, hostId, workerUid, workerGid } = options;
+  const { extensionId, hostId } = options;
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw new Error('Extension Node requires a Linux supervisor with a separate worker UID');
-  if (!isVarinExtensionId(extensionId) || !hostId || !options.token || /\s/u.test(options.token) ||
-    !Number.isSafeInteger(workerUid) || workerUid <= 0 || !Number.isSafeInteger(workerGid) || workerGid <= 0) {
+  if (extensionId !== undefined && !isVarinExtensionId(extensionId) || !hostId || !options.token || /\s/u.test(options.token)) {
     throw new Error('Extension Node identity or worker account is invalid');
   }
   const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version as string;
-  const expected = Buffer.from('Bearer ' + options.token);
-  const authorized = (request: IncomingMessage) => {
+  const permitted = (owner: string) => extensionId === undefined || owner === extensionId;
+  const authorized = (request: IncomingMessage, owner?: string) => {
+    if (owner !== undefined && !permitted(owner)) return false;
+    const expected = Buffer.from('Bearer ' + (owner === undefined ? options.token : extensionChannelToken(options.token, owner)));
     const header = Buffer.from(request.headers.authorization ?? '');
     const target = request.headers['x-varin-managed-target'];
     return header.length === expected.length && timingSafeEqual(header, expected) && (target === undefined || target === hostId);
   };
   const root = await mkdtemp(path.join(tmpdir(), 'varin-extension-'));
   await chmod(root, 0o711);
-  const store = new ExtensionArtifactStore({ dataDir: root, varinVersion: version });
-  await mkdir(store.directory, { recursive: true, mode: 0o755 });
   const broker = fileURLToPath(new URL('../broker/broker-child.mjs', import.meta.resolve('@varin/extension-host')));
-  const artifacts = new Map<string, Promise<{ modulePath: string; packageRoot: string }>>();
+  const owners = new Map<string, Promise<{ uid: number; directory: string; store: ExtensionArtifactStore;
+    artifacts: Map<string, Promise<{ modulePath: string; packageRoot: string }>> }>>();
+  let nextUid = 10000;
+  const openOwner = (id: string) => {
+    const existing = owners.get(id);
+    if (existing) return existing;
+    const uid = nextUid++;
+    const work = (async () => {
+      const directory = await mkdtemp(path.join(root, 'owner-'));
+      await chown(directory, 0, uid);
+      await chmod(directory, 0o710);
+      const store = new ExtensionArtifactStore({ dataDir: directory, varinVersion: version });
+      await mkdir(store.directory, { recursive: true, mode: 0o755 });
+      return { uid, directory, store, artifacts: new Map<string, Promise<{ modulePath: string; packageRoot: string }>>() };
+    })().catch(error => { owners.delete(id); throw error; });
+    owners.set(id, work);
+    return work;
+  };
   const running = new Set<Promise<void>>();
   const respond = (value: object) => JSON.stringify(value);
-  const digest = (url: string | undefined) => url?.startsWith(extensionBrokerPath) ? url.slice(extensionBrokerPath.length) : '';
   let preparing = 0;
   let closing = false;
   const stopWorkers = new Set<() => void>();
@@ -83,10 +98,12 @@ export async function startExtensionNode(options: {
       response.end(respond({ status: 'ok', ready: !closing, role: 'extensions' }));
       return;
     }
-    if (!authorized(request)) { response.writeHead(401).end(); return; }
+    const route = parseExtensionBrokerRoute(request.url);
+    const identityOwner = parseExtensionIdentityRoute(request.url);
+    if (!authorized(request, route?.extensionId ?? identityOwner)) { response.writeHead(401).end(); return; }
     if (closing) { response.writeHead(503).end(); return; }
     response.setHeader('X-Varin-Managed-Host', hostId);
-    if (request.method === 'GET' && request.url === extensionNodeBase + '/identity') {
+    if (request.method === 'GET' && (request.url === extensionNodeBase + '/identity' || identityOwner)) {
       response.setHeader('Content-Type', 'application/json');
       response.end(respond({ requestHostIdentity: true, protocolVersion: extensionSandboxProtocolVersion, role: 'extensions', hostId, extensionId, capabilities: ['extension-broker'] }));
       return;
@@ -96,34 +113,42 @@ export async function startExtensionNode(options: {
       response.end(respond({ retireReady: running.size === 0 && !preparing }));
       return;
     }
-    const integrity = digest(request.url);
-    if (request.method !== 'PUT' || !extensionIntegrity.test(integrity)) { response.writeHead(404).end(); return; }
-    let work = artifacts.get(integrity);
-    if (!work) {
-      preparing++;
-      work = receiveExtensionArtifact(store, extensionId, integrity, request)
-        .catch(error => { artifacts.delete(integrity); throw error; }).finally(() => { preparing--; });
-      artifacts.set(integrity, work);
-    } else request.resume();
-    try { await work; response.writeHead(204).end(); }
-    catch { if (!response.destroyed) response.writeHead(422).end(); }
+    if (request.method !== 'PUT' || !route) { response.writeHead(404).end(); return; }
+    const { extensionId: owner, integrity } = route;
+    preparing++;
+    try {
+      const { store, artifacts } = await openOwner(owner);
+      let work = artifacts.get(integrity);
+      if (!work) {
+        work = receiveExtensionArtifact(store, owner, integrity, request)
+          .catch(error => { artifacts.delete(integrity); throw error; });
+        artifacts.set(integrity, work);
+      } else request.resume();
+      await work;
+      response.writeHead(204).end();
+    } catch { if (!response.destroyed) response.writeHead(422).end(); }
+    finally { preparing--; }
   });
 
   server.on('upgrade', (request, socket, head) => {
     const reject = (status: number) => socket.end(`HTTP/1.1 ${status} Upgrade refused\r\nConnection: close\r\n\r\n`);
-    if (!authorized(request)) { reject(401); return; }
+    const route = parseExtensionBrokerRoute(request.url);
+    if (!route) { reject(404); return; }
+    if (!authorized(request, route.extensionId)) { reject(401); return; }
     if (closing) { reject(503); return; }
-    const artifact = artifacts.get(digest(request.url));
-    if (!artifact) { reject(404); return; }
+    const owner = owners.get(route.extensionId);
+    if (!owner) { reject(404); return; }
     sockets.handleUpgrade(request, socket, head, peer => {
       // The relay owns the control credential and WebSocket. No worker receives either.
       const work = (async () => {
-        const paths = await artifact;
-        const scratch = await mkdtemp(path.join(root, 'scratch-'));
+        const { uid, directory, artifacts } = await owner;
+        const paths = await artifacts.get(route.integrity);
+        if (!paths) { peer.close(1008); return; }
+        const scratch = await mkdtemp(path.join(directory, 'scratch-'));
         try {
-          await chown(scratch, workerUid, workerGid);
+          await chown(scratch, uid, uid);
           if (peer.readyState !== WebSocket.OPEN || closing) return;
-          const child = fork(broker, [], { uid: workerUid, gid: workerGid, detached: true, execArgv: [], cwd: scratch,
+          const child = fork(broker, [], { uid, gid: uid, detached: true, execArgv: [], cwd: scratch,
             env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: scratch, TMPDIR: scratch, LANG: 'C.UTF-8' },
             serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
           const signal = (name: NodeJS.Signals) => {
@@ -180,8 +205,9 @@ export async function startExtensionNode(options: {
         for (const terminate of stopWorkers) terminate();
         for (const peer of sockets.clients) peer.terminate();
         server.closeAllConnections();
-        await Promise.allSettled([...running, ...artifacts.values()]);
         await closed;
+        await Promise.allSettled(running);
+        await Promise.allSettled([...owners.values()].map(async owner => Promise.allSettled((await owner).artifacts.values())));
         await rm(root, { recursive: true, force: true });
       })();
     },
@@ -191,8 +217,8 @@ export async function startExtensionNode(options: {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { token }: {token: string} = JSON.parse(await readFile(extensionNodeCredential, 'utf8'));
   const node = await startExtensionNode({
-    extensionId: process.env.VARIN_EXTENSION_ID!, hostId: process.env.VARIN_EXTENSION_HOST_ID!, token,
-    workerUid: Number(process.env.VARIN_EXTENSION_WORKER_UID ?? 1000), workerGid: Number(process.env.VARIN_EXTENSION_WORKER_GID ?? 1000),
+    ...(process.env.VARIN_EXTENSION_ID && { extensionId: process.env.VARIN_EXTENSION_ID }),
+    hostId: process.env.VARIN_EXTENSION_HOST_ID!, token,
     host: process.env.VARIN_HOST ?? '127.0.0.1', port: Number(process.env.VARIN_PORT ?? 3000),
   });
   const stop = () => { void node.stop().catch(() => { process.exitCode = 1; }); };

@@ -91,9 +91,8 @@ afterEach(async () => { await owner.dispose(); await peer.stop(); await rm(scrat
 
 describe('independent CDP browser owner', () => {
   it('routes discovery and WebSocket upgrades through deployment egress', async () => {
-    const denied = createEgressRuntime({ deployment: { userDestinations: 'public', operatorOrigins: [] },
+    const denied = createEgressRuntime({ deployment: { userDestinations: 'public' },
       resolveAll: async () => [{ address: '127.0.0.1', family: 4 }] });
-    const allowed = createEgressRuntime({ deployment: { userDestinations: 'public', operatorOrigins: [peer.endpoint] } });
     const websocket = peer.endpoint.replace('http:', 'ws:') + '/devtools/browser/process-1';
     try {
       for (const endpoint of [peer.endpoint, websocket, websocket.replace('127.0.0.1', 'browser-fixture.test')]) {
@@ -102,13 +101,7 @@ describe('independent CDP browser owner', () => {
         finally { await candidate.dispose(); }
       }
       expect(peer.requests).toEqual([]);
-      const approved = createCdpBrowserOwner({ browserId: 'approved', endpoint: peer.endpoint, egress: allowed });
-      try {
-        await approved.connect();
-        expect(await approved.list()).toHaveLength(2);
-        expect(peer.requests[0]?.method).toBe('Browser.getVersion');
-      } finally { await approved.dispose(); }
-    } finally { await Promise.all([denied.close(), allowed.close()]); }
+    } finally { await denied.close(); }
   });
 
   it('uses the operator proxy for a CDP WebSocket despite local proxy bypass settings', async () => {
@@ -133,7 +126,7 @@ describe('independent CDP browser owner', () => {
     const address = proxy.address();
     if (!address || typeof address !== 'object') throw new Error('Test proxy did not bind a TCP port');
     const egress = createEgressRuntime({ env: { NO_PROXY: '*' }, deployment: {
-      userDestinations: 'public', operatorOrigins: [], requiredProxy: `http://127.0.0.1:${address.port}`,
+      userDestinations: 'public', requiredProxy: `http://127.0.0.1:${address.port}`,
     } });
     const browser = createCdpBrowserOwner({ browserId: 'proxied', endpoint: peer.endpoint.replace('http:', 'ws:') + '/devtools/browser/process-1', egress });
     try {

@@ -32,11 +32,11 @@ export class SandboxRelayClient {
     else callback(new Error('Sandbox supervisor disconnected'));
   }
 
-  open(resource: { id: string; hostId: string }, generation: string, integrity: string, observer: Observer) {
+  open(resource: { id: string; hostId: string }, generation: string, extensionId: string, integrity: string, observer: Observer) {
     const id = randomUUID();
     this.channels.set(id, observer);
     const retire = () => this.channels.delete(id);
-    this.send({ kind: 'open', channel: id, resourceId: resource.id, hostId: resource.hostId, generation, integrity },
+    this.send({ kind: 'open', channel: id, resourceId: resource.id, hostId: resource.hostId, generation, extensionId, integrity },
       error => { if (error) { retire(); observer({ kind: 'closed' }); } });
     return {
       send: (frame: unknown, callback?: (error?: Error | null) => void) => this.send({ kind: 'frame', channel: id, frame }, callback ?? (() => {})),

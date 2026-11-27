@@ -2,13 +2,13 @@ import { Readable } from 'node:stream';
 import { create as archive } from 'tar';
 import WebSocket from 'ws';
 import { BrokeredHostRpcTransport, BrokeredHostUnavailableError, type BrokeredHostChannel, type BrokeredHostTransportFactory } from '@varin/extension-host';
-import { brokerFrame, extensionBrokerPath, extensionNodeBase, extensionSandboxProtocolVersion } from './extension-sandbox-protocol.js';
+import { brokerFrame, extensionBrokerRoute, extensionIdentityRoute, extensionSandboxProtocolVersion } from './extension-sandbox-protocol.js';
 import { createProviderLeaseOwner, type ResourceProvider } from './resource-provider.js';
 import type { SandboxRelayClient } from '../lifecycle/sandbox-relay-client.js';
 
 /** The allocation and bidirectional capability channel belong to one verified extension owner. */
 export function extensionSandboxTransport(provider: ResourceProvider, leases = createProviderLeaseOwner(provider),
-  relay?: SandboxRelayClient): BrokeredHostTransportFactory {
+  relay?: SandboxRelayClient, scope: 'user' | 'extension' = 'user'): BrokeredHostTransportFactory {
   return options => {
     const opening = new AbortController();
     let stream: WebSocket | undefined;
@@ -37,15 +37,16 @@ export function extensionSandboxTransport(provider: ResourceProvider, leases = c
           let release: (() => void) | undefined;
           let opened = false;
           try {
+            const extensionId = options.owner.extensionId;
             const resources = (await provider.describe(signal)).filter(resource =>
-              resource.role === 'extensions' && resource.extensionId === options.owner.extensionId);
+              resource.role === 'extensions' && resource.extensionId === (scope === 'extension' ? extensionId : undefined));
             if (resources.length !== 1) throw new BrokeredHostUnavailableError('An isolated execution target is required for this extension');
             const resource = resources[0]!;
-            const allocation = await leases.acquire(resource.id, signal);
+            const allocation = await leases.acquire(resource.id, signal, extensionId);
             release = allocation.release;
             const url = (route: string) => allocation.lease.endpoint.replace(/\/$/u, '') + route;
             const headers = { Authorization: 'Bearer ' + allocation.lease.bearer, 'X-Varin-Managed-Target': resource.hostId };
-            const identity = await fetch(url(extensionNodeBase + '/identity'), { headers, redirect: 'error', signal });
+            const identity = await fetch(url(extensionIdentityRoute(extensionId)), { headers, redirect: 'error', signal });
             if (!identity.ok || identity.headers.get('x-varin-managed-host') !== resource.hostId) {
               await identity.body?.cancel();
               throw new BrokeredHostUnavailableError('Extension sandbox identity changed');
@@ -56,15 +57,15 @@ export function extensionSandboxTransport(provider: ResourceProvider, leases = c
             }
             const { root, files } = await options.artifact.open(signal);
             const source = Readable.from(archive({ cwd: root, portable: true, noDirRecurse: true, strict: true }, files));
-            const route = extensionBrokerPath + options.artifact.integrity;
+            const route = extensionBrokerRoute(extensionId, options.artifact.integrity);
             const response = await fetch(url(route), { method: 'PUT', headers, body: Readable.toWeb(source), duplex: 'half',
               redirect: 'error', signal } as RequestInit & { duplex: 'half' }).finally(() => source.destroy());
             await response.body?.cancel();
-            if (!response.ok) throw new BrokeredHostUnavailableError('Extension sandbox rejected the verified artifact');
+            if (!response.ok || response.headers.get('x-varin-managed-host') !== resource.hostId) throw new BrokeredHostUnavailableError('Extension sandbox rejected the verified artifact');
             signal.throwIfAborted();
             if (relay) {
               const transferred = await new Promise<boolean>(resolve => {
-                relayed = relay.open(resource, allocation.lease.generation, options.artifact.integrity, message => {
+                relayed = relay.open(resource, allocation.lease.generation, extensionId, options.artifact.integrity, message => {
                   if (message.kind === 'open') { opened = true; ready = true; }
                   if (message.kind === 'frame' && brokerFrame(message.frame)) events.received(message.frame);
                   if (message.kind === 'transferred') resolve(true);

@@ -365,7 +365,6 @@ export const createEgressRuntime = (options: {
   const deployment = options.deployment;
   const restricted = deployment?.userDestinations === 'public' || Boolean(deployment?.requiredProxy);
   const publicDirect = restricted && !deployment?.requiredProxy;
-  const operatorOrigins = new Set(restricted ? deployment?.operatorOrigins : []);
   const destinationDenied = () => new EgressError('deployment-policy-denied', 'Deployment policy egress requires a public destination');
   const getHostConfiguration = options.getHostConfiguration ?? (async () => undefined);
   const resolveAll = options.resolveAll ?? ((hostname: string) => lookup(hostname, { all: true, verbatim: true }));
@@ -498,8 +497,7 @@ export const createEgressRuntime = (options: {
       return { policy, failure: new EgressError("scheme-denied", "unparseable URL") };
     }
     const protocol = url.protocol === "http:" ? "http:" : "https:";
-    const operator = operatorOrigins.has(url.origin);
-    const selectedOverride = restricted ? operator || !deployment?.requiredProxy
+    const selectedOverride = restricted ? !deployment?.requiredProxy
       ? { mode: "direct" as const }
       : { mode: "proxy" as const, proxyUrl: deployment.requiredProxy, noProxy: "" }
       : override;
@@ -516,7 +514,7 @@ export const createEgressRuntime = (options: {
       return failure("proxy-config-invalid", `proxy configuration invalid: ${policy.invalid}`);
     }
     if (closed) return failure("connect", "egress runtime is closed");
-    const requirePublic = publicDirect && !operator;
+    const requirePublic = publicDirect;
     const targetHost = hostOf(url);
     if (requirePublic && isIP(targetHost) && !isPublicDestination(targetHost)) {
       return { policy, failure: destinationDenied() };
@@ -719,7 +717,7 @@ export const createEgressRuntime = (options: {
     }
     try {
       const addresses = await resolveAll(host);
-      const disallowed = publicDirect && !operatorOrigins.has(parsed.origin) && addresses.some(a => !isPublicDestination(a.address));
+      const disallowed = publicDirect && addresses.some(a => !isPublicDestination(a.address));
       return {
         url: targetUrl,
         policy,

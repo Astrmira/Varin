@@ -2,24 +2,12 @@ import { createHash } from 'node:crypto';
 import { chmodSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { InboxActor, InboxMethod, InboxReceipt, InboxResult } from './user-inbox-wire.js';
+import type { InboxMethod, InboxReceipt, InboxResult } from './user-inbox-wire.js';
+import { InboxError, type InboxCommand, type InboxEntry, type IngressInbox } from './ingress-inbox.js';
+
 // A stopped coordinator may receive a burst of full-sized requests. Bound
 // pending disk use per Host while preserving the normal per-request budget.
 const INBOX_PENDING_BYTES = 512 * 1024 * 1024;
-export interface InboxCommand {
-  actor: InboxActor;
-  method: InboxMethod;
-  threadId: string;
-  branchId: string;
-  key: string;
-  url: string;
-  body: Uint8Array;
-}
-interface Entry extends InboxCommand {
-  id: string;
-  replayMethod: InboxMethod;
-  queueNext: boolean;
-}
 interface Stored {
   id: string;
   digest: string;
@@ -33,13 +21,9 @@ const identity = (command: InboxCommand) => hash(JSON.stringify([
   command.actor.principalId, command.threadId, command.branchId, isInput(command.method) ? 'input' : command.method, command.key,
 ]));
 const fingerprint = (command: InboxCommand) => hash(JSON.stringify([command.method, command.url, hash(command.body)]));
-export class InboxError extends Error {
-  constructor(readonly status: number, readonly code: string) { super(code); }
-}
-
 /** Independent of Catalog. Only the coordinator ever admits the original
  * operation. A committed row is the supervisor's durable acceptance. */
-export class SupervisorUserInbox {
+export class SupervisorUserInbox implements IngressInbox {
   private readonly db: DatabaseSync;
 
   constructor(directory: string) {
@@ -114,25 +98,44 @@ export class SupervisorUserInbox {
     return row ? row.result === null ? null : JSON.parse(String(row.result)) as InboxResult : undefined;
   }
 
-  hasPending(): boolean {
-    return Boolean(this.db.prepare('SELECT 1 FROM admissions WHERE result IS NULL LIMIT 1').get());
+  hasPending(scope?: Pick<InboxCommand, 'actor' | 'threadId' | 'branchId'>): boolean {
+    return Boolean(scope ? this.db.prepare(
+      'SELECT 1 FROM admissions WHERE principal = ? AND thread = ? AND branch = ? AND result IS NULL LIMIT 1',
+    ).get(scope.actor.principalId, scope.threadId, scope.branchId)
+      : this.db.prepare('SELECT 1 FROM admissions WHERE result IS NULL LIMIT 1').get());
   }
 
-  async replay(receive: (entry: Entry) => Promise<InboxResult>, settled?: () => void): Promise<void> {
-    const next = this.db.prepare(`SELECT admissions.id, meta, payload, body FROM admissions
-      LEFT JOIN ingress_payloads ON payload = ingress_payloads.id WHERE result IS NULL ORDER BY seq LIMIT 1`);
+  async replay(receive: (entry: InboxEntry) => Promise<InboxResult>, signal: AbortSignal, settled?: () => void): Promise<void> {
+    const next = this.db.prepare('SELECT seq,id,principal,thread,branch,meta,payload FROM admissions WHERE result IS NULL AND seq > ? ORDER BY seq LIMIT 1');
+    const payload = this.db.prepare('SELECT body FROM ingress_payloads WHERE id = ?');
+    const blocked = new Set<string>();
     const acknowledge = this.db.prepare('UPDATE admissions SET payload = NULL, meta = ?, result = ? WHERE id = ? AND result IS NULL');
     const retire = this.db.prepare('DELETE FROM ingress_payloads WHERE id = ? AND NOT EXISTS (SELECT 1 FROM admissions WHERE payload = ?)');
     let changed = false;
+    let seq = 0;
     for (;;) {
-      const row = next.get() as unknown as (Stored & { payload: string }) | undefined;
+      signal.throwIfAborted();
+      const row = next.get(seq) as unknown as (Stored & { seq: number; principal: string; thread: string; branch: string; payload: string }) | undefined;
       if (!row) break;
-      if (!row.body) throw new Error('Supervisor inbox payload is missing');
-      const entry = { ...JSON.parse(row.meta) as Omit<Entry, 'id' | 'body'>, id: row.id, body: row.body };
-      const result = await receive(entry);
+      seq = row.seq;
+      const scope = JSON.stringify([row.principal, row.thread, row.branch]);
+      if (blocked.has(scope)) continue;
+      let result: InboxResult;
+      try {
+        const body = payload.get(row.payload)?.body;
+        if (!(body instanceof Uint8Array)) throw new Error('Supervisor inbox payload is missing');
+        const entry = { ...JSON.parse(row.meta) as Omit<InboxEntry, 'id' | 'body'>, id: row.id, body };
+        result = await receive(entry);
+      } catch {
+        signal.throwIfAborted();
+        // Keep the original command and its payload. Other branches can be
+        // admitted while this branch waits for an authoritative result.
+        blocked.add(scope);
+        continue;
+      }
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        acknowledge.run('{}', JSON.stringify(result), entry.id);
+        acknowledge.run('{}', JSON.stringify(result), row.id);
         retire.run(row.payload, row.payload);
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }

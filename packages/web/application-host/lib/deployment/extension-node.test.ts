@@ -8,7 +8,7 @@ import { expect, test } from 'vitest';
 import { receiveExtensionArtifact, startExtensionNode } from '../../extension-node.js';
 import { extensionSandboxTransport } from './extension-sandbox-transport.js';
 import type { ResourceProvider } from './resource-provider.js';
-import { extensionNodeBase } from './extension-sandbox-protocol.js';
+import { extensionChannelToken, extensionNodeBase } from './extension-sandbox-protocol.js';
 
 test('only the exact artifact and extension identity enter the executing store', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'varin-sandbox-artifact-'));
@@ -41,38 +41,47 @@ test('only the exact artifact and extension identity enter the executing store',
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test.runIf(process.platform === 'linux' && process.getuid?.() === 0)('runs an installed extension under a separate UID with Host-owned storage', async () => {
+test.runIf(process.platform === 'linux' && process.getuid?.() === 0)('isolates two installed extensions in one Node and keeps storage Host-owned', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'varin-sandbox-acceptance-'));
   const extensionId = 'dev.example.isolated';
-  const packageRoot = path.join(root, 'package');
+  const otherExtension = 'dev.example.other';
   const state = path.join(root, 'host');
   const secret = path.join(root, 'host-private.txt');
-  const credentials = { extensionId, hostId: 'fixture', token: 'isolated-node-token' };
-  await mkdir(packageRoot);
+  const credentials = { hostId: 'fixture', token: 'isolated-node-token' };
   await writeFile(secret, 'private Host data', { mode: 0o600 });
-  await writeFile(path.join(packageRoot, 'varin.extension.json'), JSON.stringify({
-    schemaVersion: 1, id: extensionId, version: '1.0.0', engines: { varin: '*' }, storage: { schemaVersion: 1 },
-    entrypoints: { host: { file: 'host.cjs', mode: 'brokered', activation: ['service-request'] } },
-    provides: { services: [{ id: extensionId, version: 1 }] },
-  }));
-  await writeFile(path.join(packageRoot, 'host.cjs'), `
-    const fs = require('node:fs');
-    module.exports = { activate(context) {
-      context.services.provide({ id: '${extensionId}', version: 1 }, {
-        async save([path]) {
-          await context.storage.update({ saved: true });
-          return { uid: process.getuid(), readHostPath: fs.existsSync(path), temporaryHome: process.cwd() === process.env.HOME };
-        },
-        async read() { return (await context.storage.refresh()).document.data.saved; },
-      });
-    } };
-  `);
-  const sandbox = await startExtensionNode({ ...credentials, workerUid: 65534, workerGid: 65534 });
+  const makePackage = async (id: string) => {
+    const packageRoot = path.join(root, id);
+    await mkdir(packageRoot);
+    await writeFile(path.join(packageRoot, 'varin.extension.json'), JSON.stringify({
+      schemaVersion: 1, id, version: '1.0.0', engines: { varin: '*' }, storage: { schemaVersion: 1 },
+      entrypoints: { host: { file: 'host.cjs', mode: 'brokered', activation: ['service-request'] } },
+      provides: { services: [{ id, version: 1 }] },
+    }));
+    await writeFile(path.join(packageRoot, 'host.cjs'), `
+      const fs = require('node:fs');
+      const path = require('node:path');
+      module.exports = { activate(context) {
+        context.services.provide({ id: '${id}', version: 1 }, {
+          async save([otherFile]) {
+            const file = path.join(process.env.HOME, 'scratch.txt');
+            fs.writeFileSync(file, 'owned by this worker');
+            await context.storage.update({ saved: true });
+            return { uid: process.getuid(), readOtherFile: fs.existsSync(otherFile), temporaryHome: process.cwd() === process.env.HOME, file };
+          },
+          async read() { return (await context.storage.refresh()).document.data.saved; },
+        });
+      } };
+    `);
+    return packageRoot;
+  };
+  const firstPackage = await makePackage(extensionId);
+  const secondPackage = await makePackage(otherExtension);
+  const sandbox = await startExtensionNode({ hostId: credentials.hostId, token: credentials.token });
   const endpoint = 'http://127.0.0.1:' + sandbox.port;
   const provider: ResourceProvider = {
-    id: 'fixtures', describe: async () => [{ id: 'isolated', label: 'Extension', role: 'extensions', extensionId,
+    id: 'fixtures', describe: async () => [{ id: 'isolated', label: 'Extension', role: 'extensions',
       hostId: credentials.hostId, capabilities: ['extension-broker'] }],
-    acquire: async identity => ({ ...identity, generation: 'generation', endpoint, bearer: credentials.token, expiresAt: Date.now() + 60_000 }),
+    acquire: async identity => ({ ...identity, generation: 'generation', endpoint, bearer: extensionChannelToken(credentials.token, identity.extensionId!), expiresAt: Date.now() + 60_000 }),
     release: async () => {}, renew: async () => { throw new Error('Unexpected renewal'); },
     status: async () => { throw new Error('Unexpected status'); }, retire: async () => { throw new Error('Unexpected retirement'); },
   };
@@ -84,10 +93,14 @@ test.runIf(process.platform === 'linux' && process.getuid?.() === 0)('runs an in
   try {
     runtime = await create();
     const initial = await runtime.start();
-    await runtime.installOrStage({ expectedRevision: initial.catalog.revision,
-      source: { display: 'Sandbox fixture', kind: 'local', specifier: packageRoot } });
-    expect(await runtime.invokeService({ serviceId: extensionId, version: 1, method: 'save', args: [secret] }))
-      .toEqual({ uid: 65534, readHostPath: false, temporaryHome: true });
+    const first = await runtime.installOrStage({ expectedRevision: initial.catalog.revision,
+      source: { display: 'First sandbox fixture', kind: 'local', specifier: firstPackage } });
+    await runtime.installOrStage({ expectedRevision: first.revision,
+      source: { display: 'Second sandbox fixture', kind: 'local', specifier: secondPackage } });
+    const original = await runtime.invokeService({ serviceId: extensionId, version: 1, method: 'save', args: [secret] }) as { uid: number; file: string };
+    expect(original).toMatchObject({ uid: 10000, readOtherFile: false, temporaryHome: true });
+    expect(await runtime.invokeService({ serviceId: otherExtension, version: 1, method: 'save', args: [original.file] }))
+      .toMatchObject({ uid: 10001, readOtherFile: false, temporaryHome: true });
     await runtime.stop();
     const retention = await fetch(endpoint + extensionNodeBase + '/retention', { headers: { Authorization: 'Bearer ' + credentials.token } });
     expect(await retention.json()).toEqual({ retireReady: true });

@@ -54,7 +54,7 @@ pub enum RuntimeError {
 }
 type Result<T> = std::result::Result<T, RuntimeError>;
 const LEGACY_FAILED_RESULT: &str = "json_extract(body,'$.phase')='terminal' AND json_extract(body,'$.outcome')='failed' AND json_extract(body,'$.effect')='none' AND json_extract(body,'$.execution_owner.kind')='kernel' AND json_extract(body,'$.call_completion') IS NULL";
-pub(crate) const FORMAT: i64 = 104;
+pub(crate) const FORMAT: i64 = 103;
 fn sql_number(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| RuntimeError::Invalid("integer exceeds catalog range".into()))
 }
@@ -188,7 +188,6 @@ pub fn format_preflight(root: &Path) -> Result<Value> {
 }
 
 fn check_catalog_schema(db: &Connection, version: i64) -> Result<()> {
-    if version >= 104 { inbox::check_format(db)?; }
     threads::check_format(db)?;
     if version >= 102 { db.prepare("SELECT thread_id,model FROM thread_model_preferences")?; }
     if version >= 101 { branch_workspace::check_format(db)?; }
@@ -263,8 +262,8 @@ fn initialize_metadata(
         )?;
         tx.pragma_update(None, "user_version", FORMAT)?;
         context_jobs::initialize_new(&tx)?;
-        inbox::initialize(&tx)?;
     }
+    inbox::initialize(&tx)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS resource_occupancy (operation_id TEXT PRIMARY KEY REFERENCES operations(id), claims TEXT NOT NULL)")?;
     inputs::initialize(&tx)?;
     crate::content::initialize(&tx, content)?;

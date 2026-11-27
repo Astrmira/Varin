@@ -17,7 +17,7 @@ it('serves authenticated, content-free owner activity even while shutting down',
     (req, res, next) => { if (!req.get('authorization')) res.sendStatus(401); else next(); },
     async req => req.get('authorization') === 'Bearer owner',
     signal => projectHostActivity({
-      draining: () => true, kernelEpoch: () => 'same', observationStreams: () => 2, threadWrites: () => 1,
+      draining: () => true, kernelEpoch: () => 'same', observationStreams: () => 2, threadWrites: () => 1, httpRequests: () => 0,
       externalIngressActive: () => true, admission, calendar,
       browser: () => ({preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0,privatePage:'do not publish'}),
       computerOperations: () => 1,
@@ -54,7 +54,7 @@ it('serves authenticated, content-free owner activity even while shutting down',
         'execution-owner-activity', 'provider-execution-leases', 'terminal-owner-activity', 'external-agent-owner-activity', 'mcp-owner-activity',
         'event-receivers-not-transferred', 'event-transport-active', 'language-owner-activity', 'preview-owner-activity',
         'relay-owner-activity', 'knowledge-owner-activity', 'local-component-installing',
-        'owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'],
+        'durable-supervisor-handoff-unavailable'],
     },
     owners: {browser:{preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0},
       computerOperations:1,dictation:{state:'retiring',pendingRequests:0,sessions:0,warm:false},
@@ -86,11 +86,14 @@ it('keeps missing owner facts distinct from zero and never advertises parking', 
   expect(Object.values(result.owners).every(value => value === null)).toBe(true);
   expect(result.retention.reasons).toContain('catalog-admission-unavailable');
   expect(result.parking).toEqual({ supported: false, eligible: false });
+  const requested = await projectHostActivity({ ...owners, parkingSupported: true }, new AbortController().signal);
+  expect(requested.retention.reasons).toContain('owner-coverage-incomplete');
+  expect(requested.parking.eligible).toBe(false);
   expect(JSON.stringify(result)).not.toContain('secret content');
   const unavailable = await projectHostActivity({ ...owners, kernelEpoch: () => null }, new AbortController().signal);
   expect(unavailable.calendar).toBeNull();
   expect(unavailable.retention.reasons).toContain('calendar-unavailable');
-  expect(calendar).toHaveBeenCalledTimes(1);
+  expect(calendar).toHaveBeenCalledTimes(2);
 });
 
 it('does not combine Catalog and Calendar facts from different kernel epochs', async () => {

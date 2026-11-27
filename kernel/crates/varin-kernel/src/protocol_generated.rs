@@ -230,6 +230,7 @@ pub(crate) const KERNEL_CONTROL_METHODS: &[&str] = &[
     "runtime.park.release",
     "runtime.inbox.reconcile",
     "runtime.inbox.rejections",
+    "runtime.inbox.dismiss",
     "runtime.tools.select",
     "runtime.run.inspect",
     "runtime.run.failure",
@@ -2119,6 +2120,15 @@ pub(crate) struct InboxReconcileParams {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct InboxRejectionsParams {
+    pub(crate) principal_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) branch_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InboxDismissParams {
+    pub(crate) inbox_id: String,
     pub(crate) principal_id: String,
     pub(crate) thread_id: String,
     pub(crate) branch_id: String,
@@ -5897,6 +5907,9 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
+        "runtime.inbox.dismiss" => serde_json::from_value::<InboxDismissParams>(params.clone())
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
         "runtime.material.retention" => {
             serde_json::from_value::<MaterialRetentionParams>(params.clone())
                 .map(|_| ())

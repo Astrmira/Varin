@@ -1,6 +1,7 @@
 // Consume service secrets before starting workers. This also covers indirect
 // children such as Git hooks, SDK subprocesses and shell commands.
 const serviceVariables = new Set([
+  'VARIN_LOCAL_SUPERVISOR_LAUNCH_ID',
   'VARIN_UI_PASSWORD', 'VARIN_JWT_SECRET', 'VARIN_TUNNEL_TOKEN', 'NGROK_AUTHTOKEN',
   'VARIN_APNS_P8', 'VARIN_APNS_P8_PATH', 'VARIN_EXPO_ACCESS_TOKEN', 'EXPO_ACCESS_TOKEN',
 ]);
@@ -19,6 +20,12 @@ export function createHostEnvironment(env: NodeJS.ProcessEnv) {
         if (value === undefined || !isHostPrivateVariable(name)) continue;
         privateValues.set(name, value);
         delete env[key];
+      }
+    },
+    importLoginShell(snapshot: NodeJS.ProcessEnv) {
+      for (const [key, value] of Object.entries(snapshot)) {
+        if (value !== undefined && isHostPrivateVariable(key) && key !== 'VARIN_LOCAL_SUPERVISOR_LAUNCH_ID' && !privateValues.has(key))
+          privateValues.set(key, value);
       }
     },
     read(name: string) { return env[name] ?? privateValues.get(name); },

@@ -26,7 +26,7 @@ test('the stable gateway wakes only for foreground demand and forwards the origi
     const mint = await fetch(endpoint + '/auth/url-token?observation=1', { method: 'POST' });
     expect(mint.status).toBe(503);
     await mint.body?.cancel();
-    expect(gateway.hasDemand()).toBe(false);
+    expect(await gateway.hasDemand()).toBe(false);
     const pending = fetch(endpoint + '/api/threads/submit', {
       method: 'POST', body: 'first-input', headers: { Authorization: 'Bearer test-client' },
     });
@@ -43,7 +43,7 @@ test('the stable gateway wakes only for foreground demand and forwards the origi
   }
 });
 
-test('stages original inputs and file bytes, recovers a lost admission reply, and drains before foreground requests', async () => {
+test('stages files and ordered inputs while recovering a lost Catalog acknowledgment', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'varin-ingress-'));
   let inbox = new SupervisorUserInbox(directory);
   const authorize = async (auth: string | undefined) => auth?.startsWith('Bearer ') ?
@@ -105,17 +105,75 @@ test('stages original inputs and file bytes, recovers a lost admission reply, an
     gateway = await openSupervisorGateway(0, { inbox, authenticate: authorize });
     const port = (owner.address() as AddressInfo).port;
     const signal = AbortSignal.timeout(5_000);
-    await expect(gateway.activate(port, 'launch-proof', signal)).rejects.toThrow();
     const foreground = fetch(endpoint() + '/api/threads/cancel', { method: 'POST', signal });
     const observed = status(secondReceipt.inboxId);
-    await gateway.activate(port, 'launch-proof', signal);
+    gateway.activate(port, 'launch-proof', signal);
     expect((await foreground).status).toBe(200);
     expect(await (await observed).json()).toMatchObject({ result: { body: { input_id: 'second', mode: 'next_run' } } });
     expect(await (await status(firstReceipt.inboxId)).json()).toMatchObject({ result: { body: { input_id: 'first' } } });
-    expect(order).toEqual(['file:010203', 'first', 'second:next_run', 'foreground']);
+    expect(order.filter(entry => entry !== 'foreground')).toEqual(['file:010203', 'first', 'second:next_run']);
     const storage = new DatabaseSync(path.join(directory, 'user-inputs.sqlite'), { readOnly: true });
     try { expect(storage.prepare('SELECT count(*) AS count FROM ingress_payloads').get()?.count).toBe(0); }
     finally { storage.close(); }
+  } finally {
+    await gateway.close();
+    inbox.close();
+    owner.closeAllConnections();
+    await new Promise<void>(resolve => owner.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('an uncertain replay blocks its branch only and resolves later through its original receipt', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'varin-ingress-isolation-'));
+  const inbox = new SupervisorUserInbox(directory);
+  const gateway = await openSupervisorGateway(0, { inbox, authenticate: async () => ({ principalId: 'owner', clientId: 'gateway' }) });
+  const delivered: string[] = [];
+  const rejected = new Map<string, unknown>();
+  const owner = createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const input = JSON.parse(body || '{}');
+    if (req.url?.endsWith('/reconcile')) {
+      if (input.result) rejected.set(input.key, input.result);
+      res.end(JSON.stringify({ result: rejected.get(input.key) }));
+    } else if (input.key === 'uncertain') {
+      res.writeHead(500).end(JSON.stringify({ code: 'unexpected-host-error' }));
+    } else if (input.key === 'invalid') {
+      res.writeHead(400).end(JSON.stringify({ code: 'invalid-params' }));
+    } else {
+      if (input.key) delivered.push(input.key);
+      res.end(JSON.stringify({ input_id: input.key }));
+    }
+  });
+  try {
+    await new Promise<void>(resolve => owner.listen(0, '127.0.0.1', resolve));
+    const base = 'http://127.0.0.1:' + gateway.port;
+    const submit = async (branchId: string, key: string) => {
+      const response = await fetch(base + '/api/threads/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runtime: 'agent', threadId: branchId, branchId, key, text: key }) });
+      expect(response.status).toBe(202);
+      const receipt = await response.json() as { inboxId: string };
+      return receipt.inboxId;
+    };
+    const blocked = await submit('one', 'uncertain');
+    const next = await submit('one', 'second');
+    const invalid = await submit('two', 'invalid');
+    const independent = await submit('two', 'separate');
+    const port = (owner.address() as AddressInfo).port;
+    gateway.activate(port, 'proof', new AbortController().signal);
+    expect((await fetch(base + '/api/version')).status).toBe(200);
+    await expect.poll(() => inbox.status('owner', independent)).toMatchObject({ status: 200 });
+    expect(inbox.status('owner', invalid)).toMatchObject({ status: 400 });
+    expect(inbox.status('owner', blocked)).toBeNull();
+    expect(inbox.status('owner', next)).toBeNull();
+    expect(delivered).toEqual(['separate']);
+    expect((await submit('one', 'third'))).toBeTruthy();
+    rejected.set('uncertain', { status: 200, body: { input_id: 'original-receipt' } });
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    gateway.activate(port, 'proof', new AbortController().signal);
+    await expect.poll(() => inbox.status('owner', next)).toMatchObject({ status: 200 });
+    expect(inbox.status('owner', blocked)).toMatchObject({ body: { input_id: 'original-receipt' } });
   } finally {
     await gateway.close();
     inbox.close();

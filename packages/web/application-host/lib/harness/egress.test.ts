@@ -67,24 +67,15 @@ afterEach(async () => {
 });
 
 describe("egress policy", () => {
-  it("enforces deployment routing at each redirect and on the DNS answers used for dialing", async () => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(302, { location: `http://localhost:${(server.address() as net.AddressInfo).port}/` }).end();
-    });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
-    const port = (server.address() as net.AddressInfo).port;
-    const origin = `http://127.0.0.1:${port}`;
+  it("restricts literal destinations and DNS answers used for dialing", async () => {
     const rt = createEgressRuntime({
       env: { HTTP_PROXY: 'http://unused-proxy.invalid:80' },
-      deployment: { userDestinations: 'public', operatorOrigins: [origin] },
+      deployment: { userDestinations: 'public' },
       resolveAll: async () => [{ address: '127.0.0.1', family: 4 }],
     });
     cleanups.push(rt.close);
-    await expect(rt.fetch(`http://127.0.0.1:${port + 1}/`)).rejects.toMatchObject({ kind: 'deployment-policy-denied' });
-    expect((await rt.fetch(origin, { redirect: 'manual' })).status).toBe(302);
-    await expect(rt.fetch(origin)).rejects.toMatchObject({ kind: 'deployment-policy-denied' });
+    await expect(rt.fetch('http://127.0.0.1:9123/')).rejects.toMatchObject({ kind: 'deployment-policy-denied' });
+    await expect(rt.fetch('http://target.test:9123/')).rejects.toMatchObject({ kind: 'deployment-policy-denied' });
   });
 
   it("uses only the required proxy for user destinations, including literal addresses", async () => {
@@ -92,7 +83,7 @@ describe("egress policy", () => {
     cleanups.push(proxy.close);
     const rt = createEgressRuntime({
       env: { NO_PROXY: '*' },
-      deployment: { userDestinations: 'public', operatorOrigins: [], requiredProxy: proxy.url },
+      deployment: { userDestinations: 'public', requiredProxy: proxy.url },
       resolveAll: async () => { throw new Error('The configured proxy owns target DNS'); },
     });
     cleanups.push(rt.close);

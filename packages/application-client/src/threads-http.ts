@@ -223,6 +223,7 @@ export function createThreadsHttpAPI(): ThreadsAPI {
       return receipt.mode ? { ...receipt, thread_id: input.threadId, branch_id: input.branchId } : receipt;
     },
     enqueue: (input, observation) => post('enqueue', withClientTime(input), undefined, observation),
+    dismissInboxRejection: (identity, inboxId) => post('inbox/dismiss', { ...identity, inboxId }),
     observeInbox: (inboxId, signal) => awaitInbox(inboxId, getRuntimeEndpointGeneration(), signal),
     prepareNavigation: ({ withFiles, ...input }) => post(withFiles ? 'navigation/prepare-files' : 'navigation/prepare', input),
     recoverySource: input => post('recovery/source', input),

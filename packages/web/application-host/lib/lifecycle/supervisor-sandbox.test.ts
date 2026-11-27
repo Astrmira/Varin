@@ -48,7 +48,7 @@ test('the original sandbox receiver keeps its authenticated stream after Host ex
     once(emitter, event, { signal: AbortSignal.timeout(4_000) }).catch(error => { throw new Error(stage, { cause: error }); });
   try {
     const connected = observe(server, 'connection', 'Sandbox connection');
-    send({ kind: 'open', channel: 'transport', resourceId: 'sandbox', hostId: 'sandbox-host', generation: '1', integrity: 'sha256-' + '1'.repeat(64) });
+    send({ kind: 'open', channel: 'transport', resourceId: 'sandbox', hostId: 'sandbox-host', generation: '1', extensionId: 'dev.example.plugin', integrity: 'sha256-' + '1'.repeat(64) });
     [peer] = await connected;
     await vi.waitFor(() => expect(observed.some(message => message.kind === 'open')).toBe(true));
     const brokerCall = observe(peer!, 'message', 'Original receiver invocation');

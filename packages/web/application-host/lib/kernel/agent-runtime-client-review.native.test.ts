@@ -106,6 +106,18 @@ it('recovers the original inbox admission from Catalog after losing the coordina
     expect(await reopened.agentRuntimeRequest('runtime.inbox.rejections', {
       principalId, threadId: command.threadId, branchId: command.branchId,
     })).toEqual([{ inboxId: rejected.inboxId, key: rejected.key, status: 409, code: 'thread-conflict', draft }]);
+    const scope = { inboxId: rejected.inboxId, principalId, threadId: command.threadId, branchId: command.branchId };
+    await reopened.agentRuntimeRequest('runtime.inbox.dismiss', { ...scope, principalId: 'other-owner' });
+    expect(await reopened.agentRuntimeRequest('runtime.inbox.rejections', {
+      principalId, threadId: command.threadId, branchId: command.branchId,
+    })).toHaveLength(1);
+    await reopened.agentRuntimeRequest('runtime.inbox.dismiss', scope);
+    expect(await reopened.agentRuntimeRequest('runtime.inbox.rejections', {
+      principalId, threadId: command.threadId, branchId: command.branchId,
+    })).toEqual([]);
+    expect(await reopened.agentRuntimeRequest('runtime.inbox.reconcile', rejected)).toEqual({
+      result: { status: 409, body: { code: 'thread-conflict' } },
+    });
   } finally { await reopened.close(); }
 }, 30_000);
 

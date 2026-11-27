@@ -694,14 +694,14 @@ pub(crate) fn spawn(
                             KernelError::Storage("runtime initialization has not completed".into())
                         })?;
 
-                        if method == "runtime.inbox.reconcile" || method == "runtime.inbox.rejections" {
+                        if matches!(method, "runtime.inbox.reconcile" | "runtime.inbox.rejections" | "runtime.inbox.dismiss") {
                             let catalog = runtime.catalog();
                             let mut catalog = catalog.lock().map_err(|_| KernelError::Storage("Catalog unavailable".into()))?;
-                            return if method == "runtime.inbox.reconcile" {
-                                catalog.reconcile_inbox_input(serde_json::from_value(params)?).map_err(domain)
-                            } else {
-                                catalog.rejected_inbox_inputs(serde_json::from_value(params)?).map_err(domain)
-                            };
+                            return match method {
+                                "runtime.inbox.reconcile" => catalog.reconcile_inbox_input(serde_json::from_value(params)?),
+                                "runtime.inbox.dismiss" => catalog.dismiss_inbox_input(serde_json::from_value(params)?),
+                                _ => catalog.rejected_inbox_inputs(serde_json::from_value(params)?),
+                            }.map_err(domain);
                         }
                         if method == "runtime.park.release" {
                             let _: KernelEmptyParams = serde_json::from_value(params)?;

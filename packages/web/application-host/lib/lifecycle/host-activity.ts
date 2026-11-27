@@ -60,6 +60,12 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
   const threadWrites = owners.threadWrites?.() ?? null;
   const httpRequests = owners.httpRequests?.() ?? 0;
   const parkingSupported = owners.parkingSupported === true;
+  const coverage = [
+    owners.threadWrites, owners.httpRequests, owners.browser, owners.computerOperations, owners.dictation,
+    owners.execution, owners.provider, owners.terminal, owners.externalAgents, owners.mcp, owners.eventSources,
+    owners.eventTransport, owners.language, owners.preview, owners.relay, owners.knowledgeRequests,
+    owners.installingComponent,
+  ].every(owner => typeof owner === 'function');
   const ingress = owners.externalIngressActive();
   const draining = owners.draining();
   const browser = owners.browser?.() ?? null;
@@ -113,7 +119,8 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
     ...(relay && (relay.running || relay.reconciling) ? ['relay-owner-activity'] : []),
     ...(knowledgeRequests ? ['knowledge-owner-activity'] : []),
     ...(installingComponent ? ['local-component-installing'] : []),
-    ...(!parkingSupported ? ['owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'] : []),
+    ...(!coverage ? ['owner-coverage-incomplete'] : []),
+    ...(!parkingSupported ? ['durable-supervisor-handoff-unavailable'] : []),
   ];
   return {
     version: 1,
@@ -150,7 +157,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
       relay: relay && {running:relay.running,reconciling:relay.reconciling},
       knowledgeRequests, installingComponent,
     },
-    parking: { supported: parkingSupported, eligible: parkingSupported && retentionReasons.length === 0 },
+    parking: { supported: parkingSupported && coverage, eligible: parkingSupported && retentionReasons.length === 0 },
   } as const;
 };
 

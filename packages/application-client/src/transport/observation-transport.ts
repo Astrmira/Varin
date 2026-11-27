@@ -87,49 +87,61 @@ const activeConnectionKey = () => {
   const base = new URL(getRuntimeUrlResolver().api('/api'), window.location.href);
   return 'host:' + base.origin + base.pathname.slice(0, -'/api'.length);
 };
-let parkAware: { generation: number; key: string; page: Document; signal: AbortSignal; resume?: Promise<void>; dispose(): void } | undefined;
+const OBSERVATION_IDLE_MS = 60_000;
+const activityEvents = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+let parkAware: { generation: number; key: string; signal: AbortSignal; suspended: boolean;
+  resume?: Promise<void>; changes: EventTarget; dispose(): void } | undefined;
 
 export function enableParkingObservations(generation: number, wake: () => Promise<unknown>) {
   if (typeof document === 'undefined' || generation !== getRuntimeEndpointGeneration() || parkAware?.generation === generation) return;
   parkAware?.dispose();
   const page = document;
   const ended = new AbortController();
-  let resumeAuthRefresh = true;
+  let lastActivity = performance.now();
+  let timer: ReturnType<typeof setTimeout>;
   const unsubscribe = subscribeRuntimeEndpointChanged(() => state.dispose());
-  const manageRefresh = () => configureBackgroundUrlAuthRefresh(() => !ended.signal.aborted && !resumeAuthRefresh);
   const state: NonNullable<typeof parkAware> = {
-    generation, key: activeConnectionKey(), page, signal: ended.signal,
+    generation, key: activeConnectionKey(), signal: ended.signal, suspended: false, changes: new EventTarget(),
     dispose() {
-      page.removeEventListener('visibilitychange', reconcile);
+      clearTimeout(timer);
+      page.removeEventListener('visibilitychange', visibility);
+      for (const event of activityEvents) page.removeEventListener(event, activity, true);
       ended.abort();
       unsubscribe();
-      if (parkAware === state) parkAware = undefined;
-      manageRefresh();
+      if (parkAware === state) {
+        parkAware = undefined;
+        configureBackgroundUrlAuthRefresh(() => false);
+      }
     },
   };
-  const reconcile = () => {
-    if (generation !== getRuntimeEndpointGeneration()) { state.dispose(); return; }
-    resumeAuthRefresh = false;
-    manageRefresh();
-    if (page.visibilityState === 'hidden') {
+  const plan = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (ended.signal.aborted) return;
+      state.suspended = true;
       connections.get(state.key)?.suspend();
-    } else {
-      // A foreground read is wake demand. Reconnects by themselves never wake
-      // a Host, including their URL-token refresh.
-      const pending = wake().then(() => undefined, () => undefined);
-      state.resume = pending;
-      void pending.then(() => {
-        if (ended.signal.aborted || state.resume !== pending) return;
-        delete state.resume;
-        if (page.visibilityState === 'hidden') return;
-        resumeAuthRefresh = true;
-        manageRefresh();
-      });
-    }
+    }, Math.max(0, lastActivity + OBSERVATION_IDLE_MS - performance.now()));
   };
+  const activity = () => {
+    if (ended.signal.aborted || page.visibilityState === 'hidden') return;
+    lastActivity = performance.now();
+    plan();
+    if (!state.suspended) return;
+    state.suspended = false;
+    // A foreground read is wake demand. Background observation retries never supply it.
+    const pending = wake().then(() => undefined, () => undefined);
+    state.resume = pending;
+    void pending.then(() => {
+      if (state.resume === pending) delete state.resume;
+      state.changes.dispatchEvent(new Event('resume'));
+    });
+  };
+  const visibility = () => { if (page.visibilityState !== 'hidden') activity(); };
   parkAware = state;
-  page.addEventListener('visibilitychange', reconcile);
-  if (page.visibilityState === 'hidden') reconcile();
+  configureBackgroundUrlAuthRefresh(() => !ended.signal.aborted && (state.suspended || Boolean(state.resume) || page.visibilityState === 'hidden'));
+  page.addEventListener('visibilitychange', visibility);
+  for (const event of activityEvents) page.addEventListener(event, activity, { capture: true, passive: true });
+  plan();
 }
 
 async function waitForParkingVisibility(target: ObservationTarget, signal?: AbortSignal | null) {
@@ -138,20 +150,16 @@ async function waitForParkingVisibility(target: ObservationTarget, signal?: Abor
   const until = signal ? AbortSignal.any([signal, state.signal]) : state.signal;
   for (;;) {
     until.throwIfAborted();
-    const ready = state.page.visibilityState !== 'hidden';
-    if (ready && !state.resume) return;
-    const resume = state.resume;
+    if (!state.suspended && !state.resume) return;
     await new Promise<void>((resolve, reject) => {
-      const clean = () => {
-        state.page.removeEventListener('visibilitychange', visible);
+      const cleanup = () => {
+        state.changes.removeEventListener('resume', finish);
         until.removeEventListener('abort', abort);
       };
-      const finish = () => { clean(); resolve(); };
-      const visible = () => { if (state.page.visibilityState !== 'hidden') finish(); };
-      const abort = () => { clean(); reject(until.reason); };
+      const finish = () => { cleanup(); resolve(); };
+      const abort = () => { cleanup(); reject(until.reason); };
       until.addEventListener('abort', abort, { once: true });
-      if (ready) void resume!.then(finish);
-      else state.page.addEventListener('visibilitychange', visible);
+      state.changes.addEventListener('resume', finish, { once: true });
     });
   }
 }
@@ -237,7 +245,7 @@ class ObservationConnection {
     this.socket?.close();
   }
 
-  suspend(): void { this.fail(new Error('Application Host observation suspended while this page is hidden')); }
+  suspend(): void { this.fail(new Error('Application Host observation suspended while this page is idle')); }
 
   private receive(raw: unknown): void {
     try {

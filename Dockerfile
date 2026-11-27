@@ -196,7 +196,7 @@ WORKDIR /home/varin/app
 LABEL io.varin.image.role="extensions"
 ENV NODE_ENV=production VARIN_HOST=0.0.0.0 VARIN_PORT=3000
 COPY --from=extension-node-files /app/artifacts/extension-node/ ./
-RUN install -d -m 0700 /run/secrets \
+RUN install -d -o root -g root -m 0700 /run/varin-extension-private \
   && chmod 0755 /home/varin \
   && chown root:root /home/varin /home/varin/app \
   && bun install --production --frozen-lockfile \

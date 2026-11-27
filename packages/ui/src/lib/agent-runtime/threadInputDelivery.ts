@@ -5,7 +5,7 @@ import { prepareAnnotatedImages, type EditableImageAttachment } from '@/lib/imag
 
 const deliveries = new Map<string, Promise<string | undefined>>();
 /** Reopening the view while a send is still in flight joins its original observation. */
-export function deliverThreadInput(api: ThreadsAPI, original: ThreadPendingInput, update: (pending: ThreadPendingInput | undefined) => void): Promise<string | undefined> {
+export function deliverThreadInput(api: ThreadsAPI, original: ThreadPendingInput, update: (pending: ThreadPendingInput | undefined) => void, onInboxAccepted?: (inboxId: string) => void): Promise<string | undefined> {
   const key = JSON.stringify([getRuntimeEndpointGeneration(), original.input.threadId, original.input.branchId, original.input.key]);
   const existing = deliveries.get(key);
   if (existing) return existing;
@@ -13,7 +13,7 @@ export function deliverThreadInput(api: ThreadsAPI, original: ThreadPendingInput
     original = { ...original, input: { ...original.input, clientTime: observeMessageTime() } } as ThreadPendingInput;
     update(original);
   }
-  const delivery = deliver(api, original, update);
+  const delivery = deliver(api, original, update, onInboxAccepted);
   deliveries.set(key, delivery);
   const settled = () => { if (deliveries.get(key) === delivery) deliveries.delete(key); };
   void delivery.then(settled, settled);
@@ -22,7 +22,7 @@ export function deliverThreadInput(api: ThreadsAPI, original: ThreadPendingInput
 
 /** A failed observation is not a rejected input. Only the sending owner's explicit
  * pre-admission result can release a first attempt; earlier uncertainty remains sticky. */
-async function deliver(api: ThreadsAPI, original: ThreadPendingInput, update: (pending: ThreadPendingInput | undefined) => void): Promise<string | undefined> {
+async function deliver(api: ThreadsAPI, original: ThreadPendingInput, update: (pending: ThreadPendingInput | undefined) => void, onInboxAccepted?: (inboxId: string) => void): Promise<string | undefined> {
   let pending = original;
   const generation=getRuntimeEndpointGeneration();
   let media: { images?: import('@varin/protocol').ImageAttachment[] };
@@ -37,7 +37,7 @@ async function deliver(api: ThreadsAPI, original: ThreadPendingInput, update: (p
   }
   const observation: ThreadInputObservation = {
     inboxId: pending.inboxId,
-    onInboxAccepted({ inboxId }) { pending = { ...pending, inboxId, status: 'waiting' }; update(pending); },
+    onInboxAccepted({ inboxId }) { pending = { ...pending, inboxId, status: 'waiting' }; update(pending); onInboxAccepted?.(inboxId); },
   };
   try {
     const observe = api.observeInbox ? [observation] as const : [] as const;

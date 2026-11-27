@@ -1,10 +1,11 @@
 import type { ChildProcess } from 'node:child_process';
 import WebSocket from 'ws';
-import { brokerFrame, extensionBrokerPath, extensionIntegrity } from '../deployment/extension-sandbox-protocol.js';
+import { isVarinExtensionId } from '@varin/extension-contract';
+import { brokerFrame, extensionBrokerRoute, extensionIntegrity } from '../deployment/extension-sandbox-protocol.js';
 import { createProviderLeaseOwner, type ResourceProvider } from '../deployment/resource-provider.js';
 import { waitWithSignal } from '../cancellation.js';
 import { holdSandboxReceiver, SANDBOX_RELAY, type SandboxReceiverLease } from './sandbox-receiver-lease.js';
-import type { SupervisorJournal } from './supervisor-journal.js';
+import type { DurableEventInbox } from './event-inbox.js';
 
 type Frame = Record<string, unknown>;
 type Held = ReturnType<typeof holdSandboxReceiver>;
@@ -25,7 +26,7 @@ interface Frozen {
 }
 
 /** Retains each authenticated broker stream independently of the Host IPC generation. */
-export function createSupervisorSandbox(provider: ResourceProvider, journal: Pick<SupervisorJournal, 'accept'>, wake: () => void) {
+export function createSupervisorSandbox(provider: ResourceProvider, journal: Pick<DurableEventInbox, 'accept'>, wake: () => void) {
   const allocations = createProviderLeaseOwner(provider);
   const peers = new Set<Peer>();
   const frozen = new Map<string, Frozen>();
@@ -58,21 +59,22 @@ export function createSupervisorSandbox(provider: ResourceProvider, journal: Pic
       error => forward(peer, { kind: 'response', id, success: false, error: error.message }));
   }
   async function open(child: ChildProcess, message: Frame) {
-    const { channel, resourceId, hostId, generation, integrity } = message;
+    const { channel, resourceId, hostId, generation, extensionId, integrity } = message;
     if (typeof channel !== 'string' || typeof resourceId !== 'string' || typeof hostId !== 'string'
-      || typeof integrity !== 'string' || !extensionIntegrity.test(integrity)) throw new Error('Invalid supervised sandbox identity');
+      || typeof extensionId !== 'string' || !isVarinExtensionId(extensionId) || typeof integrity !== 'string' || !extensionIntegrity.test(integrity)) throw new Error('Invalid supervised sandbox identity');
     const stop = new AbortController();
     const disconnect = () => stop.abort();
     child.once('disconnect', disconnect);
     const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(20_000)]);
     let release: (() => void) | undefined;
     try {
-      const allocation = await allocations.acquire(resourceId, signal);
+      const allocation = await allocations.acquire(resourceId, signal, extensionId);
       release = allocation.release;
       const descriptor = (await provider.describe(signal)).find(resource => resource.id === resourceId);
-      if (descriptor?.hostId !== hostId || descriptor.role !== 'extensions' || allocation.lease.generation !== generation)
+      if (descriptor?.hostId !== hostId || descriptor.role !== 'extensions' ||
+          (descriptor.extensionId && descriptor.extensionId !== extensionId) || allocation.lease.generation !== generation)
         throw new Error('Supervised sandbox changed its owner');
-      const address = new URL(allocation.lease.endpoint.replace(/\/$/u, '') + extensionBrokerPath + integrity);
+      const address = new URL(allocation.lease.endpoint.replace(/\/$/u, '') + extensionBrokerRoute(extensionId, integrity));
       address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:';
       const socket = new WebSocket(address, { headers: { Authorization: 'Bearer ' + allocation.lease.bearer, 'X-Varin-Managed-Target': hostId }, followRedirects: false });
       let closed!: () => void;

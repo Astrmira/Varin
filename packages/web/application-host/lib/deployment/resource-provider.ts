@@ -30,6 +30,7 @@ export interface ProviderLeaseIdentity {
   resourceId: string;
   leaseId: string;
   generation: string;
+  extensionId?: string;
 }
 
 export interface ProviderLease extends ProviderLeaseIdentity {
@@ -117,7 +118,7 @@ export function parseProviderResources(value: unknown): ProviderResource[] {
     return { id: text(entry.id), hostId: text(entry.hostId), label: text(entry.label), role, capabilities: entry.capabilities.map(text),
       ...(role === 'browser' && entry.browserId !== undefined && { browserId: text(entry.browserId) }),
       ...(role === 'computer' && entry.desktopId !== undefined && { desktopId: text(entry.desktopId) }),
-      ...(role === 'extensions' && { extensionId: text(entry.extensionId) }),
+      ...(role === 'extensions' && entry.extensionId !== undefined && { extensionId: text(entry.extensionId) }),
       ...(role === 'computer' && platform && { platform }) };
   });
   if (new Set(resources.map(resource => resource.id)).size !== resources.length) throw new Error('Duplicate logical resource in provider directory');
@@ -127,7 +128,7 @@ export function parseProviderResources(value: unknown): ProviderResource[] {
 function parseLease(value: unknown, expected: Omit<ProviderLeaseIdentity, 'generation'> & { generation?: string }): ProviderLease {
   const entry = record(value);
   if (entry.resourceId !== expected.resourceId || entry.leaseId !== expected.leaseId
-    || expected.generation !== undefined && entry.generation !== expected.generation) throw new Error('Resource provider returned a different allocation');
+    || entry.extensionId !== expected.extensionId || expected.generation !== undefined && entry.generation !== expected.generation) throw new Error('Resource provider returned a different allocation');
   let endpoint: URL;
   try { endpoint = new URL(text(entry.endpoint)); } catch { throw new Error('Invalid resource provider endpoint'); }
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
@@ -137,7 +138,7 @@ function parseLease(value: unknown, expected: Omit<ProviderLeaseIdentity, 'gener
     throw new Error('Resource provider lease has already expired');
   }
   return { resourceId: expected.resourceId, leaseId: expected.leaseId, generation: text(entry.generation),
-    endpoint: endpoint.href, bearer: text(entry.bearer), expiresAt: entry.expiresAt };
+    ...(expected.extensionId && { extensionId: expected.extensionId }), endpoint: endpoint.href, bearer: text(entry.bearer), expiresAt: entry.expiresAt };
 }
 
 export function createSocketResourceProvider(options: { id: string; socketPath: string; bearer: string }): ResourceProvider {
@@ -191,51 +192,64 @@ interface Allocation {
   timer?: ReturnType<typeof setTimeout>;
 }
 
-const leaseIdentity = ({ resourceId, leaseId, generation }: ProviderLease): ProviderLeaseIdentity => ({ resourceId, leaseId, generation });
+const leaseIdentity = ({ resourceId, leaseId, generation, extensionId }: ProviderLease): ProviderLeaseIdentity =>
+  ({ resourceId, leaseId, generation, ...(extensionId && { extensionId }) });
 
 /** Uses share preparation and a lease. Independent cancellation forgets only
  * that use. A late acquire is released after the last waiter has gone. */
 export function createProviderLeaseOwner(provider: ResourceProvider, onError: (error: unknown) => void = () => {}) {
   const allocations = new Map<string, Allocation>();
-  const renewal = (allocation: Allocation) => {
+  const renewal = (allocation: Allocation, retryMs?: number) => {
     const lease = allocation.lease;
-    if (!lease || !allocation.users) return;
-    // Renew midway through the provider's actual lease window.
+    const remaining = (lease?.expiresAt ?? 0) - Date.now();
+    if (!lease || !allocation.users || remaining <= 0) return;
+    // Retry a transient control-plane failure while the original lease is valid.
+    const delay = retryMs === undefined ? remaining / 2 : Math.min(retryMs, remaining / 2);
     allocation.timer = setTimeout(() => {
-      allocation.renewing = provider.renew(leaseIdentity(lease)).then(next => {
+      const budget = lease.expiresAt - Date.now();
+      if (!allocation.users || budget <= 0) return;
+      allocation.renewing = provider.renew(leaseIdentity(lease), AbortSignal.timeout(budget)).then(next => {
         allocation.lease = next;
         renewal(allocation);
-      }).catch(onError);
-    }, Math.max(1, (lease.expiresAt - Date.now()) / 2));
+      }).catch(error => {
+        onError(error);
+        if (lease.expiresAt - Date.now() > 10) renewal(allocation, Math.min((retryMs ?? 100) * 2, 2000));
+      });
+    }, Math.max(1, Math.min(2_147_483_647, delay)));
     allocation.timer.unref?.();
   };
-  const leave = (resourceId: string, allocation: Allocation) => {
+  const leave = (scope: string, allocation: Allocation) => {
     if (--allocation.users !== 0) return;
     clearTimeout(allocation.timer);
     allocation.retiring = allocation.pending.then(async () => {
       await allocation.renewing;
       await provider.release(leaseIdentity(allocation.lease!));
     }, () => undefined).catch(onError).finally(() => {
-      if (allocations.get(resourceId) === allocation) allocations.delete(resourceId);
+      if (allocations.get(scope) === allocation) allocations.delete(scope);
     });
   };
-  const acquire = async (resourceId: string, signal?: AbortSignal) => {
+  const acquire = async (resourceId: string, signal?: AbortSignal, extensionId?: string) => {
+    const scope = JSON.stringify([resourceId, extensionId]);
     signal?.throwIfAborted();
-    let allocation = allocations.get(resourceId);
+    let allocation = allocations.get(scope);
     while (allocation?.retiring) {
       await waitWithSignal(allocation.retiring, signal);
-      allocation = allocations.get(resourceId);
+      allocation = allocations.get(scope);
+    }
+    if (allocation?.lease && allocation.lease.expiresAt <= Date.now()) {
+      clearTimeout(allocation.timer);
+      allocation = undefined;
     }
     if (!allocation) {
-      const next: Allocation = { users: 0, pending: provider.acquire({ resourceId, leaseId: randomUUID() }) };
+      const next: Allocation = { users: 0, pending: provider.acquire({ resourceId, leaseId: randomUUID(), ...(extensionId && { extensionId }) }) };
       next.pending = next.pending.then(lease => { next.lease = lease; renewal(next); return lease; });
-      allocations.set(resourceId, next);
+      allocations.set(scope, next);
       allocation = next;
     }
     const current = allocation;
     current.users++;
     let released = false;
-    const release = () => { if (!released) { released = true; leave(resourceId, current); } };
+    const release = () => { if (!released) { released = true; leave(scope, current); } };
     try {
       await waitWithSignal(current.pending, signal);
       signal?.throwIfAborted();

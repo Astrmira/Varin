@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { isPathWithinRoot } from '../workspace/path-safety.js';
 import type { ProviderResource, ProviderStatus } from './resource-provider.js';
 import { isVarinExtensionId } from '@varin/extension-contract';
-import { extensionBrokerPath, extensionIntegrity, extensionNodeCredential } from './extension-sandbox-protocol.js';
+import { extensionChannelToken, parseExtensionBrokerRoute, parseExtensionIdentityRoute, extensionNodeCredential } from './extension-sandbox-protocol.js';
 
 const execute = promisify(execFile);
 const basePath = '/api/harness/managed-execution/v1';
@@ -22,7 +22,8 @@ interface Definition {
   image: string;
   workspace: string | undefined;
   state?: string;
-  extension?: { credentialPath: string; network?: string };
+  extension?: { credentialPath: string };
+  network?: string;
   token: string;
   container: string;
   configuration: string;
@@ -43,6 +44,7 @@ interface Lease {
   resourceId: string;
   generation: string;
   bearer: string;
+  extensionId?: string;
   expiresAt: number;
 }
 interface ResourceSlot {
@@ -52,6 +54,7 @@ interface ResourceSlot {
   lane: Promise<unknown>;
   leases: Map<string, Lease>;
   requests: number;
+  needsInspection?: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -102,7 +105,8 @@ async function readConfig(file: string) {
     if (role !== 'resources' && role !== 'browser' && role !== 'computer' && role !== 'extensions') throw new Error('Unknown local provider role');
     if (role !== 'resources' && entry.workspace !== undefined || role !== 'browser' && entry.browserId !== undefined
       || role !== 'computer' && entry.desktopId !== undefined
-      || role === 'extensions' && entry.state !== undefined || role !== 'extensions' && (entry.extensionId !== undefined || entry.network !== undefined)) {
+      || role === 'extensions' && entry.state !== undefined || role !== 'extensions' && entry.extensionId !== undefined
+      || role !== 'resources' && role !== 'extensions' && entry.network !== undefined) {
       throw new Error('Resource configuration contains fields for another node role');
     }
     const [workspace, state, credentialPath] = await Promise.all([role === 'resources' ? directory(entry.workspace, 'workspace') : undefined,
@@ -114,27 +118,28 @@ async function readConfig(file: string) {
     const resourceId = name(entry.id, 'resource id'), hostId = name(entry.hostId, 'node hostId');
     const image = name(entry.image, 'image');
     if (image.startsWith('-')) throw new Error('Invalid image reference');
-    const extensionId = role === 'extensions' ? name(entry.extensionId, 'extensionId') : undefined;
+    const extensionId = entry.extensionId === undefined ? undefined : name(entry.extensionId, 'extensionId');
     if (extensionId && !isVarinExtensionId(extensionId)) throw new Error('Invalid sandbox extension ID');
     const network = entry.network === undefined ? undefined : name(entry.network, 'network');
-    if (network === 'host' || network?.startsWith('container:') || network?.startsWith('ns:')) throw new Error('Extension sandbox needs a separate network namespace');
+    if (network === 'host' || network?.startsWith('container:') || network?.startsWith('ns:')) throw new Error('Resource sandbox needs a separate network namespace');
     const resource: ProviderResource = { id: resourceId, hostId, label: name(entry.label, 'resource label'), role,
       ...(role === 'browser'
         ? { browserId: name(entry.browserId, 'Browser Node browserId'), capabilities: ['browser', 'tabs', 'open', 'read', 'screenshot', 'act', 'activate'] }
         : role === 'computer' ? { desktopId: name(entry.desktopId, 'Computer Node desktopId'), platform: 'linux', capabilities: ['computer'] }
-        : extensionId ? { extensionId, capabilities: ['extension-broker'] }
+        : role === 'extensions' ? { ...(extensionId && { extensionId }), capabilities: ['extension-broker'] }
         : { capabilities: ['sources', 'work-location-read', 'work-location'] }) };
     return { resource, image, workspace, ...(state && { state }), token: await credential(credentialPath),
-      ...(extensionId && { extension: { credentialPath, ...(network && { network }) } }),
+      ...(role === 'extensions' && { extension: { credentialPath } }), ...(network && { network }),
       container: 'varin-resource-' + digest([id, resourceId]).slice(0, 24),
-      configuration: digest(extensionId ? [role, hostId, image, extensionId, credentialPath, network]
-        : role === 'resources' ? [hostId, image, workspace, state] : [role, hostId, image, state, resource.browserId ?? resource.desktopId]) };
+      configuration: digest(role === 'extensions' ? [2, role, hostId, image, extensionId, credentialPath, network]
+        : role === 'resources' ? [2, hostId, image, workspace, state, network] : [role, hostId, image, state, resource.browserId ?? resource.desktopId]) };
   }));
   const overlaps = (left: string, right: string) => isPathWithinRoot(left, right) || isPathWithinRoot(right, left);
   const roots = (entry: Definition) => [entry.workspace, entry.state].filter((root): root is string => !!root);
   for (const [index, definition] of definitions.entries()) {
     if (definitions.slice(0, index).some(prior => prior.resource.id === definition.resource.id ||
-      prior.resource.hostId === definition.resource.hostId || !!definition.resource.extensionId && definition.resource.extensionId === prior.resource.extensionId ||
+      prior.resource.hostId === definition.resource.hostId || definition.resource.role === 'extensions' && prior.resource.role === 'extensions' &&
+      definition.resource.extensionId === prior.resource.extensionId ||
       roots(prior).some(root => roots(definition).some(other => overlaps(root, other))))) {
       throw new Error('A provider resource needs its own identity and exclusive workspace and state mounts');
     }
@@ -186,8 +191,10 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
         ...(sandbox ? ['--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777',
           '--security-opt=no-new-privileges', '--cap-drop=ALL', '--cap-add=SETUID', '--cap-add=SETGID', '--cap-add=CHOWN', '--cap-add=KILL', '--cap-add=DAC_OVERRIDE',
           '--mount', mount(sandbox.credentialPath, extensionNodeCredential) + ',readonly',
-          '--env', 'VARIN_EXTENSION_ID=' + definition.resource.extensionId, '--env', 'VARIN_EXTENSION_HOST_ID=' + definition.resource.hostId,
-          ...(sandbox.network ? ['--network=' + sandbox.network] : [])] : []),
+          ...(definition.resource.extensionId ? ['--env', 'VARIN_EXTENSION_ID=' + definition.resource.extensionId] : []),
+          '--env', 'VARIN_EXTENSION_HOST_ID=' + definition.resource.hostId] : definition.resource.role === 'resources'
+          ? ['--security-opt=no-new-privileges', '--cap-drop=ALL'] : []),
+        ...(definition.network ? ['--network=' + definition.network] : []),
         '--publish', '127.0.0.1::3000', definition.image);
       await run('start', id);
       instance = await inspect(definition);
@@ -234,7 +241,11 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
     if (await inspect(definition)) throw new Error('Container volume detach is unconfirmed');
     return true;
   };
-  return { allocate, stop };
+  const stillRunning = async (definition: Definition, previous: Allocation) => {
+    const found = await inspect(definition);
+    return !!found && found.State.Running && digest([found.Id, found.State.StartedAt]) === previous.generation;
+  };
+  return { allocate, stop, stillRunning };
 }
 
 const send = (res: ServerResponse, status: number, value?: unknown) => {
@@ -300,15 +311,17 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     if (!match || slot?.state !== 'ready' || !slot.instance) return { status: 404 } as const;
     const api = match[2]!, computer = slot.definition.resource.role === 'computer';
     const extension = slot.definition.resource.role === 'extensions';
-    const broker = extension && api.startsWith(extensionBrokerPath) && extensionIntegrity.test(api.slice(extensionBrokerPath.length));
-    const allowed = extension ? (upgrade ? broker : broker || api === basePath + '/identity')
+    const broker = extension ? parseExtensionBrokerRoute(api) : undefined;
+    const extensionId = broker?.extensionId ?? (extension ? parseExtensionIdentityRoute(api) : undefined);
+    const allowed = extension ? (upgrade ? broker : broker || extensionId !== undefined && req.method === 'GET')
       : upgrade ? computer && desktopMediaPath.test(api)
       : api.startsWith(basePath + '/') || computer && (api === '/api/computers' || api.startsWith('/api/computers/'));
     if (!allowed) return { status: 404 } as const;
     sweep(slot);
     const lease = [...slot.leases.values()].find(candidate => secretMatches(req.headers.authorization, 'Bearer ' + candidate.bearer));
-    if (!lease || lease.generation !== slot.instance.generation) return { status: 401 } as const;
-    return { slot, instance: slot.instance, api, path: api + url.search, lease };
+    if (!lease || lease.generation !== slot.instance.generation
+      || extensionId && lease.extensionId !== extensionId) return { status: 401 } as const;
+    return { slot, instance: slot.instance, api, path: extension ? api : api + url.search, lease, extensionId };
   };
   const beginRequest = (slot: ResourceSlot) => {
     // Count upstream lifetime as well as the downstream socket. A pending
@@ -317,19 +330,19 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     let retained = true;
     return () => { if (retained) { retained = false; slot.requests--; planIdle(slot); } };
   };
-  const proxyHeaders = (req: IncomingMessage, slot: ResourceSlot, port: number) => {
+  const proxyHeaders = (req: IncomingMessage, slot: ResourceSlot, port: number, extensionId?: string) => {
     const headers = { ...req.headers };
     for (const key of ['origin', 'connection', 'keep-alive', 'upgrade', 'transfer-encoding', 'proxy-authorization']) delete headers[key];
-    return { ...headers, host: `127.0.0.1:${port}`, authorization: 'Bearer ' + slot.definition.token };
+    return { ...headers, host: `127.0.0.1:${port}`, authorization: 'Bearer ' + (extensionId ? extensionChannelToken(slot.definition.token, extensionId) : slot.definition.token) };
   };
   const data = createServer((req, res) => {
     const target = resolveDataRequest(req, false);
     if ('status' in target) { send(res, target.status); return; }
-    const { slot, instance, api, path } = target;
+    const { slot, instance, api, path, extensionId } = target;
     const settle = beginRequest(slot);
     const observation = slot.definition.resource.role === 'computer' && req.method === 'GET' && api.endsWith('/stream');
     const outbound = request({ hostname: '127.0.0.1', port: instance.nodePort, path,
-      method: req.method ?? 'GET', headers: proxyHeaders(req, slot, instance.nodePort) }, upstream => {
+      method: req.method ?? 'GET', headers: proxyHeaders(req, slot, instance.nodePort, extensionId) }, upstream => {
       if (res.destroyed) upstream.resume();
       else {
         const headers = { ...upstream.headers };
@@ -342,8 +355,8 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     });
     if (observation) res.once('close', () => { if (!res.writableFinished) outbound.destroy(); });
     outbound.once('error', () => {
+      if (!req.aborted && !(observation && res.destroyed) && slot.instance === instance) slot.needsInspection = true;
       settle();
-      if (!req.aborted && !(observation && res.destroyed) && slot.state === 'ready' && slot.instance === instance) slot.state = 'unavailable';
       if (!res.headersSent && !res.destroyed) send(res, 502);
       else if (!res.destroyed) res.destroy();
     });
@@ -357,7 +370,7 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     const reject = (status: number) => downstream.end(`HTTP/1.1 ${status} Upgrade refused\r\nConnection: close\r\n\r\n`);
     if ('status' in target) { reject(target.status); return; }
     if (req.headers.upgrade?.toLowerCase() !== 'websocket') { reject(400); return; }
-    const { slot, instance, path, lease } = target;
+    const { slot, instance, path, lease, extensionId } = target;
     const settle = beginRequest(slot);
     mediaSockets.add(downstream);
     let upstreamSocket: Duplex | undefined;
@@ -379,7 +392,7 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
       });
     }
     const outbound = request({ hostname: '127.0.0.1', port: instance.nodePort, path, method: 'GET',
-      headers: { ...proxyHeaders(req, slot, instance.nodePort), connection: 'Upgrade', upgrade: 'websocket' } });
+      headers: { ...proxyHeaders(req, slot, instance.nodePort, extensionId), connection: 'Upgrade', upgrade: 'websocket' } });
     downstream.once('error', () => downstream.destroy());
     downstream.once('close', () => {
       clearTimeout(leaseTimer);
@@ -388,7 +401,12 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
       else { outbound.destroy(); settle(); }
     });
     outbound.once('response', response => { response.resume(); reject(response.statusCode ?? 502); });
-    outbound.once('error', () => { if (!downstream.destroyed) reject(502); });
+    outbound.once('error', () => {
+      if (!downstream.destroyed) {
+        if (slot.instance === instance) slot.needsInspection = true;
+        reject(502);
+      }
+    });
     outbound.once('upgrade', (response, upstream, upstreamHead) => {
       if (downstream.destroyed) { upstream.destroy(); return; }
       upstreamSocket = upstream;
@@ -427,12 +445,22 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
         }
         const leaseId = name(input.leaseId, 'leaseId');
         const prior = slot.leases.get(leaseId);
+        const resource = slot.definition.resource;
+        const extensionId = input.extensionId;
+        if (resource.role === 'extensions'
+          ? typeof extensionId !== 'string' || !isVarinExtensionId(extensionId) || !!resource.extensionId && resource.extensionId !== extensionId
+          : extensionId !== undefined) { send(res, 403); return; }
+        if (prior && prior.extensionId !== extensionId) { send(res, 409); return; }
         if (action === 'release') {
           if (prior && prior.generation === input.generation) {
             slot.leases.delete(leaseId);
             for (const peer of extensionSockets.get(prior.bearer) ?? []) peer.destroy();
           }
           send(res, 204); return;
+        }
+        if (slot.instance && slot.needsInspection && (action === 'renew' || action === 'acquire')) {
+          if (!await engine.stillRunning(slot.definition, slot.instance)) slot.state = 'unavailable';
+          slot.needsInspection = false;
         }
         if (action === 'renew' && (!prior || prior.generation !== input.generation || slot.state !== 'ready')) { send(res, 409); return; }
         if (action !== 'acquire' && action !== 'renew') { send(res, 404); return; }
@@ -447,7 +475,7 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
         }
         if (prior && prior.generation !== slot.instance.generation) { send(res, 409); return; }
         const lease = { resourceId, leaseId, generation: slot.instance.generation, bearer: prior?.bearer ?? randomBytes(32).toString('base64url'),
-          expiresAt: Date.now() + config.leaseDurationMs };
+          ...(typeof extensionId === 'string' && { extensionId }), expiresAt: Date.now() + config.leaseDurationMs };
         slot.leases.set(leaseId, lease);
         send(res, 200, { ...lease, endpoint: `${dataOrigin}/resources/id-${encodeURIComponent(resourceId)}` });
       });

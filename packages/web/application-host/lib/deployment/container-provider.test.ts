@@ -8,9 +8,11 @@ import { expect, it } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { startContainerResourceProvider } from './container-provider.js';
 import { createSocketResourceProvider } from './resource-provider.js';
-import { extensionBrokerPath } from './extension-sandbox-protocol.js';
+import { extensionBrokerRoute, extensionChannelToken, extensionIdentityRoute, extensionNodeCredential } from './extension-sandbox-protocol.js';
 
-it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s container only on acquire and retires its original generation after release and detach', async role => {
+it.each(['resources', 'browser', 'computer', 'extensions', 'shared-extensions'])('starts a %s container only on acquire and retires its original generation after release and detach', async kind => {
+  const role = kind === 'shared-extensions' ? 'extensions' : kind;
+  const dedicated = kind === 'extensions';
   const root = await mkdtemp(path.join(os.tmpdir(), 'varin-provider-helper-'));
   const socketPath = process.platform === 'win32' ? '\\\\.\\pipe\\varin-provider-' + randomUUID() : path.join(root, 'control.sock');
   const workspace = path.join(root, 'workspaces'), state = path.join(root, 'state');
@@ -19,12 +21,15 @@ it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s contain
   const resourceId = '..';
   const desktopId = 'managed-linux';
   const extensionId = 'dev.example.sandbox';
-  const mediaPath = role === 'extensions' ? extensionBrokerPath + 'sha256-' + 'a'.repeat(64) : `/api/computers/desktops/${desktopId}/vnc`;
+  const integrity = 'sha256-' + 'a'.repeat(64);
+  const otherExtension = 'dev.example.other';
+  const mediaPath = role === 'extensions' ? extensionBrokerRoute(extensionId, integrity) : `/api/computers/desktops/${desktopId}/vnc`;
   const streamPath = `/api/computers/desktops/${desktopId}/stream`;
   let observationClosed: Promise<unknown> | undefined;
   let nodeReadyToRetire = false;
   const node = createServer((req, res) => {
-    if (req.headers.authorization !== 'Bearer original-node-token') { res.writeHead(401).end(); return; }
+    if (req.headers.authorization !== 'Bearer ' + (req.url === extensionIdentityRoute(extensionId)
+      ? extensionChannelToken('original-node-token', extensionId) : 'original-node-token')) { res.writeHead(401).end(); return; }
     res.setHeader('x-varin-managed-host', hostId);
     if (req.url === streamPath) {
       observationClosed = once(res, 'close');
@@ -33,12 +38,13 @@ it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s contain
       return;
     }
     if (req.url?.endsWith('/retention')) { res.end(JSON.stringify({ retireReady: nodeReadyToRetire })); return; }
-    res.end(JSON.stringify({ hostId, role, requestHostIdentity: true, ...(role === 'extensions' && { extensionId }) }));
+    res.end(JSON.stringify({ hostId, role, requestHostIdentity: true, ...(dedicated && { extensionId }) }));
   });
   const media = new WebSocketServer({ noServer: true });
   node.on('upgrade', (req, socket, head) => {
     expect(req.url).toBe(mediaPath);
-    expect(req.headers.authorization).toBe('Bearer original-node-token');
+    expect(req.headers.authorization).toBe('Bearer ' + (role === 'extensions'
+      ? extensionChannelToken('original-node-token', extensionId) : 'original-node-token'));
     media.handleUpgrade(req, socket, head, ws => {
       ws.on('message', (data, binary) => ws.send(data, { binary }));
     });
@@ -50,7 +56,7 @@ it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s contain
   await writeFile(file, JSON.stringify({ version: 1, id: 'local', socketPath, credentialFile: controlFile,
     leaseDurationMs: 60_000, startupTimeoutMs: 10_000, idleRetentionMs: 500,
     resources: [{ id: resourceId, hostId, label: 'Local work', role,
-      ...(role === 'extensions' ? { extensionId } : {
+      ...(role === 'extensions' ? { ...(dedicated && { extensionId }) } : {
         state, ...(role === 'browser' ? { browserId: 'configured-cdp' } : role === 'computer' ? { desktopId } : { workspace }),
       }), credentialFile: nodeFile, image: 'varin-node:fixture' }],
   }));
@@ -71,9 +77,10 @@ it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s contain
       expect(rest.some(arg => arg.includes('dst=/home/varin/workspaces'))).toBe(role === 'resources');
       if (role === 'extensions') {
         expect(rest).toContain('--read-only');
-        expect(rest).toContain('VARIN_EXTENSION_ID=' + extensionId);
-        expect(rest.filter(arg => arg.includes('dst='))).toEqual([expect.stringContaining('/run/secrets/varin-extension-node.json,readonly')]);
+        expect(rest.includes('VARIN_EXTENSION_ID=' + extensionId)).toBe(dedicated);
+        expect(rest.filter(arg => arg.includes('dst='))).toEqual([expect.stringContaining(extensionNodeCredential + ',readonly')]);
       }
+      if (role === 'resources') expect(rest).toEqual(expect.arrayContaining(['--cap-drop=ALL', '--security-opt=no-new-privileges']));
       containerName = rest[rest.indexOf('--name') + 1]!;
       const [label, value] = rest[rest.indexOf('--label') + 1]!.split('=');
       instance = { Id: randomUUID(), State: { Running: false, StartedAt: new Date().toISOString() },
@@ -91,17 +98,18 @@ it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s contain
     throw new Error('Unexpected test engine command');
   });
   const provider = createSocketResourceProvider({ id: 'local', socketPath, bearer: 'control-token' });
-  const use = (leaseId: string) => provider.acquire({ resourceId, leaseId });
+  const use = (leaseId: string, id = extensionId) => provider.acquire({ resourceId, leaseId, ...(role === 'extensions' && { extensionId: id }) });
   const observation = new AbortController();
   try {
     expect(await provider.describe()).toMatchObject([{ id: resourceId, role, ...(role === 'browser' && { browserId: 'configured-cdp' }),
-      ...(role === 'computer' && { desktopId }), ...(role === 'extensions' && { extensionId }) }]);
+      ...(role === 'computer' && { desktopId }), ...(dedicated && { extensionId }) }]);
     expect(await provider.status(resourceId)).toMatchObject({ state: 'cold' });
     expect(operations).toEqual([]);
     const [first, second] = await Promise.all([use('one'), use('two')]);
     expect(first.generation).toBe(second.generation);
     expect(operations.filter(operation => operation === 'create')).toHaveLength(1);
-    const endpoint = first.endpoint + '/api/harness/managed-execution/v1/identity';
+    const endpoint = first.endpoint + (role === 'extensions'
+      ? extensionIdentityRoute(extensionId) : '/api/harness/managed-execution/v1/identity');
     const identity = (bearer: string) => fetch(endpoint, { headers: { authorization: 'Bearer ' + bearer } });
     expect((await identity('original-node-token')).status).toBe(401);
     expect((await identity(first.bearer)).status).toBe(200);
@@ -125,7 +133,18 @@ it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s contain
       viewer.send(Buffer.from('frame round trip'));
       expect(String((await frame)[0])).toBe('frame round trip');
     }
-    const claim = (lease: typeof first) => ({ resourceId: lease.resourceId, leaseId: lease.leaseId, generation: lease.generation });
+    const claim = ({ resourceId, leaseId, generation, extensionId }: typeof first) =>
+      ({ resourceId, leaseId, generation, ...(extensionId && { extensionId }) });
+    if (role === 'extensions') {
+      if (dedicated) await expect(use('other', otherExtension)).rejects.toThrow('403');
+      else {
+        const other = await use('other', otherExtension);
+        expect(other.generation).toBe(first.generation);
+        expect(other.bearer).not.toBe(first.bearer);
+        expect((await identity(other.bearer)).status).toBe(401);
+        await provider.release(claim(other));
+      }
+    }
     expect(await provider.renew(claim(first))).toMatchObject(claim(first));
     await expect(provider.retire(resourceId, first.generation)).rejects.toThrow('409');
     const revoked = role === 'extensions' ? once(viewer!, 'close') : undefined;

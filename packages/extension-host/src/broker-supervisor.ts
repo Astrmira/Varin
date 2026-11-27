@@ -1413,8 +1413,8 @@ export class BrokeredHostSupervisor {
         ? { modulePath: join(residentRoot, builtin!.manifest.entrypoints!.host!.file), packageRoot: residentRoot }
         : await this.#packages.resolveBrokeredHostEntrypoint(entry.manifest.id, selection.slot, selection.integrity);
       controller.signal.throwIfAborted();
-      const sandbox = this.#sandboxTransportFactory;
-      const broker = direct ? declarationLifecycle : residentRoot || selection.manifest.entrypoints?.host?.mode === "native" || builtin && sandbox
+      const sandbox = builtin ? undefined : this.#sandboxTransportFactory;
+      const broker = direct ? declarationLifecycle : residentRoot || selection.manifest.entrypoints?.host?.mode === "native"
         ? new NativeHostTransport({ requestFromExtension })
         : (sandbox ?? this.#transportFactory)({
           artifact: { integrity: selection.integrity, open: signal => this.#packages.artifacts.openBrokeredArtifact(selection.integrity, signal) },

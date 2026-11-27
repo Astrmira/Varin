@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { VARIN_CREDENTIALS_CAPABILITY, VARIN_EVENTS_CAPABILITY, type JsonValue, type VarinCredentialMetadata, type VarinCredentialValue } from '@varin/extension-contract';
 import { receiverEventPage, type ReceiverPageContext } from '../extensions/event-page.js';
 import { brokerFrame } from '../deployment/extension-sandbox-protocol.js';
-import type { SupervisorJournal } from './supervisor-journal.js';
+import type { DurableEventInbox } from './event-inbox.js';
 
 export const SANDBOX_RELAY = 'varin:supervised-sandbox';
 export const RECEIVER_LEASE_MS = 30 * 60_000;
@@ -18,7 +18,7 @@ export interface SandboxReceiverLease extends ReceiverPageContext {
 /** In-memory authority for one receive invocation of one broker generation.
  * The Host is the only issuer. Neither a Sandbox frame nor a journal entry can
  * supply a principal, connection, account or extension identity. */
-export function holdSandboxReceiver(lease: SandboxReceiverLease, journal: Pick<SupervisorJournal, 'accept'>, wake: () => void) {
+export function holdSandboxReceiver(lease: SandboxReceiverLease, journal: Pick<DurableEventInbox, 'accept'>, wake: () => void) {
   let previous: { input: unknown; output: JsonValue } | undefined;
   let work = Promise.resolve();
   let accepting = true;

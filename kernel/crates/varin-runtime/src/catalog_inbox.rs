@@ -31,19 +31,23 @@ pub struct InboxRejected {
 
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
-        "CREATE TABLE supervisor_inputs(
+        "CREATE TABLE IF NOT EXISTS supervisor_inputs(
             id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, thread_id TEXT NOT NULL, branch_id TEXT NOT NULL,
             command_key TEXT NOT NULL, method TEXT NOT NULL, preexisting INTEGER NOT NULL, result TEXT, rejected TEXT
          );
-         CREATE INDEX supervisor_input_rejections ON supervisor_inputs(principal_id,thread_id,branch_id)
+         CREATE INDEX IF NOT EXISTS supervisor_input_rejections ON supervisor_inputs(principal_id,thread_id,branch_id)
            WHERE rejected IS NOT NULL;"
     )?;
     Ok(())
 }
 
-pub(super) fn check_format(db: &Connection) -> Result<()> {
-    db.prepare("SELECT id,principal_id,thread_id,branch_id,command_key,method,preexisting,result,rejected FROM supervisor_inputs")?;
-    Ok(())
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InboxDismiss {
+    inbox_id: String,
+    principal_id: String,
+    thread_id: String,
+    branch_id: String,
 }
 
 impl Catalog {
@@ -135,6 +139,16 @@ impl Catalog {
         } else {
             json!({})
         })
+    }
+
+    pub fn dismiss_inbox_input(&mut self, input: InboxDismiss) -> Result<Value> {
+        // Keep the settlement for lost-ack reconciliation and release the draft.
+        self.db.execute(
+            "UPDATE supervisor_inputs SET rejected=NULL
+             WHERE id=?1 AND principal_id=?2 AND thread_id=?3 AND branch_id=?4 AND rejected IS NOT NULL",
+            params![input.inbox_id, input.principal_id, input.thread_id, input.branch_id],
+        )?;
+        Ok(json!({"ok":true}))
     }
 
     pub fn rejected_inbox_inputs(&self, input: InboxRejected) -> Result<Value> {

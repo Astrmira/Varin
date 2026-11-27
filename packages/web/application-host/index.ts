@@ -391,7 +391,7 @@ import { pathLooksUserConfigured, mergePathValues } from './lib/platform/path-ut
 import { createProjectDirectoryRuntime } from './lib/platform/project-directory-runtime.js';
 import { projectHostActivity, registerHostActivityRoute } from './lib/lifecycle/host-activity.js';
 import { startSupervisorInbox } from './lib/lifecycle/supervisor-inbox.js';
-import { createInboxReplayAuth } from './lib/lifecycle/user-inbox-auth.js';
+import { createInboxReplayAuth, requestInboxReplayProof } from './lib/lifecycle/user-inbox-auth.js';
 import { INBOX_RECONCILE_PATH } from './lib/lifecycle/user-inbox-wire.js';
 import { SupervisorJournal } from './lib/lifecycle/supervisor-journal.js';
 import { createParkIngress, parkHost, PARK_EXIT_CODE, SUPERVISOR_LAUNCH, SUPERVISOR_PARKING, validSupervisorLaunch } from './lib/lifecycle/host-parking.js';
@@ -813,19 +813,30 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const providerDefault = resourceProvider && workspace ? { path: workspace.path,
     resourceOwner: providerResourceOwner(resourceProvider.id, { id: workspace.resourceId, hostId: workspace.hostId }) } : undefined;
   const gatewayOnly = deployment?.ingress?.mode === 'gateway';
-  const supervisorLaunch = process.env[SUPERVISOR_LAUNCH];
-  const parkIngress = gatewayOnly && process.env[SUPERVISOR_PARKING] === '1'
-    && validSupervisorLaunch(supervisorLaunch) && process.connected && process.send ? createParkIngress() : undefined;
-  const sandboxRelay = parkIngress && providerLeases ? new SandboxRelayClient() : undefined;
-  const authenticateInboxReplay = parkIngress && supervisorLaunch
-    ? createInboxReplayAuth(supervisorLaunch, id => hostPrincipals().isOwner(id)) : undefined;
+  const supervisorLaunch = hostEnvironment.read(SUPERVISOR_LAUNCH);
+  const managedLifecycle = options.managedLifecycle;
+  if (managedLifecycle && (!gatewayOnly || !managedLifecycle.replayProof)) {
+    throw new Error('An embedded lifecycle requires gateway ingress and a private replay proof');
+  }
+  const localPark = !managedLifecycle && gatewayOnly && process.env[SUPERVISOR_PARKING] === '1'
+    && validSupervisorLaunch(supervisorLaunch) && process.connected && process.send;
+  const parkIngress = localPark || managedLifecycle ? createParkIngress() : undefined;
+  const sandboxRelay = localPark && providerLeases ? new SandboxRelayClient() : undefined;
+  const authenticateInboxReplay = parkIngress
+    ? createInboxReplayAuth(managedLifecycle?.replayProof ?? await requestInboxReplayProof(), id => hostPrincipals().isOwner(id)) : undefined;
   const constrainedEgress = deployment?.egress?.userDestinations === 'public' || Boolean(deployment?.egress?.requiredProxy);
+  const connectionPolicy = deployment?.connections ?? { staticHosts: true, ssh: true };
+  const readStaticHostSettings = async () => connectionPolicy.staticHosts
+    ? await readSettingsFromDisk() as Record<string, unknown> : {};
   const background = deployment?.background;
   const [modelDirectorySnapshot, pluginCatalogSnapshot] = background ? await Promise.all([
     background.modelDirectorySnapshot && readDeploymentJson(background.modelDirectorySnapshot, VARIN_DATA_DIR, 'background.modelDirectorySnapshot'),
     background.pluginCatalogSnapshot && readDeploymentJson(background.pluginCatalogSnapshot, VARIN_DATA_DIR, 'background.pluginCatalogSnapshot'),
   ]) : [];
-  if (!denyLocalExecution) platformEnvironmentRuntime.applyLoginShellEnvSnapshot();
+  if (!denyLocalExecution) {
+    hostEnvironment.importLoginShell(platformEnvironmentRuntime.getLoginShellEnvSnapshot() ?? {});
+    platformEnvironmentRuntime.applyLoginShellEnvSnapshot();
+  }
   await assertDataRootMayStart(VARIN_DATA_DIR);
   if (server?.listening) throw new Error('Varin server is already running');
   isShuttingDown = false;
@@ -1124,12 +1135,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   app.get('/api/system/deployment-policy', uiAuthController.requireAuth, (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const { egress, background, extensions, resourceProvider, execution, ...policy } = deployment ?? {};
-    res.json(deployment ? { ...policy, ...(resourceProvider && { resourceProvider: { id: resourceProvider.id } }),
+    res.json(deployment ? { ...policy, ...(resourceProvider && { providerManagedResources: true }),
       ...(execution && { execution: { mode: execution.mode ?? 'local', managedDefaultWorkspace: !!execution.defaultWorkspace } }), ...(egress && { egress: {
       userDestinations: egress.userDestinations, proxyRequired: Boolean(egress.requiredProxy),
     } }), ...(extensions && { extensions: {
       sources: extensions.sources, realms: extensions.realms, agentStaging: extensions.agentStaging,
       brokeredTransport: extensions.brokeredTransport ?? 'child',
+      ...(extensions.brokeredTransport === 'sandbox' && { sandboxScope: extensions.sandboxScope ?? 'user' }),
       requiresApprovedIntegrity: extensions.artifactIntegrities !== undefined,
     } }), ...(background && { background: {
       updateChecks: background.updateChecks !== false,
@@ -1164,7 +1176,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       dataDir: VARIN_DATA_DIR,
       packages: extensionPackages,
       varinVersion: VARIN_VERSION,
-      ...(resourceProvider && providerLeases && { sandboxTransportFactory: extensionSandboxTransport(resourceProvider, providerLeases, sandboxRelay) }),
+      ...(resourceProvider && providerLeases && { sandboxTransportFactory: extensionSandboxTransport(resourceProvider, providerLeases, sandboxRelay, deployment?.extensions?.sandboxScope) }),
     });
   }
   const cacheRoot = deploymentCacheRoot(process.env.VARIN_CACHE_DIR, extensionRuntime.services.hostId);
@@ -1415,7 +1427,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     coordinatorHostId: extensionRuntime.services.hostId,
     kernel: kernelClient,
     resources: resourceService,
-    readSettings: async () => await readSettingsFromDisk() as unknown as Record<string, unknown>,
+    readSettings: readStaticHostSettings,
     ...(constrainedEgress && { fetch: (url, init) => egressRuntime.fetch(String(url), init) }),
     ...(resourceProvider && { provider: resourceProvider }),
     ...(providerLeases && { providerLeases }),
@@ -1797,11 +1809,11 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     // BC6: remote desktops are served by the same `desktopHosts` connection
     // settings managed-remote resolves — apiUrl + clientToken authenticate
     // Host-to-Host computer calls; no local credentials cross the wire.
-    remoteHosts: async () => configuredHosts(await readSettingsFromDisk() as unknown as Record<string, unknown>),
+    remoteHosts: async () => configuredHosts(await readStaticHostSettings()),
     ...(resourceProvider ? { providerHosts: managedRemoteTargets.providerComputers } : {}),
     // BC7: `computerVmProviders` settings entries configure libvirt targets
     // (qemu:///system or qemu+ssh://…); virsh auth stays in the environment.
-    vmProviders: async () => configuredVmProviders(await readSettingsFromDisk() as unknown as Record<string, unknown>),
+    vmProviders: async () => connectionPolicy.ssh ? configuredVmProviders(await readSettingsFromDisk() as unknown as Record<string, unknown>) : [],
   });
   computerServiceRef.current = computerService;
   options.onComputerControlsReady?.({
@@ -2906,6 +2918,19 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
         res.status(503).json({ code: 'inbox-unavailable' });
       }
     });
+    app.post('/api/threads/inbox/dismiss', uiAuthController.requireAuth, async (req, res) => {
+      const principalId = req.varinAuth?.principalId;
+      if (!principalId || !await hostPrincipals().isOwner(principalId)) {
+        res.status(403).json({ code: 'forbidden' }); return;
+      }
+      const { inboxId, threadId, branchId } = req.body ?? {};
+      if (typeof inboxId !== 'string' || typeof threadId !== 'string' || typeof branchId !== 'string') {
+        res.status(400).json({ code: 'invalid-inbox-input' }); return;
+      }
+      try {
+        res.json(await kernelClient!.agentRuntimeRequest('runtime.inbox.dismiss', { inboxId, principalId, threadId, branchId }));
+      } catch { res.status(503).json({ code: 'inbox-unavailable' }); }
+    });
     threads.bindInboxRejections((identity, principalId, signal) => kernelClient!.agentRuntimeRequest(
       'runtime.inbox.rejections', { principalId, threadId: identity.threadId, branchId: identity.branchId }, signal));
   }
@@ -2974,7 +2999,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     registerBrowserResourceRoutes(app, browserResources, authController.requireAuth, browserPeerClient, {
       settings: browserSettings, peers: browserPeers,
       connectorDirectory: path.join(__dirname, 'browser-connector'),
-      devices: async () => configuredHosts(await readSettingsFromDisk() as Record<string, unknown>).map(host => ({ id: host.id, label: host.label })),
+      devices: async () => configuredHosts(await readStaticHostSettings()).map(host => ({ id: host.id, label: host.label })),
       thread: async id => { const thread = await agentRuntime.thread(id); if (thread.deleted_at_ms !== null) throw new Error('This task has been deleted'); },
     });
     registerManagedBrowserRoutes(app, { hostId, resources: browserResources, settings: browserSettings, requireAuth: authController.requireAuth, clientId: browserPeerClient });
@@ -2985,20 +3010,20 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   // Target side of `environment.forward`: authenticated coordinator Hosts
   // bridge a WebSocket onto a TCP address resolved on THIS machine.
-  const serviceForward = attachServiceForward({ isDraining: () => isShuttingDown, server: upgradeServer, hostId,
+  const serviceForward = constrainedEgress ? undefined : attachServiceForward({ isDraining: () => isShuttingDown, server: upgradeServer, hostId,
     authenticate: async (request) => Boolean(await uiAuthController?.ensureSessionToken(request, { setHeader: () => undefined })),
     originAllowed: isRequestOriginAllowed,
   });
-  registerConnectionRoutes(app, connections, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()));
+  registerConnectionRoutes(app, connections, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()), { ...connectionPolicy, fetch: constrainedEgress ? egressRuntime.fetch : fetch });
   registerDeviceRoutes(app, createDeviceRegistry(VARIN_DATA_DIR), uiAuthController?.requireAuth ?? ((_request, _response, next) => next()));
-  const connectionProxy = attachConnectionProxy({
+  const connectionProxy = connectionPolicy.staticHosts ? attachConnectionProxy({
     isDraining: () => isShuttingDown,
     app, server: upgradeServer, settings: connections.settingsStore,
     requireAuth: uiAuthController?.requireAuth ?? ((_request, _response, next) => next()),
     authenticateUpgrade: (request) => uiAuthController?.resolveAuthContext(request, null, { allowClientAuth: true, allowUrlToken: true }) ?? Promise.resolve(null),
     originAllowed: isRequestOriginAllowed,
-  });
-  void connections.restore().catch((error) => console.error('[HostConnections]', errorMessage(error)));
+  }) : undefined;
+  if (connectionPolicy.ssh) void connections.restore().catch((error) => console.error('[HostConnections]', errorMessage(error)));
   managedTarget.mount(app, {
     isDraining: () => isShuttingDown, documents: documentsAuthority,
     requireAuth: uiAuthController.requireAuth, resolveAuthContext: uiAuthController.resolveAuthContext,
@@ -3250,6 +3275,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     workspaces: () => documentsAuthority.listWorkspaceRegistrations(),
     kernel: kernelClient,
     devices: async () => {
+      if (!connectionPolicy.staticHosts) return [];
       const statuses = await connections.statusesWithDefaults();
       return readHostConnections(connections.settingsStore).hosts.map(host => {
         const status = statuses.find(item => item.id === host.id);
@@ -3396,10 +3422,12 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   // or takes over a Catalog source owner.
   const supervisorJournal = process.env.VARIN_LOCAL_SUPERVISOR === '1'
     ? await SupervisorJournal.open(path.join(VARIN_DATA_DIR, 'supervisor-wake'), hostId) : undefined;
-  const supervisorInbox = supervisorJournal
-    ? startSupervisorInbox(supervisorJournal,
+  const eventInbox = managedLifecycle?.eventInbox ?? supervisorJournal;
+  const wakePublisher = managedLifecycle?.wakePublisher ?? supervisorJournal;
+  const supervisorInbox = eventInbox
+    ? startSupervisorInbox(eventInbox,
       (page, signal) => agentRuntime.receiveDurablePluginEvents(page, signal),
-      () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'),
+      () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain pending'),
       () => { void pluginEventSources.reconcile(); })
     : undefined;
   // Reconcile committed input before the listeners and live event receivers
@@ -3732,8 +3760,8 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       kernelClient.beginDraining();
       terminalRuntime?.beginDraining();
       realtimeProxyRuntime.beginDraining();
-      connectionProxy.beginDraining();
-      serviceForward.beginDraining();
+      connectionProxy?.beginDraining();
+      serviceForward?.beginDraining();
       previewProxyRuntime.beginDraining();
       stopTask = (async () => {
         const shutdown = createShutdownCollector({ deadline, stopOnFailure: true });
@@ -3904,9 +3932,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
         await shutdown.run('http.observations.close', () => httpObservationDrain.close());
         await shutdown.run('realtimeProxyRuntime.stop', () => realtimeProxyRuntime.stop());
         await shutdown.run('previewProxyRuntime.stop', () => previewProxyRuntime.stop());
-        await shutdown.run('connectionProxy.stop', () => connectionProxy.stop());
+        await shutdown.run('connectionProxy.stop', () => connectionProxy?.stop());
         await shutdown.run('desktopMedia.stop', () => desktopMedia.stop());
-        await shutdown.run('serviceForward.stop', () => serviceForward.stop());
+        await shutdown.run('serviceForward.stop', () => serviceForward?.stop());
         await shutdown.run('clearInterval', () => clearInterval(relayReconcileTimer));
         await shutdown.run('relayService.stop', () => relayService.stop());
         await shutdown.run('dictationRuntime?.stop?.', () => dictationRuntime?.stop?.());
@@ -3924,13 +3952,12 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     },
   };
   stopHostResources = controller.stop;
-  if (parkIngress && supervisorJournal && supervisorLaunch) {
-    let parking = false;
-    const onPark = (message: unknown) => {
-      if (!message || typeof message !== 'object' || !('type' in message) || message.type !== 'varin:try-park' || parking) return;
-      parking = true;
-      void parkHost({
-        launchId: supervisorLaunch, pid: process.pid, ingress: parkIngress, journal: supervisorJournal,
+  if (parkIngress && eventInbox && wakePublisher) {
+    controller.park = () => parkHost({
+        ingress: parkIngress, wakePublisher, hasPendingEvents: () => eventInbox.hasPendingEvents(),
+        ...(localPark && supervisorJournal && supervisorLaunch && {
+          recordStopped: (revision: number) => supervisorJournal.recordPark({ launchId: supervisorLaunch, pid: process.pid, revision }),
+        }),
         activity: async () => {
           const activity = await getHostActivity(AbortSignal.timeout(2000));
           return { eligible: activity.parking.eligible, calendarWakeAtMs: activity.calendar?.nextWakeAtMs ?? null };
@@ -3942,7 +3969,15 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
           parkCatalogCursor = cursor;
           return controller.stop({ exitProcess: false });
         },
-      }).then(wakeRevision => {
+    });
+  }
+  if (localPark && controller.park) {
+    const park = controller.park;
+    let parking = false;
+    const onPark = (message: unknown) => {
+      if (!message || typeof message !== 'object' || !('type' in message) || message.type !== 'varin:try-park' || parking) return;
+      parking = true;
+      void park().then(wakeRevision => {
         if (wakeRevision === null) {
           parking = false;
           process.send?.({ type: 'varin:supervisor-park-declined', launchId: supervisorLaunch }, () => undefined);

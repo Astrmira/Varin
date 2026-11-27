@@ -9,7 +9,6 @@ struct Upgrade {
 }
 
 const UPGRADES: &[Upgrade] = &[
-    Upgrade { from: 103, to: 104, convert: |tx, _| inbox::initialize(tx) },
     // Existing references may omit history-view metadata and are indexed on first read.
     Upgrade { from: 102, to: 103, convert: |_, _| Ok(()) },
     Upgrade { from: 101, to: 102, convert: |tx, _| threads::initialize_model_preferences(tx) },

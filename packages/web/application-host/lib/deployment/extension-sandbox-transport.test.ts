@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
+import { extensionSandboxProtocolVersion } from './extension-sandbox-protocol.js';
 import { extensionSandboxTransport } from './extension-sandbox-transport.js';
 import type { ResourceProvider } from './resource-provider.js';
 
@@ -21,10 +22,11 @@ it('streams a verified artifact and routes capability requests on the selected e
       const chunks: Buffer[] = [];
       for await (const bytes of req) chunks.push(bytes);
       upload(req.url, Buffer.concat(chunks).toString());
+      res.setHeader('X-Varin-Managed-Host', 'extension-host');
       res.writeHead(204).end();
     } else {
       res.setHeader('X-Varin-Managed-Host', 'extension-host');
-      res.end(JSON.stringify({ role: 'extensions', extensionId, protocolVersion: 1 }));
+      res.end(JSON.stringify({ role: 'extensions', protocolVersion: extensionSandboxProtocolVersion }));
     }
   });
   const wss = new WebSocketServer({ server });
@@ -47,7 +49,7 @@ it('streams a verified artifact and routes capability requests on the selected e
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const release = vi.fn(async () => {});
   const provider: ResourceProvider = {
-    id: 'fixtures', describe: async () => [{ id: 'sandbox', hostId: 'extension-host', role: 'extensions', label: 'Sandbox', capabilities: ['extension-broker'], extensionId }],
+    id: 'fixtures', describe: async () => [{ id: 'sandbox', hostId: 'extension-host', role: 'extensions', label: 'Sandbox', capabilities: ['extension-broker'] }],
     acquire: async use => ({ ...use, generation: 'generation', endpoint: 'http://127.0.0.1:' + (server.address() as AddressInfo).port,
       bearer: 'lease', expiresAt: Date.now() + 60_000 }),
     release, renew: async () => { throw new Error('Unexpected renewal'); },

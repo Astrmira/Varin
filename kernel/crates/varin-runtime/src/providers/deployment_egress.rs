@@ -16,12 +16,9 @@ enum Destinations {
 struct Policy {
     user_destinations: Destinations,
     required_proxy: Option<String>,
-    operator_origins: Vec<String>,
 }
 
 struct Routes {
-    operator_origins: Vec<String>,
-    operator: ReqwestTransport,
     user: ReqwestTransport,
     public_direct: bool,
 }
@@ -101,8 +98,6 @@ fn routes() -> Result<Option<Routes>, ModelFailure> {
         return Ok(None);
     };
     Ok(Some(Routes {
-        operator_origins: policy.operator_origins,
-        operator: ReqwestTransport::new(|| reqwest::Client::builder().no_proxy()),
         user,
         public_direct,
     }))
@@ -116,13 +111,6 @@ pub(super) fn transport(endpoint: &str) -> Result<Option<&'static ReqwestTranspo
     let url = reqwest::Url::parse(endpoint).map_err(|_| invalid_policy())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(denied());
-    }
-    if routes
-        .operator_origins
-        .iter()
-        .any(|origin| origin == &url.origin().ascii_serialization())
-    {
-        return Ok(Some(&routes.operator));
     }
     if routes.public_direct {
         let address = url

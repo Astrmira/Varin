@@ -7,19 +7,20 @@ test('a park seals new work before reserving Catalog and records exit only after
   const operations: string[] = [];
   const credentialExpiry = Date.now() + 5_000;
   const options: Parameters<typeof parkHost>[0] = {
-    ingress, launchId: 'abdc0000-0000-0001-0001-000000000001', pid: 10,
-    journal: {
-      hasPendingEvents: async () => false, currentWake: async () => ({ revision: 7, nextWakeAtMs: null }),
+    ingress,
+    hasPendingEvents: async () => false,
+    wakePublisher: {
+      currentWake: async () => ({ revision: 7, nextWakeAtMs: null }),
       publishWake: async publication => {
         expect(publication.revision).toBe(8);
         expect(publication.nextWakeAtMs).toBe(credentialExpiry);
         operations.push('wake');
         return { revision: publication.revision, digest: 'wake' };
       },
-      recordPark: async receipt => {
-        expect(receipt).toMatchObject({ pid: 10, revision: 8 });
-        operations.push('park');
-      },
+    },
+    recordStopped: async wakeRevision => {
+      expect(wakeRevision).toBe(8);
+      operations.push('park');
     },
     activity: async () => ({ eligible: true, calendarWakeAtMs: null }),
     handoff: async () => {

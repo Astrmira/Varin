@@ -57,15 +57,16 @@ curl --fail http://127.0.0.1:3000/health
 ### Operator policy and gateway credentials
 
 Set `VARIN_DEPLOYMENT_POLICY` to an absolute path on an operator-owned mount outside
-`VARIN_DATA_DIR`. The Host reads the policy at startup. Omitted sections leave their owners
-unrestricted. Unknown policy fields prevent startup.
+`VARIN_DATA_DIR`. The Host reads the policy at startup. Unknown policy fields prevent startup.
+Without a policy, the Host uses its personal-installation defaults.
 
 ```json
 {
   "version": 1,
   "ingress": { "mode": "gateway" },
   "modelCredentials": { "sources": ["api-key", "oauth"], "oauthIssuers": ["openai-codex"] },
-  "egress": { "userDestinations": "public", "operatorOrigins": ["http://model-gateway:8080"] },
+  "egress": { "userDestinations": "public" },
+  "connections": { "staticHosts": false, "ssh": false },
   "mcp": { "transports": ["http", "stdio"], "stdioPlacement": "managed" },
   "background": { "updateChecks": false }
 }
@@ -102,11 +103,17 @@ the operator addresses or file paths.
   `environment`, `google-adc`, `aws-chain`, `anthropic-federation`, and anonymous credentials (`none`)
   individually. The Host keeps existing channel settings and marks excluded credentials unavailable.
 - `egress.userDestinations` can be `all` or `public`. With `public`, the Host HTTP egress owner,
-  kernel model transport, Host-configured CDP connections and outgoing managed Host connections
-  check destination addresses on connection. `operatorOrigins` permits exact HTTP(S) origins,
-  including privately provisioned Resource Nodes. Set `requiredProxy` to an operator HTTP(S) proxy origin to delegate
-  destination enforcement to that proxy. These controls apply to those HTTP transports.
-  Commands, external programs and browser networking need their own isolation and network policy.
+  kernel model transport, Host health probes for remote connections and Host-configured CDP
+  connections check the addresses they connect to. A user-supplied URL stays subject to that
+  policy even when it uses an operator service's hostname. Provider-managed Nodes use the
+  endpoints and credentials issued by the trusted resource provider. Set `requiredProxy` to
+  delegate destination enforcement to an operator HTTP(S) proxy. Deployments can route model
+  gateway traffic through that proxy under its own policy. Commands, external programs and
+  browser networking need their execution environment's network policy.
+- `connections.staticHosts` and `connections.ssh` control saved direct Hosts and SSH connections.
+  Both default to disabled with restricted egress, gateway ingress, or managed-only execution.
+  Restricted egress uses provider-managed Nodes because saved-Host and SSH tunnels carry
+  arbitrary protocols. Saved connections remain on disk.
 - `mcp.transports` controls MCP HTTP and stdio. `stdioPlacement: "managed"` requires a managed
   resource for stdio. `stdioPlacement: "any"` also allows local execution.
 - `extensions.sources` restricts third-party package sources, `realms` controls
@@ -263,7 +270,9 @@ use a private named pipe such as `\\\\.\\pipe\\varin-provider` for `socketPath`.
 
 The local provider serves the Resource Node's live file, terminal and process
 operations. The default workspace setting selects a location for new work.
-Explicitly selected locations still use their configured owner.
+Explicitly selected locations still use their configured owner. The provider drops Linux
+capabilities and sets no-new-privileges on execution containers. Set their `network` to an
+engine network with the outbound rules appropriate for the workspace.
 
 For a Browser Node, set `role` to `browser`, use the Browser Node image and set
 `browserId` to its provisioned connection ID. The entry takes a persistent
@@ -277,31 +286,35 @@ use their existing device settings.
 
 ### Extension sandboxes
 
-Build the `extension-node` Dockerfile target from the same revision as the
-Application Host. Set `extensions.brokeredTransport` to `sandbox` in the Host
-policy and add one resource per extension to the provider. For example:
+Build the `extension-node` Dockerfile target from the same revision as the Application Host.
+Set `extensions.brokeredTransport` to `sandbox` in the Host policy. The default
+`extensions.sandboxScope: "user"` shares one resource across the owner's third-party
+extensions. For each user's provider, define one `extensions` resource without an `extensionId`.
 
 ```json
 {
-  "id": "sandbox-example",
-  "hostId": "sandbox-example-host",
-  "label": "Example extension",
+  "id": "extension-sandbox",
+  "hostId": "extension-sandbox-host",
+  "label": "Extension sandbox",
   "role": "extensions",
-  "extensionId": "dev.example.integration",
   "image": "varin-extension-node:local",
-  "credentialFile": "/private/sandbox-example.json"
+  "credentialFile": "/private/extension-sandbox.json"
 }
 ```
 
-Give each sandbox its own private credential JSON with a random `token`.
-The provider mounts it inside a protected directory, gives the extension a
-separate unprivileged worker account, and supplies a temporary filesystem.
-The operator can select a dedicated engine `network` with the deployment's
-outbound rules. Direct network calls from the worker follow that network's
-rules. Each resource accepts only artifacts for its declared extension ID.
-Extension storage and capability decisions stay on the Application Host.
-Package asset paths point to the sandbox copy. Extensions that use absolute
-Host paths or private Host URLs need to use the corresponding Host capabilities.
+Set `extensions.sandboxScope: "extension"` to use a dedicated container for each extension.
+In that mode give each provider resource a distinct ID, Host ID, credential file, and
+`extensionId`. The same options apply to self-hosted personal installations. Personal
+installations with no sandbox policy keep their local brokered processes. Bundled
+first-party extensions keep their usual transport in both modes.
+
+Give each sandbox credential JSON a random `token`. The provider mounts it beneath a
+root-only directory. Each extension has a separate unprivileged UID and group, private
+scratch and verified artifact directory, and its own scoped broker credential.
+The Node relay and provider hold the credentials. Workers have a private IPC channel.
+Set `network` to an engine network with the outbound rules the extensions need.
+Extension storage and capability decisions stay on the Application Host. Package paths
+point to the sandbox copy. Use Host capabilities for resources outside the sandbox.
 
 ### Runtime Environment
 

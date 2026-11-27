@@ -7,13 +7,13 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createHash } from 'node:crypto';
 import { attachmentUploadIdentity } from '../kernel/attachment-upload-identity.js';
-import { InboxError, type InboxCommand, type SupervisorUserInbox } from './user-inbox.js';
+import { InboxError, type InboxCommand, type IngressInbox } from './ingress-inbox.js';
 import { rejectedInboxDraft } from './user-inbox-auth.js';
 import { inboxMethod, INBOX_ACTOR_HEADER, INBOX_RECONCILE_PATH, INBOX_REPLAY_HEADER, INBOX_REQUEST_BYTES, INBOX_STATUS_PATH,
   type InboxActor, type InboxResult } from './user-inbox-wire.js';
 
 interface DurableIngress {
-  inbox: SupervisorUserInbox;
+  inbox: IngressInbox;
   authenticate(authorization: string | undefined): Promise<InboxActor | null>;
 }
 const json = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, {
@@ -80,7 +80,9 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
   let waiters = notification();
   let settled = notification();
   let demand = notification();
-  let drainingInbox = false;
+  let replayAfter = 0;
+  let inboxBacklog = false;
+  let replaying: Promise<void> | undefined;
   const stopSignal = new AbortController();
   const sockets = new Set<Socket>();
   const targets = new WeakMap<IncomingMessage, string>();
@@ -149,10 +151,13 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
     if (url.pathname === INBOX_STATUS_PATH) {
       const id = url.searchParams.get('inboxId') ?? '';
       const until = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
-      let result = durable!.inbox.status(actor.principalId, id);
-      while (result === null && !until.aborted) {
-        await waitWithSignal(settled.promise, until).catch(error => { if (!until.aborted) throw error; });
-        if (!signal.aborted) result = durable!.inbox.status(actor.principalId, id);
+      let result: InboxResult | null | undefined;
+      for (;;) {
+        const changed = settled.promise;
+        result = await durable!.inbox.status(actor.principalId, id);
+        if (result !== null || until.aborted) break;
+        await waitWithSignal(changed, until).catch(error => { if (!until.aborted) throw error; });
+        if (signal.aborted) return;
       }
       if (signal.aborted) return;
       json(res, result === undefined ? 404 : 200, result === undefined ? { code: 'inbox-input-not-found' } : { result });
@@ -162,16 +167,20 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
     const raw = await bufferRequest(req);
     const { command, upload, queueable } = decodeCommand(actor, method, url, raw);
     let receipt;
-    if (queueable) receipt = !target && !drainingInbox ? durable!.inbox.accept(command) : durable!.inbox.find(command);
+    const inbox = durable!.inbox;
+    const pendingBranch = await inbox.hasPending(command);
+    if (queueable) receipt = !target || pendingBranch ? await inbox.accept(command) : await inbox.find(command);
+    else if (pendingBranch) { json(res, 503, { code: 'inbox-branch-replaying', admission: 'not_started' }); return; }
     if (!receipt) {
       const response = await dispatchBuffered(req, res, signal, raw).catch(() => undefined);
       if (!response) { if (!signal.aborted) json(res, 502, { code: 'thread-forwarding-interrupted' }); return; }
       const unavailable = response.status === 503 ? await response.clone().json().catch(() => null) as { code?: string } | null : null;
-      if (queueable && !target && !drainingInbox && ['host-parking', 'host-draining'].includes(unavailable?.code ?? '')) {
+      if (queueable && !target && ['host-parking', 'host-draining'].includes(unavailable?.code ?? '')) {
         await response.body?.cancel();
-        receipt = durable!.inbox.accept(command);
+        receipt = await inbox.accept(command);
       } else { await forwardBufferedResponse(res, response); return; }
     }
+    inboxBacklog = true;
     signalDemand();
     if (upload) { json(res, 202, upload); return; }
     json(res, 202, receipt);
@@ -184,11 +193,11 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
     try { url = new URL(req.url ?? '/', 'http://localhost'); }
     catch { json(res, 400, { code: 'invalid-request-target' }); return; }
     const method = req.method === 'POST' ? inboxMethod(url.pathname) : undefined;
-    const cold = !target && !drainingInbox;
+    const cold = !target;
     const stagedUpload = method === 'attachments/upload' && Number(url.searchParams.get('byteLength')) <= INBOX_REQUEST_BYTES;
     if (durable && (req.method === 'GET' && url.pathname === INBOX_STATUS_PATH || method &&
       (!req.headers['content-encoding'] || req.headers['content-encoding'] === 'identity') &&
-      (method === 'submit' || method === 'enqueue' || cold && (stagedUpload || method === 'materials/upload')) &&
+      (method === 'submit' || method === 'enqueue' || (cold || inboxBacklog) && (stagedUpload || method === 'materials/upload')) &&
       req.headers['content-type']?.split(';')[0] === contentType({ method }))) {
       const isStatus = url.pathname === INBOX_STATUS_PATH;
       const closed = new AbortController();
@@ -237,25 +246,34 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
   return {
     port: (server.address() as AddressInfo).port,
     wake: signalDemand,
-    hasDemand: () => active !== 0 || (durable?.inbox.hasPending() ?? false),
+    hasDemand: async () => active !== 0 || (await durable?.inbox.hasPending() ?? false),
     async waitForDemand(ms: number, signal: AbortSignal) {
-      if (active || durable?.inbox.hasPending()) return;
+      if (active || await durable?.inbox.hasPending()) return;
       const until = AbortSignal.any([signal, AbortSignal.timeout(ms)]);
       await waitWithSignal(demand.promise, until).catch(error => { if (!until.aborted) throw error; });
     },
-    quietFor: () => active ? 0 : performance.now() - lastTraffic,
-    async activate(value: number, launchId: string, signal: AbortSignal) {
-      if (target === value) return;
-      drainingInbox = true;
-      try {
-        await durable?.inbox.replay(async entry => {
+    quietFor: async () => active || await durable?.inbox.hasPending() ? 0 : performance.now() - lastTraffic,
+    activate(value: number, launchId: string, signal: AbortSignal) {
+      if (target !== value) {
+        target = value;
+        replayAfter = 0;
+        lastTraffic = performance.now();
+        waiters.resolve();
+        waiters = notification();
+      }
+      if (replaying || !durable || performance.now() < replayAfter) return;
+      replaying = (async () => {
+        if (!await durable.inbox.hasPending()) { inboxBacklog = false; return; }
+        inboxBacklog = true;
+        await durable.inbox.replay(async entry => {
           const headers = replayHeaders(launchId, entry.actor);
+          const replaySignal = AbortSignal.any([signal, stopSignal.signal, AbortSignal.timeout(20_000)]);
           const origin = 'http://127.0.0.1:' + value;
           const input = entry.method === 'submit' || entry.method === 'enqueue';
           const lookup = async (result?: InboxResult) => {
             const draft = result && result.status >= 400 ? rejectedInboxDraft(JSON.parse(Buffer.from(entry.body).toString('utf8'))) : undefined;
             const response = await fetch(origin + INBOX_RECONCILE_PATH, {
-              method: 'POST', headers, signal, body: JSON.stringify({ inboxId: entry.id, key: entry.key,
+              method: 'POST', headers, signal: replaySignal, body: JSON.stringify({ inboxId: entry.id, key: entry.key,
                 threadId: entry.threadId, branchId: entry.branchId, method: entry.replayMethod,
                 ...(result ? { result } : {}), ...(draft ? { draft } : {}) }),
             });
@@ -273,13 +291,27 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
             body = new TextEncoder().encode(JSON.stringify({ ...message, mode: 'next_run' }));
             url = '/api/threads/enqueue';
           }
-          const response = await fetch(origin + url, { method: 'POST', body, signal, redirect: 'error',
-            headers: { ...headers, 'Content-Type': contentType(entry) } });
-          const result = { status: response.status, body: await response.json() as { admission?: string; code?: string } | null };
+          let response: Response;
+          try {
+            response = await fetch(origin + url, { method: 'POST', body, signal: replaySignal, redirect: 'error',
+              headers: { ...headers, 'Content-Type': contentType(entry) } });
+          } catch (error) {
+            if (input && !replaySignal.aborted) {
+              const persisted = await lookup();
+              if (persisted.result) return persisted.result;
+            }
+            throw error;
+          }
+          const bodyResult = await response.text();
+          let parsed: { admission?: string; code?: string } | null;
+          try { parsed = JSON.parse(bodyResult) as typeof parsed; }
+          catch {
+            if (response.status < 400 || response.status >= 500) throw new Error('The Host did not return an inbox receipt');
+            parsed = { code: 'invalid-inbox-input' };
+          }
+          const result = { status: response.status, body: parsed };
           const busy = ['host-parking', 'host-draining', 'thread-forwarding-interrupted'].includes(result.body?.code ?? '');
-          const ambiguous = input && result.status >= 400 && ![403, 404, 409, 413].includes(result.status)
-            && result.body?.admission !== 'not_started';
-          if (busy || ambiguous || result.status >= 500 && result.body?.admission !== 'not_started') {
+          if (busy || [408, 425, 429].includes(result.status) || result.status >= 500 && result.body?.admission !== 'not_started') {
             throw new Error('The Host has not settled the original inbox command');
           }
           if (input) {
@@ -288,13 +320,13 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
             return acknowledged.result;
           }
           return result;
-        }, () => { settled.resolve(); settled = notification(); });
-        signal.throwIfAborted();
-        target = value;
-        lastTraffic = performance.now();
-        waiters.resolve();
-        waiters = notification();
-      } finally { drainingInbox = false; }
+        }, AbortSignal.any([signal, stopSignal.signal]), () => { settled.resolve(); settled = notification(); });
+        inboxBacklog = await durable.inbox.hasPending();
+      })().catch(() => { /* Durable entries remain pending and will be retried. */ })
+        .finally(() => {
+          replayAfter = performance.now() + 2000;
+          replaying = undefined;
+        });
     },
     setTarget(value: number | undefined) {
       if (target === value) return;
@@ -309,6 +341,7 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
       const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       for (const socket of sockets) socket.destroy();
       await closed;
+      await replaying;
     },
   };
 }

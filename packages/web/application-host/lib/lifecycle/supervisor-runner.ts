@@ -3,6 +3,7 @@ import crypto, { randomUUID } from 'node:crypto';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { IngressInbox } from './ingress-inbox.js';
 import type { SupervisorJournal } from './supervisor-journal.js';
 import { openSupervisorGateway } from './supervisor-gateway.js';
 import { PARK_EXIT_CODE, SUPERVISOR_LAUNCH, SUPERVISOR_PARKING } from './host-parking.js';
@@ -23,6 +24,7 @@ export interface SupervisorRunnerOptions {
   stopMs?: number;
   parking?: { listenPort: number; idleMs: number };
   sandboxProvider?: ResourceProvider;
+  ingressInbox?: IngressInbox;
   listening?(port: number): void;
 }
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -35,6 +37,7 @@ const wait = (ms: number, signal: AbortSignal) => delay(ms, undefined, { signal 
 
 function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof createSupervisorSandbox>) {
   const launchId = randomUUID();
+  const inboxProof = randomUUID();
   const child = spawn(process.execPath, [options.entry], {
     env: { ...options.env, VARIN_HOST: '127.0.0.1', VARIN_LOCAL_SUPERVISOR: '1', [SUPERVISOR_LAUNCH]: launchId,
       [SUPERVISOR_PARKING]: options.parking ? '1' : '0', ...(options.parking && { VARIN_PORT: '0' }) },
@@ -60,6 +63,8 @@ function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof cr
   });
   child.on('message', (message: unknown) => {
     if (!object(message)) return;
+    if (message.type === 'varin:inbox-proof' && options.parking && typeof message.nonce === 'string')
+      child.send({ nonce: message.nonce, proof: inboxProof }, () => undefined);
     if (message.type === 'varin:ready' && livePort(message.port) && port === undefined) port = message.port;
     if (message.type === 'varin:supervisor-can-park' && message.launchId === launchId) canPark = true;
     if (message.type === 'varin:supervisor-park-declined' && message.launchId === launchId && park === undefined) parkRequestedAt = undefined;
@@ -90,6 +95,7 @@ function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof cr
     exited,
     exit: () => exit,
     launchId,
+    inboxProof,
     parkRevision: () => invalidPark ? undefined : park,
     canPark: () => canPark,
     port: () => ready && parkRequestedAt === undefined ? port : undefined,
@@ -124,7 +130,8 @@ function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof cr
 }
 
 export async function runLocalSupervisor(options: SupervisorRunnerOptions): Promise<{ stoppedCleanly: boolean }> {
-  const inbox = options.parking ? new (await import('./user-inbox.js')).SupervisorUserInbox(options.journal.directory) : undefined;
+  const localInbox = options.parking && !options.ingressInbox ? new (await import('./user-inbox.js')).SupervisorUserInbox(options.journal.directory) : undefined;
+  const inbox = options.ingressInbox ?? localInbox;
   let gateway: Awaited<ReturnType<typeof openSupervisorGateway>> | undefined;
   let receiverWake = false;
   const sandbox = options.parking && options.sandboxProvider
@@ -144,7 +151,7 @@ export async function runLocalSupervisor(options: SupervisorRunnerOptions): Prom
     try { await sandbox?.close(); }
     finally {
       try { await gateway?.close(); }
-      finally { inbox?.close(); }
+      finally { localInbox?.close(); }
     }
   }
 }
@@ -159,7 +166,7 @@ async function supervise(options: SupervisorRunnerOptions, gateway: Awaited<Retu
     if (!start) {
       const wanted = await options.journal.currentWake();
       // Crash replay stays with the child Catalog; no journal body leaves this process.
-      if (!hasReceiverDemand() && !gateway?.hasDemand() && !await options.journal.hasPendingEvents() && (wanted?.nextWakeAtMs == null || wanted.nextWakeAtMs > Date.now())) {
+      if (!hasReceiverDemand() && !await gateway?.hasDemand() && !await options.journal.hasPendingEvents() && (wanted?.nextWakeAtMs == null || wanted.nextWakeAtMs > Date.now())) {
         const untilWake = wanted?.nextWakeAtMs == null ? interval : Math.max(1, wanted.nextWakeAtMs - Date.now());
         const delayMs = Math.min(interval, untilWake);
         if (gateway) await gateway.waitForDemand(delayMs, options.signal);
@@ -192,10 +199,10 @@ async function supervise(options: SupervisorRunnerOptions, gateway: Awaited<Retu
             if (child.parkTimedOut()) break;
             const port = child.port();
             if (port) {
-              try { await gateway.activate(port, child.launchId, child.signal); announceReady(); }
-              catch { await wait(interval, child.signal); continue; }
+              gateway.activate(port, child.inboxProof, child.signal);
+              announceReady();
             }
-            if (port && child.canPark() && gateway.quietFor() >= options.parking.idleMs && performance.now() - lastParkAttempt >= options.parking.idleMs) {
+            if (port && child.canPark() && await gateway.quietFor() >= options.parking.idleMs && performance.now() - lastParkAttempt >= options.parking.idleMs) {
               lastParkAttempt = performance.now();
               gateway.setTarget(undefined);
               child.requestPark();

@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, watch } from 'node:fs';
 import { link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt, FollowupEventSourceIdentity } from '@varin/protocol';
+import type { DurableEventInbox } from './event-inbox.js';
+import type { WakePublication, WakePublisher } from './wake-publisher.js';
 import { validSupervisorLaunch } from './host-parking.js';
 
 const maxRecordBytes = 4 * 1024 * 1024;
@@ -17,11 +19,6 @@ const encode = (value: unknown) => JSON.stringify(value, (_key, item: unknown) =
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const cursor = (value: unknown) => value === null || typeof value === 'string' && value.length <= 16_384;
 
-export interface WakePublication {
-  /** Monotonic revision from the original owner, not wall time. */
-  revision: number;
-  nextWakeAtMs: number | null;
-}
 interface EventEnvelope {
   version: 1;
   owner: string;
@@ -62,7 +59,7 @@ const validPage = (page: unknown): page is FollowupEventReceiveParams => {
  * Single logical Host + its trusted local supervisor. A journal receipt does not
  * authorize stopping the Host or change who owns an event source or Calendar.
  */
-export class SupervisorJournal {
+export class SupervisorJournal implements WakePublisher, DurableEventInbox {
   private constructor(readonly directory: string, readonly owner: string, private readonly faults: SupervisorJournalFaults) {}
 
   static async open(directory: string, owner: string, faults: SupervisorJournalFaults = {}): Promise<SupervisorJournal> {
@@ -224,6 +221,14 @@ export class SupervisorJournal {
     }
     this.faults.afterEventCommit?.();
     return { version, owner: this.owner, digest };
+  }
+
+  onPending(wake: () => void, onError: () => void) {
+    const watcher = watch(this.directory, { persistent: false }, (_event, name) => {
+      if (!name || /^[a-f0-9]{64}\.pending$/.test(name)) wake();
+    });
+    watcher.on('error', onError);
+    return () => watcher.close();
   }
 
   async hasPendingEvents(): Promise<boolean> {

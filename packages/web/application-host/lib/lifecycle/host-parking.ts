@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 import type { RuntimeParkReservation } from '@varin/protocol';
-import type { SupervisorJournal } from './supervisor-journal.js';
+import type { WakePublisher } from './wake-publisher.js';
 
 export const SUPERVISOR_LAUNCH = 'VARIN_LOCAL_SUPERVISOR_LAUNCH_ID';
 export const SUPERVISOR_PARKING = 'VARIN_LOCAL_SUPERVISOR_PARKING';
@@ -53,9 +53,9 @@ export function createParkIngress(): ParkIngress {
 
 export async function parkHost(options: {
   ingress: ReturnType<typeof createParkIngress>;
-  journal: Pick<SupervisorJournal, 'hasPendingEvents' | 'currentWake' | 'publishWake' | 'recordPark'>;
-  launchId: string;
-  pid: number;
+  wakePublisher: WakePublisher;
+  hasPendingEvents(): Promise<boolean>;
+  recordStopped?(wakeRevision: number): Promise<void>;
   activity(): Promise<{ eligible: boolean; calendarWakeAtMs: number | null }>;
   handoff?(): Promise<{ nextWakeAtMs: number | null; commit(): Promise<unknown>; rollback(): Promise<unknown> } | undefined>;
   reserveNative(): Promise<RuntimeParkReservation>;
@@ -68,7 +68,7 @@ export async function parkHost(options: {
   let receivers: Awaited<ReturnType<NonNullable<typeof options.handoff>>>;
   try {
     const activity = await options.activity();
-    if (!activity.eligible || await options.journal.hasPendingEvents()) return null;
+    if (!activity.eligible || await options.hasPendingEvents()) return null;
     try { receivers = await options.handoff?.(); }
     catch { return null; }
     const native = await options.reserveNative();
@@ -80,13 +80,13 @@ export async function parkHost(options: {
     const deadlines = [native.nextWakeAtMs, activity.calendarWakeAtMs, receivers?.nextWakeAtMs ?? null].filter((at): at is number => at !== null);
     const nextWakeAtMs = deadlines.length ? Math.min(...deadlines) : null;
     if (nextWakeAtMs !== null && nextWakeAtMs <= Date.now()) return null;
-    const { revision } = await options.journal.publishWake({
-      revision: ((await options.journal.currentWake())?.revision ?? 0) + 1, nextWakeAtMs,
+    const { revision } = await options.wakePublisher.publishWake({
+      revision: ((await options.wakePublisher.currentWake())?.revision ?? 0) + 1, nextWakeAtMs,
     });
     await receivers?.commit();
     committed = true;
     await options.stop(native.eventCursor);
-    await options.journal.recordPark({ launchId: options.launchId, pid: options.pid, revision });
+    await options.recordStopped?.(revision);
     return revision;
   } finally {
     if (!committed) {

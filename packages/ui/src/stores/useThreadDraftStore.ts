@@ -140,7 +140,7 @@ export interface ThreadDraft {
   workspacePath?: string;
   goalArmed?: boolean;
   pendingInput?: ThreadPendingInput;
-  inboxObservation?: { inboxId: string; text: string };
+  inboxObservations?: string[];
   identity?: ThreadIdentity;
   files?: DraftFileAttachment[];
   firstSend?: ThreadFirstSend;
@@ -167,7 +167,7 @@ export function sameThreadModel(left: ThreadModel | null | undefined, right: Thr
     && left.thinkingLevel === right.thinkingLevel && Object.is(left.temperature, right.temperature));
 }
 export const EMPTY_THREAD_DRAFT: ThreadDraft = Object.freeze({ text: '', images: [], materials: [], preparedSource: null });
-type SavedComposer = Pick<ThreadDraft, 'text' | 'references' | 'markerObjects' | 'interactions' | 'inboxObservation'>;
+type SavedComposer = Pick<ThreadDraft, 'text' | 'references' | 'markerObjects' | 'interactions' | 'inboxObservations'>;
 
 function savedComposerKey(key: string, identity?: ThreadIdentity): string | undefined {
   // The live draft store also accepts workflow keys built by appending a suffix.
@@ -189,11 +189,11 @@ function readSavedComposer(key: string): SavedComposer | undefined {
   const json = readUnsentComposer(storageKey);
   if (!json) return;
   try {
-    const saved = JSON.parse(json) as SavedComposer;
+    const saved = JSON.parse(json) as SavedComposer & { inboxObservation?: { inboxId: string } };
     if (typeof saved.text !== 'string') throw new Error('Invalid saved draft');
     const host = getRuntimeEndpointGeneration();
     return { text: saved.text, interactions: saved.interactions, references: saved.references?.map(reference => ({ ...reference, host })),
-      markerObjects: saved.markerObjects?.map(object => ({ ...object, host })), inboxObservation: saved.inboxObservation };
+      markerObjects: saved.markerObjects?.map(object => ({ ...object, host })), inboxObservations: saved.inboxObservations ?? (saved.inboxObservation ? [saved.inboxObservation.inboxId] : undefined) };
   } catch {
     writeUnsentComposer(storageKey, null);
   }
@@ -202,7 +202,7 @@ function readSavedComposer(key: string): SavedComposer | undefined {
 function saveComposer(key: string, next: ThreadDraft, previous: ThreadDraft) {
   if (!useUIStore.getState().persistChatDraft || (next.text === previous.text && next.references === previous.references
     && next.markerObjects === previous.markerObjects && next.interactions === previous.interactions && next.identity === previous.identity
-    && next.pendingInput?.inboxId === previous.pendingInput?.inboxId && next.inboxObservation === previous.inboxObservation)) return;
+    && next.pendingInput?.inboxId === previous.pendingInput?.inboxId && next.inboxObservations === previous.inboxObservations)) return;
   const storageKey = savedComposerKey(key, next.identity);
   if (!storageKey) return;
   // Save text and structured text quotes. Uploads, image bytes, undo history and send attempts live with the live composer.
@@ -216,11 +216,10 @@ function saveComposer(key: string, next: ThreadDraft, previous: ThreadDraft) {
   }
   const changes = removed.length ? ChangeSet.of(removed, next.text.length) : undefined;
   const text = changes ? changes.apply(Text.of(next.text.split('\n'))).toString() : next.text;
-  const inboxObservation = next.pendingInput?.inboxId
-    ? { inboxId: next.pendingInput.inboxId, text: next.pendingInput.editorText === next.text ? text : next.pendingInput.editorText }
-    : next.inboxObservation;
-  if (!text.trim() && !inboxObservation) { writeUnsentComposer(storageKey, null); return; }
-  const saved: SavedComposer = { text, inboxObservation, references: changes ? mapComposerReferences(references, changes) : references, markerObjects,
+  const inboxObservations = next.pendingInput?.inboxId && !next.inboxObservations?.includes(next.pendingInput.inboxId)
+    ? [...next.inboxObservations ?? [], next.pendingInput.inboxId] : next.inboxObservations;
+  if (!text.trim() && !inboxObservations?.length) { writeUnsentComposer(storageKey, null); return; }
+  const saved: SavedComposer = { text, inboxObservations, references: changes ? mapComposerReferences(references, changes) : references, markerObjects,
     interactions: changes && next.interactions ? mapInteractionRanges(next.interactions, changes) : next.interactions };
   writeUnsentComposer(storageKey, JSON.stringify(saved));
 }

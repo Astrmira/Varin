@@ -12,7 +12,6 @@ export interface ModelCredentialPolicy {
 export interface DeploymentEgressPolicy {
   readonly userDestinations: 'all' | 'public';
   readonly requiredProxy?: string;
-  readonly operatorOrigins: readonly string[];
 }
 export interface McpDeploymentPolicy {
   readonly transports: readonly ('http' | 'stdio')[];
@@ -28,6 +27,7 @@ export interface ExtensionDeploymentPolicy {
   readonly artifactIntegrities?: readonly string[];
   readonly agentStaging?: boolean;
   readonly brokeredTransport?: 'child' | 'sandbox';
+  readonly sandboxScope?: 'user' | 'extension';
 }
 export interface ExternalAgentDeploymentPolicy {
   readonly profiles?: readonly string[];
@@ -37,6 +37,7 @@ export interface ExternalAgentDeploymentPolicy {
 export interface DeploymentPolicy {
   readonly version: 1;
   readonly modelCredentials?: ModelCredentialPolicy;
+  readonly connections?: { readonly staticHosts: boolean; readonly ssh: boolean };
   readonly ingress?: { readonly mode: 'gateway' };
   readonly egress?: DeploymentEgressPolicy;
   readonly mcp?: McpDeploymentPolicy;
@@ -91,7 +92,7 @@ function httpOrigin(value: unknown, field: string): string {
 }
 
 export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
-  const input = fields(value, 'policy', ['version', 'modelCredentials', 'ingress', 'egress', 'background', 'mcp', 'localInference', 'extensions', 'externalAgents', 'resourceProvider', 'execution']);
+  const input = fields(value, 'policy', ['version', 'modelCredentials', 'ingress', 'egress', 'background', 'mcp', 'localInference', 'extensions', 'externalAgents', 'resourceProvider', 'execution', 'connections']);
   if (input.version !== 1) throw new Error('Unsupported deployment policy version (expected 1)');
   let modelCredentials: ModelCredentialPolicy | undefined;
   if (input.modelCredentials !== undefined) {
@@ -107,11 +108,10 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
   }
   let egress: DeploymentEgressPolicy | undefined;
   if (input.egress !== undefined) {
-    const rule = fields(input.egress, 'egress', ['userDestinations', 'requiredProxy', 'operatorOrigins']);
+    const rule = fields(input.egress, 'egress', ['userDestinations', 'requiredProxy']);
     if (rule.userDestinations !== 'all' && rule.userDestinations !== 'public') throw new Error('Unknown egress.userDestinations (expected all or public)');
     egress = {
       userDestinations: rule.userDestinations,
-      operatorOrigins: names(rule.operatorOrigins === undefined ? [] : rule.operatorOrigins, 'egress.operatorOrigins').map(value => httpOrigin(value, 'egress.operatorOrigins')),
       ...(rule.requiredProxy === undefined ? {} : { requiredProxy: httpOrigin(rule.requiredProxy, 'egress.requiredProxy') }),
     };
   }
@@ -151,7 +151,7 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
   }
   let extensions: ExtensionDeploymentPolicy | undefined;
   if (input.extensions !== undefined) {
-    const rule = fields(input.extensions, 'extensions', ['sources', 'realms', 'artifactIntegrities', 'agentStaging', 'brokeredTransport']);
+    const rule = fields(input.extensions, 'extensions', ['sources', 'realms', 'artifactIntegrities', 'agentStaging', 'brokeredTransport', 'sandboxScope']);
     const sources = rule.sources === undefined ? undefined : names(rule.sources, 'extensions.sources');
     const realms = rule.realms === undefined ? undefined : names(rule.realms, 'extensions.realms');
     const artifactIntegrities = rule.artifactIntegrities === undefined ? undefined : names(rule.artifactIntegrities, 'extensions.artifactIntegrities');
@@ -161,7 +161,10 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
     if (rule.agentStaging !== undefined && typeof rule.agentStaging !== 'boolean') throw new Error('extensions.agentStaging must be a boolean');
     if (rule.brokeredTransport !== undefined && rule.brokeredTransport !== 'child' && rule.brokeredTransport !== 'sandbox')
       throw new Error('extensions.brokeredTransport must be child or sandbox');
+    if (rule.sandboxScope !== undefined && rule.sandboxScope !== 'user' && rule.sandboxScope !== 'extension')
+      throw new Error('extensions.sandboxScope must be user or extension');
     extensions = {
+      ...(rule.sandboxScope !== undefined && { sandboxScope: rule.sandboxScope }),
       ...(sources && { sources: sources as VarinExtensionPackageSourceKind[] }),
       ...(realms && { realms: realms as typeof extensionRealms[number][] }),
       ...(artifactIntegrities && { artifactIntegrities }),
@@ -214,7 +217,18 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
     mcp = { transports: mcp?.transports ?? ['http', 'stdio'], stdioPlacement: 'managed' };
     externalAgents = { ...externalAgents, placement: 'managed' };
   }
-  return { version: 1, ...(modelCredentials && { modelCredentials }), ...(egress && { egress }), ...(background && { background }),
+  let connections: DeploymentPolicy['connections'];
+  const constrained = egress?.userDestinations === 'public' || Boolean(egress?.requiredProxy);
+  const allowStatic = !constrained && input.ingress === undefined && execution?.mode !== 'none';
+  if (input.connections !== undefined || !allowStatic) {
+    const rule = input.connections === undefined ? {} : fields(input.connections, 'connections', ['staticHosts', 'ssh']);
+    for (const [key, value] of Object.entries(rule)) {
+      if (typeof value !== 'boolean') throw new Error('connections.' + key + ' must be a boolean');
+      if (value && constrained) throw new Error('Restricted egress requires provider-managed connections');
+    }
+    connections = { staticHosts: (rule.staticHosts ?? allowStatic) === true, ssh: (rule.ssh ?? allowStatic) === true };
+  }
+  return { version: 1, ...(connections && { connections }), ...(modelCredentials && { modelCredentials }), ...(egress && { egress }), ...(background && { background }),
     ...(mcp && { mcp }), ...(localInference && { localInference }), ...(extensions && { extensions }), ...(externalAgents && { externalAgents }),
     ...(resourceProvider && { resourceProvider }), ...(execution && { execution }),
     ...(input.ingress !== undefined && { ingress: { mode: 'gateway' as const } }) };
