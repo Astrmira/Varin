@@ -40,11 +40,14 @@ export function createManagedResourceTarget(options: {
   };
   const removeExit = options.kernel.subscribeExit(execution.disconnect);
   const removeReady = options.kernel.subscribeReady(recover);
+  let hasExternalPrograms = false;
   recover(); // Reattach to durable original jobs; never submit a replacement.
   return {
     resources, execution,
-    attachSources: (source: Omit<ManagedSourceServiceOptions, 'kernel' | 'hostId'>) =>
-      execution.setSourceOwner(createManagedSourceService({ ...source, liveSourceOnly: options.liveSourceOnly === true, kernel: options.kernel, hostId: identity.hostId })),
+    attachSources(source: Omit<ManagedSourceServiceOptions, 'kernel' | 'hostId'>) {
+      hasExternalPrograms = Boolean(source.externalLaunch);
+      execution.setSourceOwner(createManagedSourceService({ ...source, liveSourceOnly: options.liveSourceOnly === true, kernel: options.kernel, hostId: identity.hostId }));
+    },
     mount: (app: Express, routes: TargetRoutes) => {
       if (options.liveSourceOnly) {
         // This is an explicit role surface, not an authentication shortcut. Every mounted
@@ -56,9 +59,16 @@ export function createManagedResourceTarget(options: {
             'scriptBinding', 'scriptSpawn', 'scriptControl', 'recovery',
             'workspace', 'workspaceUpload', 'workspaceAsset', 'projectManagement'].map(name => '/sources/' + name)]);
         if (routes.office) posts.add('/office/convert');
+        if (hasExternalPrograms) {
+          for (const method of ['externalSettings', 'externalInspect', 'externalDetect', 'externalPrepare', 'externalBinding',
+            'externalSpawn', 'externalControl', 'externalRemovePrivateSource', 'externalFile', 'externalCapture', 'attachmentBegin', 'attachmentPath']) {
+            posts.add('/sources/' + method);
+          }
+        }
         app.use('/api/harness/managed-execution/v1', (req, res, next) => {
           if (req.method === 'GET' && (req.path === '/identity' || (routes.office && req.path === '/office/environment'))
-            || req.method === 'POST' && posts.has(req.path)) return next();
+            || req.method === 'POST' && posts.has(req.path)
+            || hasExternalPrograms && req.method === 'PUT' && /^\/sources\/attachments\/objects\/[^/]+$/u.test(req.path)) return next();
           res.status(404).json({ code: 'resource-node-operation-unavailable' });
         });
       }

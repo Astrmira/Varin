@@ -684,13 +684,21 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
       externalDetect: (input, signal) => request('externalDetect', input, signal),
       externalInspect: (input, signal) => request('externalInspect', input, signal),
       externalPrepare: (input, signal) => request('externalPrepare', input, signal),
+      externalRemovePrivateSource: (input, signal) => request('externalRemovePrivateSource', input, signal),
       terminal:(input,signal)=>request('terminal',input,signal),
       terminalStream:async(input,emit,signal)=>{if(input.coordinatorHostId!==options.coordinatorHostId)throw new Error('Terminal coordinator changed');
         const response=await client.response('/sources/terminalStream',{method:'POST',body:JSON.stringify(input),headers:{'Content-Type':'application/json'},signal});
         return consumeManagedTerminalFrames(response,emit,signal);},
       externalBinding: (input, signal) => request('externalBinding', input, signal),
       externalSpawn: (input, signal) => request('externalSpawn', input, signal),
-      externalControl: (input, signal) => request('externalControl', input, signal),
+      async externalControl(input, signal) {
+        const receipt = await request('externalControl', input, signal);
+        if (placement && input.release && receipt.executorStopped && receipt.outputReleased
+          && receipt.transportId === input.transportId && receipt.processId === input.processId && receipt.conversationId === input.conversationId) {
+          receipt.authorities.forEach(settleBinding);
+        }
+        return receipt;
+      },
       scriptControl: (input, signal) => request('scriptControl', input, signal),
       scriptBinding: (input, signal) => request('scriptBinding', input, signal),
       scriptSpawn: (input, signal) => request('scriptSpawn', input, signal),

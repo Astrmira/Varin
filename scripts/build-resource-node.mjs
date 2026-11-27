@@ -114,6 +114,7 @@ export function collectResourceClosure(serverDir, ts, basename = 'resource-node'
             else if (basename === 'computer-node' && filename === 'lib/computer/driver-host.js' &&
               (target === 'computer-driver' || target === '../../computer-driver')) { /* target driver staged separately */ }
             else if (target.startsWith('..') || !fs.existsSync(asset)) throw new Error(`Unshippable node asset: ${filename} -> ${relative}`);
+            else if (/\.[cm]?js$/.test(target)) visit(target);
             else assetFiles.add(target);
           }
         }

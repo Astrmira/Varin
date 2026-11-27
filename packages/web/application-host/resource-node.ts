@@ -32,7 +32,9 @@ import { canonicalizePathIdentity, isPathWithinRoot } from './lib/workspace/path
 import { createPlatformEnvironmentRuntime } from './lib/platform/environment-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import { createManagedTerminalOwner } from './lib/terminal/managed-owner.js';
-import { createDocumentProcesses } from './lib/office/document-processes.js';
+import { createPrivateProcessService } from './lib/kernel/private-process-service.js';
+import { createExternalPrograms } from './lib/external-agents/programs.js';
+import { createResourceExternalOwner } from './lib/external-agents/resource-owner.js';
 import { createOfficeRenderer } from './lib/office/renderer.js';
 import { registerGitRoutes } from './lib/git/routes.js';
 import { drainWorktreeBootstraps, hasActiveWorktreeBootstrap } from './lib/git/service.js';
@@ -167,11 +169,15 @@ export async function startResourceNode(options: NodeOptions) {
     cleanup.push(() => execution.kernelProcesses.dispose(), () => execution.kernelCompute.dispose());
     const documentReadingDirectory = path.join(dataDir, 'document-reading');
     await fs.mkdir(documentReadingDirectory, { recursive: true });
-    const documentProcesses = createDocumentProcesses(kernel, hostId, documentReadingDirectory);
+    const documentProcesses = createPrivateProcessService(kernel, `document-reading:${hostId}`, documentReadingDirectory);
     cleanup.push(() => documentProcesses.dispose());
     const office = createOfficeRenderer({ spawn: documentProcesses.spawn, temporaryRoot: documentReadingDirectory,
       command: () => process.env.VARIN_LIBREOFFICE_COMMAND });
     const environment = createPlatformEnvironmentRuntime();
+    const externalDirectory = path.join(dataDir, 'external-agents');
+    const externalProcesses = createPrivateProcessService(kernel, `external-agents:${hostId}`, externalDirectory);
+    const externalPrograms = createExternalPrograms({ directory: externalDirectory, environment, spawn: externalProcesses.spawn });
+    cleanup.push(() => externalProcesses.dispose(), externalPrograms.close);
     const terminal = createTerminalRuntime({ fs: fsSync, path, documents,
       buildAugmentedPath: environment.buildAugmentedPath, searchPathFor: environment.searchPathFor, isExecutable: environment.isExecutable,
       loadPtyProvider: async () => execution.kernelProcesses.ptyProvider });
@@ -208,6 +214,7 @@ export async function startResourceNode(options: NodeOptions) {
     const projects = createManagedProjectManagementOwner({ kernel, documents, gitDispatch: registerGitRoutes(undefined, { documents }) });
     let activeProjectOperations = 0;
     target.attachSources({ documents, deviceFileAccess: false, validateLiveSource: liveSources.validate,
+      ...createResourceExternalOwner(dataDir, externalPrograms), prepareExternalLiveSource: liveSources.prepare,
       async projectManagement(principal, request, signal) {
         if (!liveProjectOperations.has(request.command?.action)) throw new SourceAdmissionError('source_unavailable');
         activeProjectOperations++;

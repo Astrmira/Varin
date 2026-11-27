@@ -8,6 +8,7 @@ import { workLocationCapabilities } from '../kernel/work-location-capabilities.j
 /** The target Host admits its own Source resources. Catalog execution facts stay
  * with the coordinator; this adapter stores neither operations nor grants. */
 import { createHash, randomUUID } from 'node:crypto';
+import { lstat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { parseProjectSourceSelection, type ThreadPrepareSource, type ThreadPreparedSource } from '@varin/application-client';
 import type { DocumentAuthority } from '../documents/authority.js';
@@ -18,12 +19,13 @@ import { admitMaterializedRoot, originalMaterializationLocation } from '../kerne
 import { SourceAdmissionError, sourceReadError } from '../kernel/source-admission-error.js';
 import { normalizeThreadSourcePreparation } from '../kernel/thread-sources.js';
 import { assertResourcePathAllowed } from '../workspace/resource-access.js';
-import { normalizePathIdentity } from '../workspace/path-safety.js';
+import { canonicalizePathIdentity, normalizePathIdentity } from '../workspace/path-safety.js';
 import { createManagedAttachmentImport } from './managed-attachment-import.js';
 import { ManagedSourceDrainedError } from './managed-source-drain.js';
 import { resolveScriptNodeBinding, scriptNodeSpawnInput } from '../kernel/script-node-binding.js';
 import { isManagedMcpDerivationContinuation, isManagedMcpChildContinuation, isManagedMcpTaskContinuation, isManagedMcpResourceContinuation, isManagedMcpInteractionContinuation } from './managed-mcp-contract.js';
 import { createManagedSourceProcesses } from './managed-source-processes.js';
+import { isPrivateExternalWorkspace, preparePrivateExternalWorkspace, removePrivateExternalWorkspace } from '../external-agents/private-workspace.js';
 import { defaultExecutionEnvironment } from '../platform/execution-environment.js';
 import type { ManagedSourceAddress, ManagedSourceBindRequest, ManagedSourceBinding, ManagedSourceCapabilities,
   ManagedSourcePrincipal, ManagedSourceService, ManagedSourceServiceHandler, ManagedSourceLocalScope,
@@ -399,23 +401,49 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
       requireReadPrincipal(principal,input.coordinatorHostId);
       if (!options.prepareExternalLiveSource || input.resourceOwner.kind !== 'managed_host' || input.resourceOwner.hostId !== options.hostId
         || !input.conversationId || !['terminal:use','process:control'].every(c=>principal.capabilities.includes(c))) throw new SourceAdmissionError('source_authority_denied');
-      const resolved = await documents.resolveWorkspace({path:input.path});
+      let resolved = await documents.resolveWorkspace({path:input.path});
       if(input.expectedWorkspaceId && input.expectedWorkspaceId!==resolved.workspaceId)throw new SourceAdmissionError('source_changed');
       const workspace = await documents.admitWorkspaceRegistration(resolved.workspaceId,signal);
-      if (principal.allowedDirectories?.length) {
-        const {assertResourcePathAllowed}=await import('../workspace/resource-access.js');
-        await assertResourcePathAllowed(workspace.canonicalPath,principal.allowedDirectories);
+      await assertResourcePathAllowed(workspace.canonicalPath, principal.allowedDirectories);
+      if (input.privateDirectory === true) {
+        if (!principal.capabilities.includes('filesystem:write')) throw new SourceAdmissionError('source_authority_denied');
+        const directory = await preparePrivateExternalWorkspace(workspace.canonicalPath, principal.principalId,
+          input.coordinatorHostId, input.conversationId);
+        resolved = await documents.resolveWorkspace({ path: directory });
       }
       const liveRoot = await options.prepareExternalLiveSource(resolved.workspaceId,resolved.workspaceId,input.conversationId,signal);
       return {resource_owner:input.resourceOwner,mode:'live_root',workspace_id:resolved.workspaceId,execution_workspace_id:resolved.workspaceId,
         branch_id:null,revision:null,live_root:liveRoot};
+    },
+    async externalRemovePrivateSource(principal, input, signal) {
+      requireReadPrincipal(principal, input.coordinatorHostId);
+      const source = input.source;
+      const root = source?.live_root;
+      if (!principal.capabilities.includes('filesystem:write') || source?.resource_owner.kind !== 'managed_host'
+        || source.resource_owner.hostId !== options.hostId || source.mode !== 'live_root' || !root || root.hostId !== options.hostId
+        || !isPrivateExternalWorkspace(root.canonicalRoot, principal.principalId, input.coordinatorHostId, input.conversationId)) {
+        throw new SourceAdmissionError('source_authority_denied');
+      }
+      await assertResourcePathAllowed(root.canonicalRoot, principal.allowedDirectories);
+      const exists = await lstat(root.canonicalRoot).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (!exists) return { removed: true };
+      const registered = await documents.inspectWorkspace(source.workspace_id);
+      const canonicalRoot = normalizePathIdentity(root.canonicalRoot);
+      if (source.execution_workspace_id !== source.workspace_id || normalizePathIdentity(registered.root) !== canonicalRoot
+        || normalizePathIdentity(await canonicalizePathIdentity(root.canonicalRoot)) !== canonicalRoot)
+        throw new SourceAdmissionError('source_changed');
+      await removePrivateExternalWorkspace(kernel, source.workspace_id, root.canonicalRoot, input.conversationId, signal);
+      return { removed: true };
     },
     async terminal(principal,input,signal){requireReadPrincipal(principal,input.coordinatorHostId);if(!options.terminal)throw new SourceAdmissionError('source_unavailable');return options.terminal.command(principal,input,signal);},
     async terminalStream(principal,input,emit,signal){requireReadPrincipal(principal,input.coordinatorHostId);if(!options.terminal)throw new SourceAdmissionError('source_unavailable');return options.terminal.stream(principal,input,emit,signal);},
     async externalBinding(principal, input, signal) {
       requireReadPrincipal(principal,input.coordinatorHostId);
       if (!['terminal:use','process:control'].every(c => principal.capabilities.includes(c)) || !options.externalLaunch) throw new SourceAdmissionError('source_authority_denied');
-      await registration(input.source,signal);
+      await registration(input.source,signal,false,principal);
       return (await options.externalLaunch(input.configurationId,input.harness,input.sessionId,signal)).binding;
     },
     async externalSpawn(principal,input,signal) {
@@ -648,8 +676,13 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
     async bind(principal, input, signal) {
       requireReadPrincipal(principal, input.coordinatorHostId);
       const source = selectedSource(input);
-      if (options.liveSourceOnly && (!['read', 'source', 'result', 'process_view', 'script_environment', 'work_location', 'work_location_read', 'mcp_owner'].includes(input.purpose) || !['run', 'source_read'].includes(input.scope.kind) || input.handoff || input.continuation))
-        throw new SourceAdmissionError('source_unavailable');
+      if (options.liveSourceOnly) {
+        const supported = input.scope.kind === 'external'
+          ? input.purpose === 'external_harness' && Boolean(options.externalLaunch)
+          : (input.scope.kind === 'run' || input.scope.kind === 'source_read')
+            && ['read', 'source', 'result', 'process_view', 'script_environment', 'work_location', 'work_location_read', 'mcp_owner'].includes(input.purpose);
+        if (!supported || input.handoff || input.continuation) throw new SourceAdmissionError('source_unavailable');
+      }
       if (input.purpose === 'external_harness' && (input.scope.kind !== 'external' || input.retention !== 'caller' || input.operationId !== input.scope.transportId)) throw new SourceAdmissionError('source_authority_denied');
       const alternate = input.purpose === 'work_location_read' || input.purpose === 'work_location';
       const alternateCapabilities = alternate && input.source.tools?.length === 1 ? workLocationCapabilities(input.source.tools[0]!) : undefined;

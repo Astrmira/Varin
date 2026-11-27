@@ -76,7 +76,7 @@ import { createLinuxBrowserResources } from './lib/browser/linux-browser-owner.j
 import { ManagedBrowserPeers, registerManagedBrowserRoutes } from './lib/browser/browser-managed.js';
 import { createOfficeReader } from './lib/office/reader.js';
 import { createOfficeRenderer } from './lib/office/renderer.js';
-import { createDocumentProcesses } from './lib/office/document-processes.js';
+import { createPrivateProcessService } from './lib/kernel/private-process-service.js';
 import { createManagedOfficeRenderer } from './lib/office/managed-renderer.js';
 import { createBinaryFileOwner } from './lib/kernel/binary-file-owner.js';
 import { createMaterialReceiptReconciler } from './lib/kernel/material-receipts.js';
@@ -1329,7 +1329,11 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     }
     return externalAgentIdentity(cwd);
   } });
-  const externalAgents = new ExternalAgentsService({ managed: () => ({coordinatorHostId:agentRuntime.coordinatorHostId,source:(owner,signal)=>agentRuntime.managedSource(owner,signal)}), kernel: kernelClient, spawn: externalAgentProcesses.spawn, spawnAdmitted: externalAgentProcesses.spawnAdmitted, directory: externalAgentDirectory,
+  const externalAgents = new ExternalAgentsService({ managed: () => ({ coordinatorHostId: agentRuntime.coordinatorHostId,
+    source: (owner, signal) => agentRuntime.managedSource(owner, signal),
+    withSourceUse: (owner, work, signal) => managedRemoteTargets!.withSourceUse(owner, work, signal) }),
+    ...(providerDefault && { defaultWorkspace: async principal => principal === null || await hostPrincipals().isOwner(principal) ? providerDefault : undefined }),
+    kernel: kernelClient, spawn: externalAgentProcesses.spawn, spawnAdmitted: externalAgentProcesses.spawnAdmitted, directory: externalAgentDirectory,
     ...(deployment?.externalAgents && { deployment: deployment.externalAgents }),
     environment: platformEnvironmentRuntime,
     fetch: (input, init) => egressRuntime.fetch(input, init), removeProgram: externalAgentProcesses.removeProgram, fileContext: externalAgentProcesses.fileContext,
@@ -1363,7 +1367,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   const documentReadingDirectory = path.join(VARIN_DATA_DIR, 'document-reading');
   await fsPromises.mkdir(documentReadingDirectory, { recursive: true });
-  const documentProcesses = createDocumentProcesses(kernelClient, extensionRuntime.services.hostId, documentReadingDirectory);
+  const documentProcesses = createPrivateProcessService(kernelClient, `document-reading:${extensionRuntime.services.hostId}`, documentReadingDirectory);
   const managedLanguageProviders = new Map(managedLanguageServers.languageIds.map((languageId) => [`varin.managed.${languageId}`, languageId]));
   const languageSupervisor = createLanguageSupervisor({
     activateProviders: ({ languageId }) => extensionRuntime.activateForEvent('workspace-match', { languageId }),

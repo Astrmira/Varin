@@ -208,7 +208,8 @@ export interface ManagedSourceService {
   externalConfigure(principal: ManagedSourcePrincipal, input: { coordinatorHostId: string; value: Pick<import('@varin/application-client').ExternalAgentSettings, 'agents' | 'defaultAgent'>; expectedRevision: number; key: string }, signal?: AbortSignal): Promise<import('@varin/application-client').ExternalAgentSettings>;
   externalInstallations(principal: ManagedSourcePrincipal, input: { coordinatorHostId: string; input: import('@varin/application-client').ExternalAgentInstallationRequest }, signal?: AbortSignal): Promise<import('@varin/application-client').ExternalAgentInstallations>;
   externalInstallationLog(principal: ManagedSourcePrincipal, input: { coordinatorHostId: string; id: string }, signal?: AbortSignal): Promise<string>;
-  externalPrepare(principal: ManagedSourcePrincipal, input: {coordinatorHostId:string;conversationId:string;resourceOwner:ManagedHostSourceOwner;path:string;expectedWorkspaceId?:string}, signal?:AbortSignal): Promise<LaunchSource>;
+  externalPrepare(principal: ManagedSourcePrincipal, input: {coordinatorHostId:string;conversationId:string;resourceOwner:ManagedHostSourceOwner;path:string;expectedWorkspaceId?:string;privateDirectory?:true}, signal?:AbortSignal): Promise<LaunchSource>;
+  externalRemovePrivateSource(principal: ManagedSourcePrincipal, input: {coordinatorHostId:string;conversationId:string;source:LaunchSource}, signal?:AbortSignal): Promise<{removed:true}>;
   externalBinding(principal: ManagedSourcePrincipal, input: ManagedExternalLaunchRequest, signal?: AbortSignal): Promise<ManagedExternalLaunchBinding>;
   externalSpawn(principal: ManagedSourcePrincipal, input: ManagedExternalSpawnRequest, signal?: AbortSignal): Promise<import('../kernel/protocol.generated.js').KernelProcessSnapshot>;
   externalControl(principal: ManagedSourcePrincipal, input: ManagedExternalControlRequest, signal?: AbortSignal): Promise<ManagedExternalControlReceipt>;
