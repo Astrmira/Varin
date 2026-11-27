@@ -76,6 +76,8 @@ import { createLinuxBrowserResources } from './lib/browser/linux-browser-owner.j
 import { ManagedBrowserPeers, registerManagedBrowserRoutes } from './lib/browser/browser-managed.js';
 import { createOfficeReader } from './lib/office/reader.js';
 import { createOfficeRenderer } from './lib/office/renderer.js';
+import { createDocumentProcesses } from './lib/office/document-processes.js';
+import { createManagedOfficeRenderer } from './lib/office/managed-renderer.js';
 import { createBinaryFileOwner } from './lib/kernel/binary-file-owner.js';
 import { createMaterialReceiptReconciler } from './lib/kernel/material-receipts.js';
 import { createDocumentSources } from './lib/kernel/document-sources.js';
@@ -1361,16 +1363,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   const documentReadingDirectory = path.join(VARIN_DATA_DIR, 'document-reading');
   await fsPromises.mkdir(documentReadingDirectory, { recursive: true });
-  const documentProcesses = createKernelProcessService({
-    client: kernelClient,
-    resolveIdentity: async (cwd) => {
-      const canonicalRoot = await canonicalizePathIdentity(documentReadingDirectory);
-      const canonicalCwd = await canonicalizePathIdentity(cwd);
-      if (!isPathWithinRoot(canonicalCwd, canonicalRoot)) throw new Error('Document parser escaped its private directory');
-      const workspaceId = `document-reading:${extensionRuntime.services.hostId}`;
-      return { workspaceId, executionWorkspaceId: workspaceId, canonicalRoot };
-    },
-  });
+  const documentProcesses = createDocumentProcesses(kernelClient, extensionRuntime.services.hostId, documentReadingDirectory);
   const managedLanguageProviders = new Map(managedLanguageServers.languageIds.map((languageId) => [`varin.managed.${languageId}`, languageId]));
   const languageSupervisor = createLanguageSupervisor({
     activateProviders: ({ languageId }) => extensionRuntime.activateForEvent('workspace-match', { languageId }),
@@ -1584,8 +1577,10 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     materials: materialStore,
     engineFactory: (settings) => createPdfEngine(settings, { spawn: documentProcesses.spawn, temporaryRoot: documentReadingDirectory }),
   });
-  const officeRenderer = createOfficeRenderer({ spawn: documentProcesses.spawn, temporaryRoot: documentReadingDirectory,
-    command: () => process.env.VARIN_LIBREOFFICE_COMMAND });
+  const officeRenderer = providerDefault
+    ? createManagedOfficeRenderer(managedRemoteTargets, providerDefault.resourceOwner)
+    : createOfficeRenderer({ spawn: documentProcesses.spawn, temporaryRoot: documentReadingDirectory,
+      command: () => process.env.VARIN_LIBREOFFICE_COMMAND });
   const officeReader = createOfficeReader({ materials: materialStore, pdf: documentReader, renderer: officeRenderer });
   const webFetchService = createWebFetch({
     egress: egressRuntime,

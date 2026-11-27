@@ -33,6 +33,7 @@ import {
 } from "./managed-remote-types.js";
 import { decodeManagedProjectManagementResponse, decodeManagedSourceCancellation, decodeManagedSourceReceiptRelease, decodeManagedSourceResponse } from './managed-source-response.js';
 import { consumeManagedProcessStream } from './managed-process-stream.js';
+import { encodeManagedBinaryWrite } from './managed-binary-wire.js';
 import { createProviderLeaseOwner, isProviderResourceOwner, providerResourceOwner, retainProviderResponse, type ProviderLease, type ProviderResource, type ResourceProvider } from '../deployment/resource-provider.js';
 import type { ComputerProviderHost } from '../computer/computer-service.js';
 
@@ -588,7 +589,21 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     });
     const request = async <Method extends keyof ManagedSourceService>(method: Method, input: Parameters<ManagedSourceService[Method]>[1], signal?: AbortSignal): Promise<Awaited<ReturnType<ManagedSourceService[Method]>>> => {
       if (input.coordinatorHostId !== options.coordinatorHostId) throw new Error('Managed source request belongs to another coordinator');
-      let result = await client.json<Awaited<ReturnType<ManagedSourceService[Method]>>>(`/sources/${method}`, input, 'POST', signal).catch(error => {
+      type Result = Awaited<ReturnType<ManagedSourceService[Method]>>;
+      const route = `/sources/${method}`;
+      const serviceRequest = method === 'service' ? input as ManagedSourceServiceRequest : undefined;
+      const operation = serviceRequest?.operation;
+      let response: Promise<Result>;
+      if (operation?.kind === 'binary_write') {
+        if (target.identity.capabilities.includes('binary-write-stream')) {
+          response = client.request<Result>(route, { method: 'POST', ...encodeManagedBinaryWrite(serviceRequest!, operation), ...(signal ? { signal } : {}) });
+        } else {
+          const { bytes, ...legacy } = operation;
+          response = client.json<Result>(route, { ...serviceRequest, operation: bytes
+            ? { ...legacy, bytesBase64: Buffer.from(bytes).toString('base64') } : legacy }, 'POST', signal);
+        }
+      } else response = client.json<Result>(route, input, 'POST', signal);
+      let result = await response.catch(error => {
         if (error instanceof ManagedResponseError && typeof error.code === 'string' && threadSourceFailureMessage(error.code)) {
           throw new SourceAdmissionError(error.code as SourceFailureCode, { cause: error });
         }

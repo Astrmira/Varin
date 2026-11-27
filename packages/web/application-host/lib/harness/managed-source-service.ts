@@ -31,8 +31,8 @@ import type { ManagedSourceAddress, ManagedSourceBindRequest, ManagedSourceBindi
 import type { ManagedSourceCleanupScope } from './managed-remote-types.js';
 import type { ManagedRecoveryReply, ManagedRecoveryRequest } from './managed-recovery-contract.js';
 
-// The node only wires original native file and process tools. No project configuration,
-// editors, MCP, retrieval provider, external harness or Agent service is started.
+// Live directory nodes advertise the native tools that can run against their
+// own kernel without a Catalog Run on that node.
 const liveNodeTools = new Set(['file_read', 'file_list', 'file_search', 'file_write', 'file_edit',
   'process_inspect', 'process_read', 'process_spawn', 'process_write', 'process_resize']);
 
@@ -789,7 +789,7 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
         ...(input.journal ? { journal: input.journal } : {}) }, signal);
     },
     async service(principal, input, signal) {
-      if (options.liveSourceOnly && !['validate', 'resources_prepare', 'resource_read', 'resource_list', 'document_read', 'mcp'].includes(input.operation.kind)) {
+      if (options.liveSourceOnly && !['validate', 'resources_prepare', 'resource_read', 'resource_list', 'document_read', 'binary_write', 'mcp'].includes(input.operation.kind)) {
         if (input.operation.kind !== 'native_resource' || !['read', 'process_observation', 'reconcile_mutation'].includes(input.operation.action.kind))
           throw new SourceAdmissionError('source_unavailable');
         if (input.operation.action.kind === 'reconcile_mutation' && !principal.capabilities.includes('filesystem:write'))

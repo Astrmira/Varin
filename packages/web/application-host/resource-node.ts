@@ -32,6 +32,16 @@ import { canonicalizePathIdentity, isPathWithinRoot } from './lib/workspace/path
 import { createPlatformEnvironmentRuntime } from './lib/platform/environment-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import { createManagedTerminalOwner } from './lib/terminal/managed-owner.js';
+import { createDocumentProcesses } from './lib/office/document-processes.js';
+import { createOfficeRenderer } from './lib/office/renderer.js';
+import { registerGitRoutes } from './lib/git/routes.js';
+import { drainWorktreeBootstraps, hasActiveWorktreeBootstrap } from './lib/git/service.js';
+import { createManagedProjectManagementOwner } from './lib/projects/managed-project-management.js';
+
+const liveProjectOperations = new Set([
+  'git-command', 'git-branches', 'git-root-context', 'worktrees', 'worktree-create', 'worktree-validate',
+  'worktree-remove', 'worktree-remote-branch-delete', 'worktree-bootstrap',
+]);
 
 interface NodeDirectories { dataDir: string; workspaceRoot: string; kernelPath?: string }
 interface NodeOptions extends NodeDirectories { host?: string; port?: number; releaseId?: string }
@@ -155,6 +165,12 @@ export async function startResourceNode(options: NodeOptions) {
     documents.bindDurableMutationStorage(async (id, work) => work(await storage.kernelRecoveryStore.workspaceStorageContext(id)));
     const execution = createHostResourceExecution(kernel, documents, () => console.error('[ResourceNode] Native process observation unavailable'));
     cleanup.push(() => execution.kernelProcesses.dispose(), () => execution.kernelCompute.dispose());
+    const documentReadingDirectory = path.join(dataDir, 'document-reading');
+    await fs.mkdir(documentReadingDirectory, { recursive: true });
+    const documentProcesses = createDocumentProcesses(kernel, hostId, documentReadingDirectory);
+    cleanup.push(() => documentProcesses.dispose());
+    const office = createOfficeRenderer({ spawn: documentProcesses.spawn, temporaryRoot: documentReadingDirectory,
+      command: () => process.env.VARIN_LIBREOFFICE_COMMAND });
     const environment = createPlatformEnvironmentRuntime();
     const terminal = createTerminalRuntime({ fs: fsSync, path, documents,
       buildAugmentedPath: environment.buildAugmentedPath, searchPathFor: environment.searchPathFor, isExecutable: environment.isExecutable,
@@ -188,8 +204,16 @@ export async function startResourceNode(options: NodeOptions) {
     cleanup.push(() => mcpAuthority.close(), () => mcp.close(), kernel.subscribeExit(() => { void mcp.close(); }));
     const target = createManagedResourceTarget({ kernel, liveSourceOnly: true, storageAvailable: false,
       onError: () => console.error('[ResourceNode] Managed resource observation unavailable') });
-    cleanup.push(() => target.dispose());
+    cleanup.push(drainWorktreeBootstraps, () => target.dispose());
+    const projects = createManagedProjectManagementOwner({ kernel, documents, gitDispatch: registerGitRoutes(undefined, { documents }) });
+    let activeProjectOperations = 0;
     target.attachSources({ documents, deviceFileAccess: false, validateLiveSource: liveSources.validate,
+      async projectManagement(principal, request, signal) {
+        if (!liveProjectOperations.has(request.command?.action)) throw new SourceAdmissionError('source_unavailable');
+        activeProjectOperations++;
+        try { return await projects(principal, request, signal); }
+        finally { activeProjectOperations--; }
+      },
       ...mcp.continuations,
       serviceOperation: (scope, operation, signal) => operation.kind === 'mcp'
         ? mcp.request(scope, operation.action, signal) : sourceQuery(scope, operation, signal),
@@ -229,10 +253,16 @@ export async function startResourceNode(options: NodeOptions) {
       res.setHeader('x-varin-managed-host', hostId);
       res.setHeader('Cache-Control', 'no-store');
       if (draining) { res.status(503).json({ code: 'host-draining' }); return; }
-      res.json(await kernel.sourceRequest('source.retention', {}));
+      const retention = await kernel.sourceRequest<Record<string, unknown>>('source.retention', {});
+      const writingProject = activeProjectOperations > 0 || hasActiveWorktreeBootstrap();
+      res.json(writingProject ? { ...retention, retireReady: false } : retention);
     });
-    app.use((req, res, next) => {
-      if (draining) { res.status(503).json({ code: 'host-draining' }); return; }
+    app.use((_req, res, next) => {
+      if (draining) {
+        res.setHeader('x-varin-managed-host', hostId);
+        res.status(503).json({ code: 'host-draining' });
+        return;
+      }
       next();
     });
     app.use(express.json({ limit: '4mb' }));
@@ -242,7 +272,7 @@ export async function startResourceNode(options: NodeOptions) {
       }
       next();
     });
-    target.mount(app, { documents, requireAuth: auth.requireAuth, resolveAuthContext: auth.resolveAuthContext, isDraining: () => draining });
+    target.mount(app, { documents, office, requireAuth: auth.requireAuth, resolveAuthContext: auth.resolveAuthContext, isDraining: () => draining });
     // Body parser and middleware failures must not echo request fragments, bearer data or stack traces.
     const fail: express.ErrorRequestHandler = (error, _req, res, _next) => {
       if (res.headersSent) { res.destroy(); return; }

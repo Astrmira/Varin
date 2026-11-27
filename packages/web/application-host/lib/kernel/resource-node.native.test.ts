@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -138,12 +139,20 @@ it('pairs offline, serves an actual original live file and process, and reopens 
     for (const absent of ['remote-shell', 'storage', 'materials', 'attachment-stream']) expect(identity.capabilities).not.toContain(absent);
     expect((await api('/shell/exec', worker.token, {})).status).toBe(404);
     expect((await fetch(origin() + '/api/threads')).status).toBe(404);
+    expect((await fetch(origin() + '/api/git/status')).status).toBe(404);
     expect(await accepted(api('/retention', worker.token))).toMatchObject({ retireReady: true });
     const coordinatorHostId = 'cloud-coordinator', threadId = 'thread:node', runId = 'run:node';
     const remote = { kind: 'managed_host', hostId: identity.hostId, connectionId: 'this-connection', endpointIdentity: 'this-endpoint' };
     const source = (name: string, token: string, body: object) => api('/sources/' + name, token, { coordinatorHostId, ...body });
     expect((await source('resolve', reader.token, { path: dataDir })).ok).toBe(false);
     const { workspaceId } = await accepted<ManagedSourceResolveReceipt>(source('resolve', reader.token, { path: workspaceRoot }));
+    execFileSync('git', ['init', '--quiet'], { cwd: workspaceRoot });
+    const stage = { projectId: 'node-project', workspaceId, command: { action: 'git-command', input: {
+      operation: 'stageGitFile', args: [workspaceRoot, 'note.txt'], selection: { mode: 'live_root' },
+    } } };
+    expect((await source('projectManagement', reader.token, stage)).ok).toBe(false);
+    await accepted(source('projectManagement', worker.token, stage));
+    expect(execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: workspaceRoot, encoding: 'utf8' }).trim()).toBe('note.txt');
     const prepare = async (token: string) => (await accepted<ThreadPreparedSource>(source('prepare', token, { input: {
       runtime: 'agent', threadId, branchId: 'main', key: randomUUID(), resourceOwner: remote,
       workspaceId, mode: 'live_root', content: { mode: 'saved-files' }, captureScopes: [],

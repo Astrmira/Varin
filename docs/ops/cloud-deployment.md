@@ -143,6 +143,10 @@ Expose a dev/test machine's files and commands to an existing Agent Host without
 
 Command-enabled credentials also support JavaScript script sessions and project MCP over stdio. Both execute on the node under the selected live workspace. The node reads project instructions from that workspace. To enable its `.mcp.json`, record the node's canonical workspace path in `project-trust.json` in the node state directory, for example `{"/home/varin/workspaces": true}`.
 
+Project Git commands also run on the node when the project uses its live workspace. They use Git, configuration and credentials on that machine. Git writes require write-enabled pairing.
+
+When a Host has an `execution.defaultWorkspace`, it sends Office rendering and spreadsheet recalculation to that workspace's Resource Node using its command-enabled pairing. Install LibreOffice in the node image or on the node machine. The renderer looks for `soffice` or uses the node's `VARIN_LIBREOFFICE_COMMAND` if set. Regular Office structure reads, attachments and exported files still use their existing storage owners.
+
 The node image stages only the JavaScript and assets reachable by its compiled Resource Node entrypoint, a role-specific frozen Bun lock, and the workspace packages reachable by that role. Its build follows the frozen installed dependency graph and rejects unrelated installed packages. Use `bun run update:resource-node-lock` for dependency/version metadata changes; for a changed import graph, build the Cloud Runtime first, then run `node scripts/build-resource-node.mjs artifacts/cloud-runtime artifacts/resource-node --update-lock` before rebuilding the image. The node health check probes its live resource kernel control channel without starting a kernel or acquiring a workspace.
 
 ### On-demand Resource Node provider

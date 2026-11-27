@@ -9,6 +9,7 @@ import type { KernelClient } from '../kernel/kernel-client.js';
 
 interface TargetRoutes {
   documents: NonNullable<ManagedRemoteRoutesOptions['documents']>;
+  office?: NonNullable<ManagedRemoteRoutesOptions['office']>;
   requireAuth: NonNullable<ManagedRemoteRoutesOptions['requireAuth']>;
   resolveAuthContext: NonNullable<ManagedRemoteRoutesOptions['resolveAuthContext']>;
   isDraining: () => boolean;
@@ -53,9 +54,11 @@ export function createManagedResourceTarget(options: {
             'service', 'cancelService', 'releaseReceipt', 'inspectScope', 'releaseScope', 'inspectReadScope', 'closeReadScope', 'fileReceipt',
             'processAccess', 'processControl', 'processWrite', 'processResize', 'processSubscribe', 'terminal', 'terminalStream',
             'scriptBinding', 'scriptSpawn', 'scriptControl', 'recovery',
-            'workspace', 'workspaceUpload', 'workspaceAsset'].map(name => '/sources/' + name)]);
+            'workspace', 'workspaceUpload', 'workspaceAsset', 'projectManagement'].map(name => '/sources/' + name)]);
+        if (routes.office) posts.add('/office/convert');
         app.use('/api/harness/managed-execution/v1', (req, res, next) => {
-          if (req.method === 'GET' && req.path === '/identity' || req.method === 'POST' && posts.has(req.path)) return next();
+          if (req.method === 'GET' && (req.path === '/identity' || (routes.office && req.path === '/office/environment'))
+            || req.method === 'POST' && posts.has(req.path)) return next();
           res.status(404).json({ code: 'resource-node-operation-unavailable' });
         });
       }
