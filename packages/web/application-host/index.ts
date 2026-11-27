@@ -1805,6 +1805,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     // settings managed-remote resolves — apiUrl + clientToken authenticate
     // Host-to-Host computer calls; no local credentials cross the wire.
     remoteHosts: async () => configuredHosts(await readSettingsFromDisk() as unknown as Record<string, unknown>),
+    ...(resourceProvider ? { providerHosts: managedRemoteTargets.providerComputers } : {}),
     // BC7: `computerVmProviders` settings entries configure libvirt targets
     // (qemu:///system or qemu+ssh://…); virsh auth stays in the environment.
     vmProviders: async () => configuredVmProviders(await readSettingsFromDisk() as unknown as Record<string, unknown>),

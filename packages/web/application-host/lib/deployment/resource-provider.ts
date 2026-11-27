@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { request } from 'node:http';
-import type { SourceResourceOwner } from '@varin/protocol';
+import type { ComputerPlatform, SourceResourceOwner } from '@varin/protocol';
 import { waitWithSignal } from '../cancellation.js';
 
 export interface ProviderResource {
@@ -11,6 +11,9 @@ export interface ProviderResource {
   capabilities: string[];
   /** Browser identifier on the declared Browser Node, available before launch. */
   browserId?: string;
+  /** Desktop identifier advertised by the Computer Node, available before launch. */
+  desktopId?: string;
+  platform?: ComputerPlatform;
 }
 
 export interface ProviderLeaseIdentity {
@@ -59,6 +62,30 @@ export function isProviderResourceOwner(owner: SourceResourceOwner): boolean {
   return owner.kind === 'managed_host' && owner.connectionId.startsWith('provider:');
 }
 
+/** An HTTP lease also covers the response body, including open observations. */
+export function retainProviderResponse(response: Response, release: () => void): Response {
+  if (!response.body) { release(); return response; }
+  const reader = response.body.getReader();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    reader.releaseLock();
+    release();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) { finish(); controller.close(); }
+        else controller.enqueue(next.value);
+      } catch (error) { finish(); controller.error(error); }
+    },
+    async cancel(reason) { try { await reader.cancel(reason); } finally { finish(); } },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid resource provider response');
   return value as Record<string, unknown>;
@@ -75,8 +102,12 @@ export function parseProviderResources(value: unknown): ProviderResource[] {
     const entry = record(raw);
     const role = roles.find(candidate => candidate === entry.role);
     if (!role || !Array.isArray(entry.capabilities)) throw new Error('Invalid resource provider role or capabilities');
+    const platform = (['linux', 'windows', 'macos'] as const).find(candidate => candidate === entry.platform);
+    if (role === 'computer' && entry.platform !== undefined && !platform) throw new Error('Invalid Computer Node platform');
     return { id: text(entry.id), hostId: text(entry.hostId), label: text(entry.label), role, capabilities: entry.capabilities.map(text),
-      ...(role === 'browser' && entry.browserId !== undefined && { browserId: text(entry.browserId) }) };
+      ...(role === 'browser' && entry.browserId !== undefined && { browserId: text(entry.browserId) }),
+      ...(role === 'computer' && entry.desktopId !== undefined && { desktopId: text(entry.desktopId) }),
+      ...(role === 'computer' && platform && { platform }) };
   });
   if (new Set(resources.map(resource => resource.id)).size !== resources.length) throw new Error('Duplicate logical resource in provider directory');
   return resources;

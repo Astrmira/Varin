@@ -33,7 +33,8 @@ import {
 } from "./managed-remote-types.js";
 import { decodeManagedProjectManagementResponse, decodeManagedSourceCancellation, decodeManagedSourceReceiptRelease, decodeManagedSourceResponse } from './managed-source-response.js';
 import { consumeManagedProcessStream } from './managed-process-stream.js';
-import { createProviderLeaseOwner, isProviderResourceOwner, providerResourceOwner, type ProviderLease, type ProviderResource, type ResourceProvider } from '../deployment/resource-provider.js';
+import { createProviderLeaseOwner, isProviderResourceOwner, providerResourceOwner, retainProviderResponse, type ProviderLease, type ProviderResource, type ResourceProvider } from '../deployment/resource-provider.js';
+import type { ComputerProviderHost } from '../computer/computer-service.js';
 
 const BASE_PATH = "/api/harness/managed-execution/v1";
 const TARGET_REFRESH_WORKSPACE = "__varin_managed_remote__";
@@ -146,9 +147,7 @@ export class ManagedTargetClient {
     const use = await this.useConnection(init.signal ?? undefined);
     try {
       const response = await this.exchange(use.connection, relativePath, init, preserveErrorResponse);
-      if (response.body) return retainResponseBody(response, use.release);
-      use.release();
-      return response;
+      return retainProviderResponse(response, use.release);
     } catch (error) { use.release(); throw error; }
   }
 
@@ -189,24 +188,6 @@ export class ManagedTargetClient {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   }
-}
-
-/** A resource is still in use while the caller consumes an observation, file,
- * or process stream. HTTP headers alone do not end that use. */
-function retainResponseBody(response: Response, release: () => void): Response {
-  const reader = response.body!.getReader();
-  const finish = () => { reader.releaseLock(); release(); };
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const next = await reader.read();
-        if (next.done) { finish(); controller.close(); }
-        else controller.enqueue(next.value);
-      } catch (error) { finish(); controller.error(error); }
-    },
-    async cancel(reason) { try { await reader.cancel(reason); } finally { finish(); } },
-  });
-  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
 export const configuredHosts = (settings: Record<string, unknown>): ConfiguredHost[] => {
@@ -259,7 +240,8 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
   const describeProvider = async (signal?: AbortSignal, role: ProviderResource['role'] = 'resources') => {
     if (!provider) return [];
     return (await provider.describe(signal)).filter(resource => resource.role === role &&
-      (role === 'resources' ? resource.capabilities.includes('sources') : role === 'browser' && Boolean(resource.browserId)))
+      (role === 'resources' ? resource.capabilities.includes('sources') : role === 'browser' ? Boolean(resource.browserId)
+        : role === 'computer' && Boolean(resource.desktopId) && resource.capabilities.includes('computer')))
       .map(resource => ({ resource, resourceOwner: providerResourceOwner(provider.id, resource), label: resource.label, capabilities: resource.capabilities }));
   };
   const providerEntryFor = async (owner: ManagedHostSourceOwner, role: 'resources' | 'browser', signal?: AbortSignal) => {
@@ -492,6 +474,23 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
       const status = results[index]!;
       return { ...entry, status: status.status === 'fulfilled' ? status.value : undefined };
     });
+  };
+
+  const providerComputers = async (withStatus = false): Promise<ComputerProviderHost[]> => {
+    const entries = await describeProvider(undefined, 'computer');
+    return Promise.all(entries.map(async ({ resource, resourceOwner }) => {
+      const status = withStatus ? await provider!.status(resource.id).catch(() => undefined) : undefined;
+      return {
+        id: resourceOwner.connectionId, label: resource.label, expectedHostId: resourceOwner.hostId, desktopId: resource.desktopId!,
+        platform: resource.platform ?? 'linux',
+        ...(status ? { state: status.state } : {}),
+        async acquire(signal?: AbortSignal) {
+          const use = await providerLeases!.acquire(resource.id, signal);
+          const connection = providerConnection(resource, use.lease);
+          return { connection, endpoint: use.lease.endpoint, generation: use.lease.generation, release: use.release };
+        },
+      };
+    }));
   };
 
   const forwardTarget = async (owner: ManagedHostSourceOwner, signal?: AbortSignal, providerRole: 'resources' | 'browser' = 'resources'): Promise<ManagedTarget> => {
@@ -1120,7 +1119,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     };
   };
 
-  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, providerBrowsers, withSourceUse,
+  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, providerBrowsers, providerComputers, withSourceUse,
     providerActivity: () => providerLeases?.activity() ?? null,
     clientFor: makeClient, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
 }

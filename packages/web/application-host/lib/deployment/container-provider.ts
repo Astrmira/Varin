@@ -4,6 +4,7 @@ import { chmod, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Server } from 'node:http';
 import path from 'node:path';
+import type { Duplex } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { isPathWithinRoot } from '../workspace/path-safety.js';
@@ -93,11 +94,12 @@ async function readConfig(file: string) {
   };
   if (!Array.isArray(input.resources)) throw new Error('resources must be an array');
   const definitions = await Promise.all(input.resources.map(async raw => {
-    const entry = object(raw, 'container resource', ['id', 'hostId', 'label', 'role', 'browserId', 'image', 'workspace', 'state', 'credentialFile']);
+    const entry = object(raw, 'container resource', ['id', 'hostId', 'label', 'role', 'browserId', 'desktopId', 'image', 'workspace', 'state', 'credentialFile']);
     const role = entry.role ?? 'resources';
-    if (role !== 'resources' && role !== 'browser') throw new Error('The local provider supports Resource Nodes and Browser Nodes');
-    if (role === 'browser' && entry.workspace !== undefined || role === 'resources' && entry.browserId !== undefined) {
-      throw new Error('The workspace belongs to a Resource Node and browserId belongs to a Browser Node');
+    if (role !== 'resources' && role !== 'browser' && role !== 'computer') throw new Error('The local provider supports Resource, Browser and Computer Nodes');
+    if (role !== 'resources' && entry.workspace !== undefined || role !== 'browser' && entry.browserId !== undefined
+      || role !== 'computer' && entry.desktopId !== undefined) {
+      throw new Error('Workspace, browserId and desktopId are specific to their node roles');
     }
     const [workspace, state, credentialPath] = await Promise.all([role === 'resources' ? directory(entry.workspace, 'workspace') : undefined, directory(entry.state, 'state'),
       realpath(absolute(entry.credentialFile, 'credentialFile'))]);
@@ -110,10 +112,11 @@ async function readConfig(file: string) {
     const resource: ProviderResource = { id: resourceId, hostId, label: name(entry.label, 'resource label'), role,
       ...(role === 'browser'
         ? { browserId: name(entry.browserId, 'Browser Node browserId'), capabilities: ['browser', 'tabs', 'open', 'read', 'screenshot', 'act', 'activate'] }
+        : role === 'computer' ? { desktopId: name(entry.desktopId, 'Computer Node desktopId'), platform: 'linux', capabilities: ['computer'] }
         : { capabilities: ['sources', 'work-location-read', 'work-location'] }) };
     return { resource, image, workspace, state, token: await credential(credentialPath),
       container: 'varin-resource-' + digest([id, resourceId]).slice(0, 24),
-      configuration: digest(role === 'resources' ? [hostId, image, workspace, state] : [role, hostId, image, state, resource.browserId]) };
+      configuration: digest(role === 'resources' ? [hostId, image, workspace, state] : [role, hostId, image, state, resource.browserId ?? resource.desktopId]) };
   }));
   const overlaps = (left: string, right: string) => isPathWithinRoot(left, right) || isPathWithinRoot(right, left);
   const roots = (entry: Definition) => entry.workspace ? [entry.workspace, entry.state] : [entry.state];
@@ -262,27 +265,43 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     }, Math.min(2_147_483_647, lastExpiry - Date.now() + idle));
     slot.idleTimer.unref?.();
   }
-  const data = createServer((req, res) => {
+  const desktopMediaPath = /^\/api\/computers\/desktops\/[^/]+\/vnc$/u;
+  const resolveDataRequest = (req: IncomingMessage, upgrade: boolean) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const match = /^\/resources\/id-([^/]+)(\/api\/harness\/managed-execution\/v1\/.*)$/u.exec(url.pathname);
+    const match = /^\/resources\/id-([^/]+)(\/.*)$/u.exec(url.pathname);
     let id: string;
-    try { id = decodeURIComponent(match?.[1] ?? ''); } catch { send(res, 400); return; }
+    try { id = decodeURIComponent(match?.[1] ?? ''); } catch { return { status: 400 } as const; }
     const slot = slots.get(id);
-    if (!match || slot?.state !== 'ready' || !slot.instance) { send(res, 404); return; }
+    if (!match || slot?.state !== 'ready' || !slot.instance) return { status: 404 } as const;
+    const api = match[2]!, computer = slot.definition.resource.role === 'computer';
+    const allowed = upgrade ? computer && desktopMediaPath.test(api)
+      : api.startsWith(basePath + '/') || computer && (api === '/api/computers' || api.startsWith('/api/computers/'));
+    if (!allowed) return { status: 404 } as const;
     sweep(slot);
     const lease = [...slot.leases.values()].find(candidate => secretMatches(req.headers.authorization, 'Bearer ' + candidate.bearer));
-    if (!lease || lease.generation !== slot.instance.generation) { send(res, 401); return; }
+    if (!lease || lease.generation !== slot.instance.generation) return { status: 401 } as const;
+    return { slot, instance: slot.instance, api, path: api + url.search };
+  };
+  const beginRequest = (slot: ResourceSlot) => {
     // Count upstream lifetime as well as the downstream socket. A pending
     // operation on the Node remains accounted for after a reader disconnects.
     slot.requests++;
     let retained = true;
-    const settle = () => { if (retained) { retained = false; slot.requests--; planIdle(slot); } };
+    return () => { if (retained) { retained = false; slot.requests--; planIdle(slot); } };
+  };
+  const proxyHeaders = (req: IncomingMessage, slot: ResourceSlot, port: number) => {
     const headers = { ...req.headers };
     for (const key of ['origin', 'connection', 'keep-alive', 'upgrade', 'transfer-encoding', 'proxy-authorization']) delete headers[key];
-    const instance = slot.instance;
-    const outbound = request({ hostname: '127.0.0.1', port: instance.nodePort, path: match[2]! + url.search,
-      method: req.method ?? 'GET', headers: { ...headers, host: `127.0.0.1:${instance.nodePort}`,
-        authorization: 'Bearer ' + slot.definition.token } }, upstream => {
+    return { ...headers, host: `127.0.0.1:${port}`, authorization: 'Bearer ' + slot.definition.token };
+  };
+  const data = createServer((req, res) => {
+    const target = resolveDataRequest(req, false);
+    if ('status' in target) { send(res, target.status); return; }
+    const { slot, instance, api, path } = target;
+    const settle = beginRequest(slot);
+    const observation = slot.definition.resource.role === 'computer' && req.method === 'GET' && api.endsWith('/stream');
+    const outbound = request({ hostname: '127.0.0.1', port: instance.nodePort, path,
+      method: req.method ?? 'GET', headers: proxyHeaders(req, slot, instance.nodePort) }, upstream => {
       if (res.destroyed) upstream.resume();
       else {
         const headers = { ...upstream.headers };
@@ -293,14 +312,48 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
       upstream.once('close', settle);
       upstream.once('error', error => { if (!res.destroyed) res.destroy(error); });
     });
+    if (observation) res.once('close', () => { if (!res.writableFinished) outbound.destroy(); });
     outbound.once('error', () => {
       settle();
-      if (!req.aborted && slot.state === 'ready' && slot.instance === instance) slot.state = 'unavailable';
+      if (!req.aborted && !(observation && res.destroyed) && slot.state === 'ready' && slot.instance === instance) slot.state = 'unavailable';
       if (!res.headersSent && !res.destroyed) send(res, 502);
       else if (!res.destroyed) res.destroy();
     });
     req.once('aborted', () => { if (!req.complete) outbound.destroy(); });
     req.pipe(outbound);
+  });
+  const mediaSockets = new Set<Duplex>();
+  data.on('upgrade', (req, downstream, head) => {
+    const target = resolveDataRequest(req, true);
+    const reject = (status: number) => downstream.end(`HTTP/1.1 ${status} Upgrade refused\r\nConnection: close\r\n\r\n`);
+    if ('status' in target) { reject(target.status); return; }
+    if (req.headers.upgrade?.toLowerCase() !== 'websocket') { reject(400); return; }
+    const { slot, instance, path } = target;
+    const settle = beginRequest(slot);
+    mediaSockets.add(downstream);
+    let upstreamSocket: Duplex | undefined;
+    const outbound = request({ hostname: '127.0.0.1', port: instance.nodePort, path, method: 'GET',
+      headers: { ...proxyHeaders(req, slot, instance.nodePort), connection: 'Upgrade', upgrade: 'websocket' } });
+    downstream.once('error', () => downstream.destroy());
+    downstream.once('close', () => {
+      mediaSockets.delete(downstream);
+      if (upstreamSocket) upstreamSocket.destroy();
+      else { outbound.destroy(); settle(); }
+    });
+    outbound.once('response', response => { response.resume(); reject(response.statusCode ?? 502); });
+    outbound.once('error', () => { if (!downstream.destroyed) reject(502); });
+    outbound.once('upgrade', (response, upstream, upstreamHead) => {
+      if (downstream.destroyed) { upstream.destroy(); return; }
+      upstreamSocket = upstream;
+      const headers = response.rawHeaders.flatMap((name, i) => i % 2 === 0 ? [`${name}: ${response.rawHeaders[i + 1]}\r\n`] : []).join('');
+      downstream.write('HTTP/1.1 101 Switching Protocols\r\n' + headers + '\r\n');
+      if (upstreamHead.length) downstream.write(upstreamHead);
+      if (head.length) upstream.write(head);
+      upstream.once('close', () => { downstream.destroy(); settle(); });
+      upstream.once('error', () => upstream.destroy());
+      downstream.pipe(upstream).pipe(downstream);
+    });
+    outbound.end();
   });
   let dataOrigin = '';
   const control = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -366,6 +419,7 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
   return { async close() {
     closing = true;
     for (const slot of slots.values()) clearTimeout(slot.idleTimer);
+    for (const socket of mediaSockets) socket.destroy();
     await Promise.all([close(control), close(data)]);
     await Promise.all([...slots.values()].map(slot => slot.lane));
   } };

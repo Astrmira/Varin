@@ -375,6 +375,16 @@ separate from the durable role data. Use offline `revoke CLIENT_ID` to retire a 
 Computer assignment credentials are additionally tied to their paired client and
 to the serving process; reassume the actual desktop assignment after a restart.
 
+To allocate that role on first use through the local container provider, register a
+resource with `role: "computer"`, its node `hostId`, and the node's actual `desktopId`
+in addition to the `id`, `label`, `image`, `state` and `credentialFile` fields above.
+Use an operator-prepared image that starts the corresponding desktop session and
+the Computer Node. The stock control-plane image leaves desktop provisioning to
+the deployment. A provider-backed desktop is listed while its node is stopped.
+An assignment, frame stream or VNC connection keeps the exact instance leased
+until it closes. Retirement also checks the node for unresolved input authority
+before stopping and detaching its state mount.
+
 These two new image targets are built and qualified in the disposable container
 validation graph. This does not publish new tags or change ordinary release image
 names. Use an exact source revision and immutable configured runtime base when

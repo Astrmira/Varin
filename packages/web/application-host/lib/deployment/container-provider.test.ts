@@ -1,25 +1,45 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
+import { WebSocket, WebSocketServer } from 'ws';
 import { startContainerResourceProvider } from './container-provider.js';
 import { createSocketResourceProvider } from './resource-provider.js';
 
-it.each(['resources', 'browser'])('starts a %s container only on acquire and retires its original generation after release and detach', async role => {
+it.each(['resources', 'browser', 'computer'])('starts a %s container only on acquire and retires its original generation after release and detach', async role => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'varin-provider-helper-'));
   const socketPath = process.platform === 'win32' ? '\\\\.\\pipe\\varin-provider-' + randomUUID() : path.join(root, 'control.sock');
   const workspace = path.join(root, 'workspaces'), state = path.join(root, 'state');
   const controlFile = path.join(root, 'control.json'), nodeFile = path.join(root, 'node.json'), file = path.join(root, 'provider.json');
   const hostId = 'resource-host';
   const resourceId = '..';
+  const desktopId = 'managed-linux';
+  const mediaPath = `/api/computers/desktops/${desktopId}/vnc`;
+  const streamPath = `/api/computers/desktops/${desktopId}/stream`;
+  let observationClosed: Promise<unknown> | undefined;
   let nodeReadyToRetire = false;
   const node = createServer((req, res) => {
     if (req.headers.authorization !== 'Bearer original-node-token') { res.writeHead(401).end(); return; }
     res.setHeader('x-varin-managed-host', hostId);
+    if (req.url === streamPath) {
+      observationClosed = once(res, 'close');
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.write('data: frame\n\n');
+      return;
+    }
     if (req.url?.endsWith('/retention')) { res.end(JSON.stringify({ retireReady: nodeReadyToRetire })); return; }
     res.end(JSON.stringify({ hostId, role, requestHostIdentity: true }));
+  });
+  const media = new WebSocketServer({ noServer: true });
+  node.on('upgrade', (req, socket, head) => {
+    expect(req.url).toBe(mediaPath);
+    expect(req.headers.authorization).toBe('Bearer original-node-token');
+    media.handleUpgrade(req, socket, head, ws => {
+      ws.on('message', (data, binary) => ws.send(data, { binary }));
+    });
   });
   await new Promise<void>(resolve => node.listen(0, '127.0.0.1', resolve));
   const port = (node.address() as { port: number }).port;
@@ -27,7 +47,8 @@ it.each(['resources', 'browser'])('starts a %s container only on acquire and ret
     writeFile(nodeFile, '{"token":"original-node-token"}')]);
   await writeFile(file, JSON.stringify({ version: 1, id: 'local', socketPath, credentialFile: controlFile,
     leaseDurationMs: 60_000, startupTimeoutMs: 10_000, idleRetentionMs: 500,
-    resources: [{ id: resourceId, hostId, label: 'Local work', role, ...(role === 'browser' ? { browserId: 'configured-cdp' } : { workspace }),
+    resources: [{ id: resourceId, hostId, label: 'Local work', role,
+      ...(role === 'browser' ? { browserId: 'configured-cdp' } : role === 'computer' ? { desktopId } : { workspace }),
       state, credentialFile: nodeFile, image: 'varin-node:fixture' }],
   }));
 
@@ -63,8 +84,10 @@ it.each(['resources', 'browser'])('starts a %s container only on acquire and ret
   });
   const provider = createSocketResourceProvider({ id: 'local', socketPath, bearer: 'control-token' });
   const use = (leaseId: string) => provider.acquire({ resourceId, leaseId });
+  const observation = new AbortController();
   try {
-    expect(await provider.describe()).toMatchObject([{ id: resourceId, role, ...(role === 'browser' && { browserId: 'configured-cdp' }) }]);
+    expect(await provider.describe()).toMatchObject([{ id: resourceId, role, ...(role === 'browser' && { browserId: 'configured-cdp' }),
+      ...(role === 'computer' && { desktopId }) }]);
     expect(await provider.status(resourceId)).toMatchObject({ state: 'cold' });
     expect(operations).toEqual([]);
     const [first, second] = await Promise.all([use('one'), use('two')]);
@@ -74,6 +97,24 @@ it.each(['resources', 'browser'])('starts a %s container only on acquire and ret
     const identity = (bearer: string) => fetch(endpoint, { headers: { authorization: 'Bearer ' + bearer } });
     expect((await identity('original-node-token')).status).toBe(401);
     expect((await identity(first.bearer)).status).toBe(200);
+    const computer = await fetch(first.endpoint + '/api/computers', { headers: { authorization: 'Bearer ' + first.bearer } });
+    expect(computer.status).toBe(role === 'computer' ? 200 : 404);
+    await computer.body?.cancel();
+    let viewer: WebSocket | undefined;
+    if (role === 'computer') {
+      const frames = await fetch(first.endpoint + streamPath, {
+        headers: { authorization: 'Bearer ' + first.bearer }, signal: observation.signal,
+      });
+      const reader = frames.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: frame\n\n');
+      reader.releaseLock();
+      viewer = new WebSocket(first.endpoint.replace(/^http/u, 'ws') + mediaPath,
+        { headers: { authorization: 'Bearer ' + first.bearer } });
+      await once(viewer, 'open');
+      const frame = once(viewer, 'message');
+      viewer.send(Buffer.from('frame round trip'));
+      expect(String((await frame)[0])).toBe('frame round trip');
+    }
     const claim = (lease: typeof first) => ({ resourceId: lease.resourceId, leaseId: lease.leaseId, generation: lease.generation });
     expect(await provider.renew(claim(first))).toMatchObject(claim(first));
     await expect(provider.retire(resourceId, first.generation)).rejects.toThrow('409');
@@ -81,6 +122,18 @@ it.each(['resources', 'browser'])('starts a %s container only on acquire and ret
     expect((await identity(first.bearer)).status).toBe(401);
     expect(await provider.status(resourceId)).toMatchObject({ state: 'ready' });
     await provider.release(claim(second));
+    if (viewer) {
+      nodeReadyToRetire = true;
+      await expect(provider.retire(resourceId, first.generation)).rejects.toThrow('409');
+      expect(operations).not.toContain('stop');
+      const closed = once(viewer, 'close');
+      viewer.close(); await closed;
+      await expect.poll(() => media.clients.size).toBe(0);
+      await expect(provider.retire(resourceId, first.generation)).rejects.toThrow('409');
+      observation.abort();
+      await observationClosed;
+      nodeReadyToRetire = false;
+    }
     await expect(provider.retire(resourceId, first.generation)).rejects.toThrow('409');
     expect(operations).not.toContain('stop');
     nodeReadyToRetire = true;
@@ -93,6 +146,9 @@ it.each(['resources', 'browser'])('starts a %s container only on acquire and ret
     await provider.release(claim(replacement));
     await expect.poll(async () => (await provider.status(resourceId)).state).toBe('cold');
   } finally {
+    observation.abort();
+    for (const ws of media.clients) ws.terminate();
+    media.close();
     await helper.close();
     await new Promise<void>(resolve => node.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
