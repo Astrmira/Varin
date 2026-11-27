@@ -115,6 +115,7 @@ pub(crate) const KERNEL_BODY_METHODS: &[&str] = &[
     "runtime.followup.arrangement.put",
     "runtime.followup.arrangements.list",
     "runtime.followup.events.receive",
+    "runtime.followup.events.receiveDurable",
     "runtime.followup.backlog",
     "runtime.calendar.sync",
     "runtime.calendar.admit",
@@ -4952,6 +4953,11 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
                 .map_err(|error| error.to_string())
         }
         "runtime.followup.events.receive" => {
+            serde_json::from_value::<FollowupEventReceiveParams>(params.clone())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        "runtime.followup.events.receiveDurable" => {
             serde_json::from_value::<FollowupEventReceiveParams>(params.clone())
                 .map(|_| ())
                 .map_err(|error| error.to_string())

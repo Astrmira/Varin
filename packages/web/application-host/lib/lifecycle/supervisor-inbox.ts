@@ -4,7 +4,7 @@ import type { SupervisorJournal } from './supervisor-journal.js';
 
 export function startSupervisorInbox(
   journal: SupervisorJournal,
-  receive: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>,
+  receiveDurably: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>,
   onUnavailable: () => void,
 ) {
   const stop = new AbortController();
@@ -24,7 +24,7 @@ export function startSupervisorInbox(
       while (dirty && !stop.signal.aborted) {
         dirty = false;
         try {
-          const result = await journal.replay(receive, stop.signal);
+          const result = await journal.replay(receiveDurably, stop.signal);
           if (result.retained) scheduleRetry();
         } catch {
           if (!stop.signal.aborted) { onUnavailable(); scheduleRetry(); }

@@ -3378,7 +3378,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     ? await SupervisorJournal.open(path.join(VARIN_DATA_DIR, 'supervisor-wake'), hostId) : undefined;
   const supervisorInbox = supervisorJournal
     ? startSupervisorInbox(supervisorJournal,
-      (page, signal) => agentRuntime.receivePluginEvents(page, signal),
+      (page, signal) => agentRuntime.receiveDurablePluginEvents(page, signal),
       () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'))
     : undefined;
   // Reconcile committed input before the listeners and live event receivers

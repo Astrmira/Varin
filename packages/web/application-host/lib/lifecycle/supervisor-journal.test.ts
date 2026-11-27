@@ -61,7 +61,7 @@ it('reopens after acceptance and after Catalog commit without losing or duplicat
   expect([...original.accepted]).toEqual(['original-event']);
   expect(await survivor.hasPendingEvents()).toBe(false);
   expect((await readdir(folder)).filter(name => name.endsWith('.ack'))).toHaveLength(1);
-  expect((await readdir(folder)).filter(name => name.endsWith('.archived'))).toHaveLength(1);
+  expect((await readdir(folder)).filter(name => name.endsWith('.archived'))).toHaveLength(0);
   await survivor.accept('original-page', page);
   expect(await survivor.hasPendingEvents()).toBe(false);
   await expect(survivor.accept('original-page', { ...page, nextCursor: 'conflicting-cursor' })).rejects.toThrow('key conflict');

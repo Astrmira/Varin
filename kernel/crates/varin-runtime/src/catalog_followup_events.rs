@@ -701,6 +701,20 @@ impl Catalog {
             checkpoint: cp,
         })
     }
+
+    /// The private supervisor may discard its source bytes after this ack.
+    /// Content objects have already been synced. A full WAL checkpoint also
+    /// covers a duplicate whose original commit used the normal async path.
+    pub fn confirm_event_receive_durable(&self) -> Result<()> {
+        let (busy, frames, synced): (i64, i64, i64) =
+            self.db.query_row("PRAGMA wal_checkpoint(FULL)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        if busy != 0 || frames != synced {
+            return Err(RuntimeError::Conflict("event inbox Catalog checkpoint is incomplete".into()));
+        }
+        Ok(())
+    }
 }
 fn matches_filter(filter: &Value, attributes: &Value) -> bool {
     match (filter, attributes) {

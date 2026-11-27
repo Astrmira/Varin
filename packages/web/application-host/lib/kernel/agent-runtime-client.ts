@@ -959,6 +959,9 @@ export class AgentRuntimeClient {
   receivePluginEvents(input: CalendarProtocol.FollowupEventReceiveParams, signal?: AbortSignal): Promise<CalendarProtocol.FollowupEventReceiveReceipt> {
     return this.kernel.agentRuntimeRequest('runtime.followup.events.receive', input, signal);
   }
+  receiveDurablePluginEvents(input: CalendarProtocol.FollowupEventReceiveParams, signal?: AbortSignal): Promise<CalendarProtocol.FollowupEventReceiveReceipt> {
+    return this.kernel.agentRuntimeRequest('runtime.followup.events.receiveDurable', input, signal);
+  }
   updateFollowup(input: import('@varin/protocol').FollowupUpdateParams, signal?: AbortSignal): Promise<Followup> {
     return this.kernel.agentRuntimeRequest('runtime.followup.update',input,signal);
   }

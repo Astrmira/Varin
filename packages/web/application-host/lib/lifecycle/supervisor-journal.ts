@@ -33,6 +33,12 @@ interface Receipt {
   owner: string;
   digest: string;
 }
+interface EventAcknowledgement extends Receipt {
+  durable?: true;
+}
+const verifyEventDigest = (ack: EventAcknowledgement, digest: string): void => {
+  if (ack.digest !== digest) throw new Error('Supervisor journal key conflict');
+};
 export interface SupervisorJournalFaults {
   afterEventCommit?(): void;
   afterCatalogReceipt?(): void;
@@ -111,6 +117,22 @@ export class SupervisorJournal {
     } finally { await unlink(temporary).catch(() => undefined); }
   }
 
+  private async eventAcknowledgement(key: string): Promise<EventAcknowledgement | undefined> {
+    const file = await this.read(key + '.ack');
+    if (!file) return undefined;
+    const ack = file.value;
+    if (!object(ack) || ack.version !== version || ack.owner !== this.owner
+      || typeof ack.digest !== 'string' || !/^[0-9a-f]{64}$/.test(ack.digest)
+      || ack.durable !== undefined && ack.durable !== true) throw new Error('Supervisor journal key conflict');
+    return { version, owner: this.owner, digest: ack.digest, ...(ack.durable === true && { durable: true }) };
+  }
+
+  private async removeEventCopy(key: string, suffix: 'pending' | 'archived'): Promise<void> {
+    await unlink(path.join(this.directory, key + '.' + suffix)).catch(error => {
+      if (errorCode(error) !== 'ENOENT') throw error;
+    });
+  }
+
   async currentWake(): Promise<WakePublication | null> {
     const names = (await readdir(this.directory)).filter(name => /^wake-[0-9]{16}\.json$/.test(name)).sort();
     const latest = names.at(-1);
@@ -169,6 +191,12 @@ export class SupervisorJournal {
     if (!identifier(eventKey) || !validPage(page)) throw new Error('Invalid supervisor event page');
     const filename = hash(eventKey);
     const envelope: EventEnvelope = { version, owner: this.owner, eventKey, page };
+    const storedAck = await this.eventAcknowledgement(filename);
+    if (storedAck) {
+      const digest = hash(encode(envelope));
+      verifyEventDigest(storedAck, digest);
+      return { version, owner: this.owner, digest };
+    }
     const archived = path.join(this.directory, filename + '.archived');
     const pending = path.join(this.directory, filename + '.pending');
     // Older journals only archived an event after delivery. Fix its identity
@@ -177,12 +205,21 @@ export class SupervisorJournal {
       if (errorCode(error) !== 'ENOENT' && errorCode(error) !== 'EEXIST') throw error;
     });
     const digest = await this.put(filename + '.archived', envelope);
-    const acknowledged = (await this.read(filename + '.ack'))?.value;
+    const acknowledged = await this.eventAcknowledgement(filename);
     if (acknowledged) {
-      if (!object(acknowledged) || acknowledged.version !== version || acknowledged.owner !== this.owner
-        || acknowledged.digest !== digest) throw new Error('Supervisor journal key conflict');
+      if (acknowledged.durable) {
+        await this.removeEventCopy(filename, 'archived');
+        await this.syncDirectory();
+      }
+      verifyEventDigest(acknowledged, digest);
     } else {
-      await link(archived, pending).catch(error => { if (errorCode(error) !== 'EEXIST') throw error; });
+      await link(archived, pending).catch(async error => {
+        if (errorCode(error) === 'EEXIST') return;
+        if (errorCode(error) !== 'ENOENT') throw error;
+        const retired = await this.eventAcknowledgement(filename);
+        if (!retired) throw error;
+        verifyEventDigest(retired, digest);
+      });
       await this.syncDirectory();
     }
     this.faults.afterEventCommit?.();
@@ -193,7 +230,7 @@ export class SupervisorJournal {
     return (await readdir(this.directory)).some(name => /^[a-f0-9]{64}\.pending$/.test(name));
   }
 
-  async replay(receive: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>, signal?: AbortSignal) {
+  async replay(receiveDurably: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>, signal?: AbortSignal) {
     let delivered = 0;
     const load = async (name: string) => {
       signal?.throwIfAborted();
@@ -202,7 +239,7 @@ export class SupervisorJournal {
       const { value } = record;
       if (!object(value) || value.version !== version || value.owner !== this.owner || !identifier(value.eventKey)
         || hash(value.eventKey) + '.pending' !== name || !validPage(value.page)) throw new Error('Invalid supervisor inbox entry');
-      return { raw: record.raw, page: value.page, envelope: value };
+      return { raw: record.raw, page: value.page };
     };
     const names = (await readdir(this.directory)).filter(value => /^[a-f0-9]{64}\.pending$/.test(value)).sort();
     // Event keys are content addresses. Their lexical order says nothing
@@ -235,27 +272,23 @@ export class SupervisorJournal {
     for (const name of ordered) {
       const record = await load(name);
       if (!record) continue;
-      const ack = name.slice(0, -8) + '.ack';
+      const key = name.slice(0, -8);
       const fingerprint = hash(record.raw);
-      const saved = (await this.read(ack))?.value;
-      if (saved) {
-        const archived = await this.read(name.slice(0, -8) + '.archived');
-        if (!object(saved) || saved.version !== version || saved.owner !== this.owner
-          || saved.digest !== fingerprint || !archived || hash(archived.raw) !== fingerprint) throw new Error('Supervisor acknowledgement mismatch');
-      } else {
+      const saved = await this.eventAcknowledgement(key);
+      if (saved) verifyEventDigest(saved, fingerprint);
+      else {
         try {
-          const result = await receive(record.page, signal);
+          const result = await receiveDurably(record.page, signal);
           if (!isDeepStrictEqual(result.checkpoint.identity, record.page.identity) || result.checkpoint.cursor !== record.page.nextCursor
             || result.accepted + result.duplicates !== record.page.events.length) throw new Error('Invalid Catalog acknowledgement');
         } catch { if (signal?.aborted) throw signal.reason; continue; }
         this.faults.afterCatalogReceipt?.();
-        // Catalog's normal SQLite WAL acknowledgement does not prove that
-        // the commit survived machine power loss. Keep the fsynced payload
-        // as a private recovery copy even after it leaves the runnable inbox.
-        await this.put(name.slice(0, -8) + '.archived', record.envelope);
-        await this.put(ack, { version, owner: this.owner, digest: fingerprint });
+        await this.put(key + '.ack', { version, owner: this.owner, digest: fingerprint, durable: true });
       }
-      await unlink(path.join(this.directory, name)).catch(error => { if (errorCode(error) !== 'ENOENT') throw error; });
+      // Keep old recovery copies whose ordinary Catalog receipt preceded
+      // the durable command. New acknowledgements leave only the fingerprint.
+      if (!saved || saved.durable) await this.removeEventCopy(key, 'archived');
+      await this.removeEventCopy(key, 'pending');
       await this.syncDirectory();
       delivered++;
     }

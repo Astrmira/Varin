@@ -152,9 +152,10 @@ The idle period is operator-selected. The Host waits for active owners, publishe
 scheduled wake and closes its stores before the supervisor treats it as parked. Foreground
 traffic waits for the Host and is forwarded once readiness returns. `/live` probes the
 supervisor and `/health` reports the Host's readiness. Pending event pages submitted to
-the local supervisor journal also wake the Host. Active extension receivers and file
-watches keep the Host running. User sends and attachment uploads wait for the Host's
-normal receipt after wake.
+the local supervisor journal also wake the Host. After Catalog confirms durable receipt,
+the journal discards new event bodies and keeps their retry identities. Active extension
+receivers and file watches keep the Host running. User sends and attachment uploads wait
+for the Host's normal receipt after wake.
 
 ### Resource Node (`docker-compose.resource-node.yml`)
 
