@@ -50,7 +50,7 @@
     },
     "packages/web": {
       "name": "@varin/web",
-      "version": "0.9.54",
+      "version": "0.9.55",
       "dependencies": {
         "@varin/application-client": "workspace:*",
         "@varin/extension-builtins": "workspace:*",
