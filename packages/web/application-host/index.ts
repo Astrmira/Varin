@@ -358,6 +358,7 @@ import { registerMobileRoutes } from './lib/mobile/routes.js';
 import { createGracefulShutdownRuntime, createShutdownCollector, ShutdownDeadline, resolveShutdownTimeoutMs, reportShutdownOutcome } from './lib/shutdown-runtime.js';
 import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteAdmission } from './lib/draining-admission.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
+import { hostEnvironment } from './lib/security/host-environment.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -682,7 +683,6 @@ const scheduledTaskService = createScheduledTaskService({
 });
 
 const platformEnvironmentRuntime = createPlatformEnvironmentRuntime();
-platformEnvironmentRuntime.applyLoginShellEnvSnapshot();
 const tunnelProviderRegistry = createTunnelProviderRegistry([
   createCloudflareTunnelProvider(),
   createNgrokTunnelProvider(),
@@ -788,6 +788,8 @@ const bootstrapRuntime = createServerBootstrapRuntime({
 const platformRoutesRuntime = createPlatformRoutesRuntime({ clientReloadDelayMs: CLIENT_RELOAD_DELAY_MS });
 
 async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerController> {
+  hostEnvironment.capture();
+  platformEnvironmentRuntime.applyLoginShellEnvSnapshot();
   await assertDataRootMayStart(VARIN_DATA_DIR);
   if (server?.listening) throw new Error('Varin server is already running');
   isShuttingDown = false;
@@ -800,9 +802,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   if (!effectiveBindHost) throw new Error(getInvalidBindHostErrorMessage(configuredBindHost));
   const uiPassword = typeof options.uiPassword === 'string'
     ? options.uiPassword
-    : typeof process.env.VARIN_UI_PASSWORD === 'string'
-      ? process.env.VARIN_UI_PASSWORD
-      : null;
+    : hostEnvironment.read('VARIN_UI_PASSWORD') ?? null;
   if (
     isNetworkExposedBindHost(effectiveBindHost)
     && !(typeof uiPassword === 'string' && uiPassword.trim())

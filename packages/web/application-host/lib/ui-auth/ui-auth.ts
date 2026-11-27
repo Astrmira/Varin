@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { hostEnvironment } from '../security/host-environment.js';
 import fs from 'fs';
 import path from 'path';
 import { browserClientCookie, browserClientCookieName } from '../client-auth/browser-pairing.js';
@@ -475,7 +476,7 @@ const isTrustedDeviceRequest = (value: unknown): boolean => value === true;
 
 function getOrCreateJwtSecret(dataDir: string): Uint8Array {
   const secretFile = path.join(dataDir, 'jwt-secret');
-  const envSecret = process.env.VARIN_JWT_SECRET;
+  const envSecret = hostEnvironment.read('VARIN_JWT_SECRET');
   if (envSecret) {
     return new TextEncoder().encode(envSecret);
   }
@@ -502,7 +503,7 @@ function getOrCreateJwtSecret(dataDir: string): Uint8Array {
 
 function persistJwtSecret(secret: string, dataDir: string): Uint8Array {
   const secretFile = path.join(dataDir, 'jwt-secret');
-  if (process.env.VARIN_JWT_SECRET) {
+  if (hostEnvironment.read('VARIN_JWT_SECRET')) {
     const error = Object.assign(new Error('Global sign-out is unavailable while VARIN_JWT_SECRET is set'), { statusCode: 400 });
     throw error;
   }

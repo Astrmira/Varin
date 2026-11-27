@@ -7,6 +7,7 @@ import { ExtensionCatalogStore } from '@varin/extension-host';
 import { createRemoteClientAuthRuntime } from './client-auth/remote-clients.js';
 import { assertDataRootMayStart } from './data-restore-guard.js';
 import { createKernelClient } from './kernel/kernel-client.js';
+import { hostEnvironment } from './security/host-environment.js';
 import { createPrincipalStore } from './ui-auth/principals.js';
 import { canonicalizePathIdentity, isPathWithinRoot } from './workspace/path-safety.js';
 
@@ -23,6 +24,7 @@ export async function nodeRoleDataDirectory(input: string): Promise<string> {
 }
 
 export async function createNodeRoleKernel(dataDir: string, kernelPath?: string) {
+  hostEnvironment.capture();
   const { hostId } = await new ExtensionCatalogStore(dataDir).getHostIdentity();
   const version: unknown = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8')).version;
   if (typeof version !== 'string' || !version) throw new Error('Missing Varin build version');

@@ -8,6 +8,7 @@ import express from 'express';
 import { ExtensionCatalogStore } from '@varin/extension-host';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
+import { hostEnvironment } from './lib/security/host-environment.js';
 import { createDocumentRootGuard } from './lib/documents/allowed-roots.js';
 import { createDocumentAuthority } from './lib/documents/authority.js';
 import { bindDocumentTextCodec } from './lib/documents/inspect.js';
@@ -42,6 +43,7 @@ async function directories(options: NodeDirectories) {
   return { dataDir, workspaceRoot };
 }
 async function createNodeKernel(dataDir: string, kernelPath?: string) {
+  hostEnvironment.capture();
   // Both roles use the same durable identity. Native Storage owns its exclusive writer lock;
   // an offline admin command must not mutate a credential index cached by another live process.
   const { hostId } = await new ExtensionCatalogStore(dataDir).getHostIdentity();
