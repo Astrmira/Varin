@@ -210,10 +210,19 @@ uses the same state and workspace, and the saved location keeps its identity.
 Leave `idleRetentionMs` absent to keep the node running after use. On Windows,
 use a private named pipe such as `\\\\.\\pipe\\varin-provider` for `socketPath`.
 
-The local provider currently serves the Resource Node's live file, terminal and process
-operations. Standalone Browser and Computer roles continue to use their own
-connection owners. The default workspace setting selects a location for new work.
-It does not disable Host-local execution for another explicitly selected location.
+The local provider serves the Resource Node's live file, terminal and process
+operations. The default workspace setting selects a location for new work.
+Explicitly selected locations still use their configured owner.
+
+For a Browser Node, set `role` to `browser`, use the Browser Node image and set
+`browserId` to its provisioned connection ID. The entry takes a persistent
+`state` directory and the credential issued by the Browser Node's offline
+`pair` command. The node's CDP connection is provisioned in that state directory
+before first use. Listing browsers reads provider inventory. Opening one starts
+the Browser Node and connects to its CDP endpoint. Page holds keep the node alive,
+and an old page binding stays tied to its original node generation. The CDP
+browser process follows its own deployment lifecycle. Computer Node connections
+use their existing device settings.
 
 ### Runtime Environment
 

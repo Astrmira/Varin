@@ -53,6 +53,10 @@ export class CdpBrowserOwner implements BrowserOwner {
     return { ...(this.instanceId ? { instanceId: this.instanceId } : {}), state: this.state, activation: 'connect' as const, capabilities, operations: ['list', 'open', 'read', 'activate', ...['navigate', 'back', 'forward', 'reload', 'close', 'click', 'double_click', 'hover', 'scroll', 'type', 'press', 'select', 'check', 'drag', 'dialog', 'evaluate', 'wait'].map(action => `act:${action}`), ...(this.fileTransfers ? ['upload', 'downloads', 'readDownload', 'releaseDownload'] : [])] };
   }
   prepareResource(): Promise<void> { return this.connect(); }
+  retained() {
+    if (!this.transport) return false;
+    return [...this.pages.values()].some(page => page.threads.size > 0) || this.downloadsById.size > 0;
+  }
   async connect(): Promise<void> {
     if (this.disposed) throw new Error('This browser owner has ended');
     if (this.connecting) return this.connecting;

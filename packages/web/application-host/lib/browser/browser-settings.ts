@@ -70,8 +70,8 @@ export function createBrowserSettings(options: {
           options.resources.updateMetadata(connection.id, connection.label); installed.set(connection.id, connection); continue;
         }
         if (previous) await options.resources.unregister(connection.id);
-        options.resources.register(createCdpBrowserOwner({ browserId: connection.id, ...connection,
-          ...(options.egress && { egress: options.egress }) }), connection.label, 'This Host', { source: 'cdp' });
+        const owner = createCdpBrowserOwner({ browserId: connection.id, ...connection, ...(options.egress && { egress: options.egress }) });
+        options.resources.register(owner, connection.label, 'This Host', { source: 'cdp', retained: () => owner.retained() });
         installed.set(connection.id, connection);
       }
     });

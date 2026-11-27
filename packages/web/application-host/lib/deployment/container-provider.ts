@@ -17,7 +17,7 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 interface Definition {
   resource: ProviderResource;
   image: string;
-  workspace: string;
+  workspace: string | undefined;
   state: string;
   token: string;
   container: string;
@@ -93,30 +93,38 @@ async function readConfig(file: string) {
   };
   if (!Array.isArray(input.resources)) throw new Error('resources must be an array');
   const definitions = await Promise.all(input.resources.map(async raw => {
-    const entry = object(raw, 'container resource', ['id', 'hostId', 'label', 'image', 'workspace', 'state', 'credentialFile']);
-    const [workspace, state, credentialPath] = await Promise.all([directory(entry.workspace, 'workspace'), directory(entry.state, 'state'),
+    const entry = object(raw, 'container resource', ['id', 'hostId', 'label', 'role', 'browserId', 'image', 'workspace', 'state', 'credentialFile']);
+    const role = entry.role ?? 'resources';
+    if (role !== 'resources' && role !== 'browser') throw new Error('The local provider supports Resource Nodes and Browser Nodes');
+    if (role === 'browser' && entry.workspace !== undefined || role === 'resources' && entry.browserId !== undefined) {
+      throw new Error('The workspace belongs to a Resource Node and browserId belongs to a Browser Node');
+    }
+    const [workspace, state, credentialPath] = await Promise.all([role === 'resources' ? directory(entry.workspace, 'workspace') : undefined, directory(entry.state, 'state'),
       realpath(absolute(entry.credentialFile, 'credentialFile'))]);
-    if (isPathWithinRoot(state, workspace) || isPathWithinRoot(workspace, state) || isPathWithinRoot(credentialPath, workspace)) {
+    if (workspace && (isPathWithinRoot(state, workspace) || isPathWithinRoot(workspace, state) || isPathWithinRoot(credentialPath, workspace))) {
       throw new Error('Resource workspace, node state and provisioning credential must be separated');
     }
     const resourceId = name(entry.id, 'resource id'), hostId = name(entry.hostId, 'node hostId');
     const image = name(entry.image, 'image');
     if (image.startsWith('-')) throw new Error('Invalid image reference');
-    const resource: ProviderResource = { id: resourceId, hostId, label: name(entry.label, 'resource label'),
-      role: 'resources', capabilities: ['sources', 'work-location-read', 'work-location'] };
+    const resource: ProviderResource = { id: resourceId, hostId, label: name(entry.label, 'resource label'), role,
+      ...(role === 'browser'
+        ? { browserId: name(entry.browserId, 'Browser Node browserId'), capabilities: ['browser', 'tabs', 'open', 'read', 'screenshot', 'act', 'activate'] }
+        : { capabilities: ['sources', 'work-location-read', 'work-location'] }) };
     return { resource, image, workspace, state, token: await credential(credentialPath),
       container: 'varin-resource-' + digest([id, resourceId]).slice(0, 24),
-      configuration: digest([hostId, image, workspace, state]) };
+      configuration: digest(role === 'resources' ? [hostId, image, workspace, state] : [role, hostId, image, state, resource.browserId]) };
   }));
   const overlaps = (left: string, right: string) => isPathWithinRoot(left, right) || isPathWithinRoot(right, left);
+  const roots = (entry: Definition) => entry.workspace ? [entry.workspace, entry.state] : [entry.state];
   for (const [index, definition] of definitions.entries()) {
     if (definitions.slice(0, index).some(prior => prior.resource.id === definition.resource.id ||
-      prior.resource.hostId === definition.resource.hostId || [prior.workspace, prior.state].some(root => overlaps(root, definition.workspace) || overlaps(root, definition.state)))) {
+      prior.resource.hostId === definition.resource.hostId || roots(prior).some(root => roots(definition).some(other => overlaps(root, other))))) {
       throw new Error('A provider resource needs its own identity and exclusive workspace and state mounts');
     }
   }
   const credentialPath = await realpath(absolute(input.credentialFile, 'credentialFile'));
-  if (definitions.some(definition => isPathWithinRoot(credentialPath, definition.workspace))) throw new Error('Provider credentials must be outside resource workspaces');
+  if (definitions.some(definition => definition.workspace && isPathWithinRoot(credentialPath, definition.workspace))) throw new Error('Provider credentials must be outside resource workspaces');
   return { socketPath: absolute(input.socketPath, 'socketPath'), token: await credential(credentialPath), engine: engine as 'docker' | 'podman', definitions,
     leaseDurationMs: duration('leaseDurationMs'), startupTimeoutMs: duration('startupTimeoutMs'),
     idleRetentionMs: input.idleRetentionMs === undefined ? undefined : duration('idleRetentionMs') };
@@ -152,7 +160,7 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
     }
     if (!instance) {
       const id = await run('create', '--name', definition.container, '--label', 'io.varin.provider.configuration=' + definition.configuration,
-        '--mount', mount(definition.workspace, imageNode.workspace), '--mount', mount(definition.state, imageNode.state),
+        ...(definition.workspace ? ['--mount', mount(definition.workspace, imageNode.workspace)] : []), '--mount', mount(definition.state, imageNode.state),
         '--publish', '127.0.0.1::3000', definition.image);
       await run('start', id);
       instance = await inspect(definition);
@@ -167,8 +175,8 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
       }).catch(() => null);
       if (response?.ok) {
         const identity = object(await response.json(), 'node identity');
-        if (identity.hostId !== definition.resource.hostId || identity.role !== 'resources' || identity.requestHostIdentity !== true
-          || response.headers.get('x-varin-managed-host') !== definition.resource.hostId) throw new Error('Container does not own the declared Resource Node identity');
+        if (identity.hostId !== definition.resource.hostId || identity.role !== definition.resource.role || identity.requestHostIdentity !== true
+          || response.headers.get('x-varin-managed-host') !== definition.resource.hostId) throw new Error('Container does not own the declared Node identity');
         return { containerId: instance.Id, generation: digest([instance.Id, instance.State.StartedAt]), nodePort: port };
       }
       await response?.body?.cancel();
@@ -187,7 +195,7 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
       });
       if (!response.ok || response.headers.get('x-varin-managed-host') !== definition.resource.hostId) {
         await response.body?.cancel();
-        throw new Error('Resource Node retention is unavailable');
+        throw new Error('Node retention is unavailable');
       }
       if (object(await response.json(), 'node retention').retireReady !== true) return false;
       await run('stop', instance.Id);
@@ -256,7 +264,7 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
   }
   const data = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const match = /^\/resources\/([^/]+)(\/api\/harness\/managed-execution\/v1\/.*)$/u.exec(url.pathname);
+    const match = /^\/resources\/id-([^/]+)(\/api\/harness\/managed-execution\/v1\/.*)$/u.exec(url.pathname);
     let id: string;
     try { id = decodeURIComponent(match?.[1] ?? ''); } catch { send(res, 400); return; }
     const slot = slots.get(id);
@@ -338,7 +346,7 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
         const lease = { resourceId, leaseId, generation: slot.instance.generation, bearer: prior?.bearer ?? randomBytes(32).toString('base64url'),
           expiresAt: Date.now() + config.leaseDurationMs };
         slot.leases.set(leaseId, lease);
-        send(res, 200, { ...lease, endpoint: `${dataOrigin}/resources/${encodeURIComponent(resourceId)}` });
+        send(res, 200, { ...lease, endpoint: `${dataOrigin}/resources/id-${encodeURIComponent(resourceId)}` });
       });
       slot.lane = step.catch(() => {});
       try { await step; } finally { planIdle(slot); }

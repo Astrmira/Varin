@@ -71,7 +71,7 @@ export interface ConfiguredHost {
   clientToken?: string;
   requestHeaders: Record<string, string>;
   source: "desktop-host" | "ssh-instance" | "configured-host";
-  provider?: { resourceId: string; generation: string; owner: ManagedHostSourceOwner };
+  provider?: { resourceId: string; generation: string; owner: ManagedHostSourceOwner; role: ProviderResource['role'] };
 }
 
 export interface ManagedTarget {
@@ -256,15 +256,16 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
   const provider = options.provider;
   const acquireProviderLease = provider ? createProviderLeaseOwner(provider, report) : undefined;
   const providerBindings = new Map<string, () => void>();
-  const describeProvider = async (signal?: AbortSignal) => {
+  const describeProvider = async (signal?: AbortSignal, role: ProviderResource['role'] = 'resources') => {
     if (!provider) return [];
-    return (await provider.describe(signal)).filter(resource => resource.role === 'resources' && resource.capabilities.includes('sources'))
+    return (await provider.describe(signal)).filter(resource => resource.role === role &&
+      (role === 'resources' ? resource.capabilities.includes('sources') : role === 'browser' && Boolean(resource.browserId)))
       .map(resource => ({ resource, resourceOwner: providerResourceOwner(provider.id, resource), label: resource.label, capabilities: resource.capabilities }));
   };
   const providerConnection = (resource: ProviderResource, lease: ProviderLease): ConfiguredHost => {
     const owner = providerResourceOwner(provider!.id, resource);
     return { id: owner.connectionId, label: resource.label, source: 'configured-host', apiUrl: lease.endpoint,
-      clientToken: lease.bearer, requestHeaders: {}, provider: { resourceId: resource.id, generation: lease.generation, owner } };
+      clientToken: lease.bearer, requestHeaders: {}, provider: { resourceId: resource.id, generation: lease.generation, owner, role: resource.role } };
   };
 
   const probe = async (connection: ConfiguredHost, signal?: AbortSignal): Promise<ManagedTarget> => {
@@ -285,8 +286,8 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     }
     if (identity.protocolVersion !== MANAGED_REMOTE_PROTOCOL_VERSION) throw new Error(`Unsupported managed target protocol ${String(identity.protocolVersion)}`);
     if (response.headers.get("x-varin-managed-host") !== identity.hostId) throw new Error("Managed target identity receipt is inconsistent");
-    if (connection.provider && (identity.hostId !== connection.provider.owner.hostId || identity.role !== 'resources' || !identity.requestHostIdentity)) {
-      throw new Error('Resource provider endpoint does not identify its declared Resource Node');
+    if (connection.provider && (identity.hostId !== connection.provider.owner.hostId || identity.role !== connection.provider.role || !identity.requestHostIdentity)) {
+      throw new Error('Resource provider endpoint does not identify its declared Node');
     }
     if (identity.hostId === options.coordinatorHostId) throw new Error("Configured target resolves to this coordinator Host");
     const target: ManagedTarget = {
@@ -468,10 +469,21 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
         ? [{ connectionId: connections[index]!.id, label: connections[index]!.label }] : []) };
   };
 
-  const forwardTarget = async (owner: ManagedHostSourceOwner, signal?: AbortSignal): Promise<ManagedTarget> => {
+  /** Provider discovery consumes inventory only. Even a status request cannot acquire a browser. */
+  const providerBrowsers = async (signal?: AbortSignal) => {
+    const entries = await describeProvider(signal, 'browser');
+    const results = await Promise.allSettled(entries.map(entry => provider!.status(entry.resource.id, signal)));
+    signal?.throwIfAborted();
+    return entries.map((entry, index) => {
+      const status = results[index]!;
+      return { ...entry, status: status.status === 'fulfilled' ? status.value : undefined };
+    });
+  };
+
+  const forwardTarget = async (owner: ManagedHostSourceOwner, signal?: AbortSignal, providerRole: 'resources' | 'browser' = 'resources'): Promise<ManagedTarget> => {
     signal?.throwIfAborted();
     if (provider && owner.connectionId.startsWith('provider:')) {
-      const entry = (await describeProvider(signal)).find(candidate => candidate.resourceOwner.connectionId === owner.connectionId);
+      const entry = (await describeProvider(signal, providerRole)).find(candidate => candidate.resourceOwner.connectionId === owner.connectionId);
       if (!entry || entry.resourceOwner.hostId !== owner.hostId || entry.resourceOwner.endpointIdentity !== owner.endpointIdentity) {
         throw new Error('The original provider resource is unavailable');
       }
@@ -479,7 +491,8 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
       try {
         const connection = providerConnection(entry.resource, use.lease);
         const prior = peers.get(owner.connectionId);
-        return prior?.connection.provider?.generation === use.lease.generation && prior.connection.apiUrl === connection.apiUrl
+        return prior?.connection.provider?.generation === use.lease.generation && prior.connection.provider.role === providerRole
+          && prior.connection.apiUrl === connection.apiUrl
           ? { ...prior, connection } : await probe(connection, signal);
       } finally { use.release(); }
     }
@@ -1096,7 +1109,8 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     };
   };
 
-  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
+  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, providerBrowsers,
+    clientFor: makeClient, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
 }
 
 export type ManagedRemoteTargetRegistry = ReturnType<typeof createManagedRemoteTargetRegistry>;

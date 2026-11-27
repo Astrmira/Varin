@@ -9,6 +9,8 @@ export interface ProviderResource {
   label: string;
   role: 'resources' | 'browser' | 'computer' | 'extensions';
   capabilities: string[];
+  /** Browser identifier on the declared Browser Node, available before launch. */
+  browserId?: string;
 }
 
 export interface ProviderLeaseIdentity {
@@ -69,7 +71,8 @@ export function parseProviderResources(value: unknown): ProviderResource[] {
     const entry = record(raw);
     const role = roles.find(candidate => candidate === entry.role);
     if (!role || !Array.isArray(entry.capabilities)) throw new Error('Invalid resource provider role or capabilities');
-    return { id: text(entry.id), hostId: text(entry.hostId), label: text(entry.label), role, capabilities: entry.capabilities.map(text) };
+    return { id: text(entry.id), hostId: text(entry.hostId), label: text(entry.label), role, capabilities: entry.capabilities.map(text),
+      ...(role === 'browser' && entry.browserId !== undefined && { browserId: text(entry.browserId) }) };
   });
   if (new Set(resources.map(resource => resource.id)).size !== resources.length) throw new Error('Duplicate logical resource in provider directory');
   return resources;
