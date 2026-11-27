@@ -149,6 +149,44 @@ fn inspect_catalog_format(db: &Connection) -> Result<i64> {
     Ok(version)
 }
 
+/// Inspect the same format gate used at startup, without opening a writer.
+/// An immutable probe must never overlook SQLite recovery data.
+pub fn open_checkpointed_database(file: &Path) -> Result<Connection> {
+    for suffix in ["-wal", "-journal"] {
+        let mut sidecar = file.as_os_str().to_owned();
+        sidecar.push(suffix);
+        match std::fs::metadata(sidecar) {
+            Ok(meta) if meta.len() > 0 => {
+                return Err(RuntimeError::Invalid(format!("SQLite recovery is pending for {} ({suffix}); checkpoint with its current version or inspect a recovered copy", file.display())));
+            }
+            Ok(_) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut uri = reqwest::Url::from_file_path(file)
+        .map_err(|_| RuntimeError::Invalid("Preflight requires an absolute SQLite file path".into()))?;
+    uri.set_query(Some("immutable=1"));
+    Ok(Connection::open_with_flags(uri.as_str(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?)
+}
+
+pub fn format_preflight(root: &Path) -> Result<Value> {
+    let file = root.join("conversation.sqlite");
+    let target = FORMAT;
+    if !file.try_exists()? {
+        return Ok(serde_json::json!({"status":"new", "target":target}));
+    }
+    let db = open_checkpointed_database(&file)?;
+    let version = match inspect_catalog_format(&db) {
+        Ok(version) => version,
+        Err(RuntimeError::Format(version)) => return Ok(serde_json::json!({"status":"unsupported", "current":version, "target":target})),
+        Err(error) => return Err(error),
+    };
+    Ok(serde_json::json!({"status": if version == 0 {"new"} else if version == target {"current"} else {"upgrade"},
+        "current":version, "target":target}))
+}
+
 fn check_catalog_schema(db: &Connection, version: i64) -> Result<()> {
     threads::check_format(db)?;
     if version >= 102 { db.prepare("SELECT thread_id,model FROM thread_model_preferences")?; }

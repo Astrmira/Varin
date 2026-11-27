@@ -316,6 +316,18 @@ focused run. Ordinary CI checks the shipped Linux Computer driver's PyGObject,
 AT-SPI and GDK imports inside its exact image. It does not provision a desktop, and
 the opt-in check exercises capture against the isolated runner display instead.
 
+### Upgrade preflight
+
+Stop the Host and disable automatic restart while inspecting its data volume.
+Run `varin preflight --writers-stopped` from the **new** build with the existing
+`VARIN_DATA_DIR`. The JSON report gives the Catalog and Storage format and any
+knowledge database that needs conversion, including active semantic stores.
+`upgrade` means the named format will be converted on start or first writable
+use. Snapshot the stopped data volume before allowing that build to start.
+`blocked` returns a nonzero exit status and gives the affected format or reason.
+The command never opens a writer. A SQLite journal that still needs recovery
+must be checkpointed by the current build or examined on a recovered copy.
+
 ### Dedicated Computer control plane
 
 The Linux `computer-node` build target packages the existing platform driver alongside
