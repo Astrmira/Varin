@@ -78,6 +78,7 @@ interface UiAuthOptions {
   password?: unknown;
   readSettingsFromDisk?: () => Promise<Record<string, unknown>>;
   requireClientAuth?: boolean;
+  issuedClientsOnly?: boolean;
   sessionTtlMs?: number;
   principals?: PrincipalStore;
 }
@@ -521,6 +522,7 @@ export const createUiAuth = ({
   readSettingsFromDisk,
   clientAuthController = null,
   requireClientAuth = false,
+  issuedClientsOnly = false,
   principals = hostPrincipals(),
   getServerId = async () => null,
 }: UiAuthOptions = {}) => {
@@ -534,7 +536,7 @@ export const createUiAuth = ({
     const name = await getBrowserCookieName();
     return name ? parseCookies(req.headers.cookie)[name] ?? null : null;
   };
-  const requiresClient = (req: UiAuthRequest) => requireClientAuth || Boolean(getExternalIngress(req));
+  const requiresClient = (req: UiAuthRequest) => issuedClientsOnly || requireClientAuth || Boolean(getExternalIngress(req));
   const clientCredential = async (req: UiAuthRequest) => await browserToken(req) ?? getBearerTokenFromRequest(req);
   const issueBrowserClientCookie = async (req: UiAuthRequest, res: UiAuthHeaderResponse, credential: { token: string; expiresAt: string | null }) => {
     const ingress = getExternalIngress(req);
@@ -622,6 +624,7 @@ export const createUiAuth = ({
       result = (async () => {
         try {
           const value = await clientAuthController?.authenticateBearerToken?.(token, req);
+          if (issuedClientsOnly && value?.client?.authMethod !== 'offline') return null;
           if (value?.ok && value.clientId) markExternalIngressClient(req, value.clientId, typeof value.client?.expiresAt === 'string' ? value.client.expiresAt : null);
           return value?.ok ? value : null;
         }

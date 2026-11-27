@@ -54,6 +54,80 @@ Verify readiness (checks `status: "ok"`, expected `varinVersion` / `releaseId`, 
 curl --fail http://127.0.0.1:3000/health
 ```
 
+### Operator policy and gateway credentials
+
+Set `VARIN_DEPLOYMENT_POLICY` to an absolute path on an operator-owned mount outside
+`VARIN_DATA_DIR`. The Host reads the policy at startup. Omitted sections leave their owners
+unrestricted. Unknown policy fields prevent startup.
+
+```json
+{
+  "version": 1,
+  "ingress": { "mode": "gateway" },
+  "modelCredentials": { "sources": ["api-key", "oauth"], "oauthIssuers": ["openai-codex"] },
+  "egress": { "userDestinations": "public", "operatorOrigins": ["http://model-gateway:8080"] },
+  "mcp": { "transports": ["http", "stdio"], "stdioPlacement": "managed" },
+  "background": { "updateChecks": false }
+}
+```
+
+Issue a credential with the Application Host stopped. Use the same data root as the Host
+and a private output directory. The output file holds the client ID and token.
+
+```bash
+varin clients issue --profile full-control --output /private/gateway.json
+varin clients revoke CLIENT_ID
+```
+
+In the application image, use `node packages/web/bin/cli.js clients`. For offline
+provisioning, mount the state volume and private output directory and use the Node
+entrypoint directly. The policy file may be mounted separately when serving the Host.
+
+```sh
+docker run --rm --user 1000:1000 --entrypoint node \
+  -v "$PWD/data/varin:/home/varin/.config/varin" \
+  -v "$PWD/private:/private" \
+  ghcr.io/astrmira/varin:YOUR_VERSION \
+  packages/web/bin/cli.js clients issue --profile full-control --output /private/gateway.json
+```
+
+Connect the gateway on the private service network. It supplies the issued bearer for HTTP,
+SSE and WebSocket upgrades and forwards the public origin using the reverse proxy headers
+described in [Reverse Proxy](REVERSE_PROXY.md). Gateway mode disables password, passkey,
+pairing, tunnel and relay entry points. `/live` and `/health` remain available for service probes.
+Authenticated clients can read `/api/system/deployment-policy` for the active settings without
+the operator addresses or file paths.
+
+- `modelCredentials.sources` admits stored API keys (`api-key`), declared `oauth` issuers,
+  `environment`, `google-adc`, `aws-chain`, `anthropic-federation`, and anonymous credentials (`none`)
+  individually. The Host keeps existing channel settings and marks excluded credentials unavailable.
+- `egress.userDestinations` can be `all` or `public`. With `public`, the Host HTTP egress owner and
+  the kernel model transport check destination addresses on connection. `operatorOrigins` permits
+  exact HTTP(S) origins. Set `requiredProxy` to an operator HTTP(S) proxy origin to delegate
+  destination enforcement to that proxy. These controls apply to those HTTP transports.
+  Commands, external programs and browser networking need their own isolation and network policy.
+- `mcp.transports` controls MCP HTTP and stdio. `stdioPlacement: "managed"` requires a managed
+  resource for stdio. `stdioPlacement: "any"` also allows local execution.
+- `extensions.sources` restricts third-party package sources, `realms` controls
+  `native`, `brokered`, and `surface` entrypoints, and `artifactIntegrities` admits
+  specific Varin artifacts. Set any list to `[]` to disallow all entries it controls.
+  The distribution's built-in packages stay available. `agentStaging: false` disables
+  Agent staging before workspace capture. Allowed packages still use their ordinary
+  execution mode. For a first-party-only Host, set `sources: []`.
+- `externalAgents.profiles` admits external harness profile IDs. Existing settings and
+  conversations stay in the catalog. `managedInstalls: false` disables new managed
+  installations and update checks. `placement: "managed"` requires a managed resource
+  with a selected work location, including for preparation and reconnection. Apply profile
+  controls on the execution Host as well if that Host is reachable by other coordinators.
+- Set the individual `localInference` switches to `false` to disable local embeddings
+  (`embedding`), local dictation and TTS (`speech`), inference model downloads
+  (`componentDownloads`), Host tokenizer paths (`tokenizerFiles`), or llama.cpp decision
+  requests (`llamaCpp`).
+- `background.modelDirectorySnapshot` and `background.pluginCatalogSnapshot` optionally point to
+  read-only JSON files outside `VARIN_DATA_DIR`. They use the existing model directory and plugin
+  discovery cache formats. The Host uses the supplied snapshots for catalog reads and leaves
+  the user's own caches available for personal mode.
+
 ### Resource Node (`docker-compose.resource-node.yml`)
 
 Expose a dev/test machine's files and commands to an existing Agent Host without running a full app:

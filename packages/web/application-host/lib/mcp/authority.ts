@@ -19,6 +19,8 @@ import { McpSessionExpiredError } from './transport.js';
 import { isModernMcpVersion } from './headers.js';
 import { waitWithSignal } from '../cancellation.js';
 import { McpDirectory } from './directory.js';
+import type { McpDeploymentPolicy } from '../deployment/policy.js';
+import { DeploymentPolicyDeniedError } from '../deployment/policy.js';
 export { StdioTransport, StreamableHttpTransport, McpMessageTooLargeError, McpConnectionClosedError, parseJsonRpcMessage } from './transport.js';
 export type { StdioTransportOptions, McpTransport, JsonRpcMessage } from './transport.js';
 import { serviceKind, validateServiceResult, validatePromptArguments, type McpAuthorityService, type McpAuthorityPrompt, type McpPromptDeclaration, type McpServiceKind, type McpServiceRequest, type McpServiceResult } from './protocol.js';
@@ -79,6 +81,7 @@ export interface McpErrorInteraction {
 export type McpErrorInteractionReceiver = (error: McpErrorInteraction) => void;
 
 export interface McpAuthorityOptions {
+  deployment?: McpDeploymentPolicy;
   reportDirectoryError?: (error: unknown) => void;
   providerCredentialFiles?: (scope: McpAuthorityScope, providers: readonly string[]) => readonly string[];
   fetch?: typeof globalThis.fetch;
@@ -380,6 +383,16 @@ export class McpAuthority {
   #closed = false;
   constructor(options: McpAuthorityOptions = {}) { this.#options = options; }
 
+  #deploymentProblem(scope: McpAuthorityScope, entry: McpServerEntry): string | undefined {
+    const policy = this.#options.deployment;
+    if (!policy) return undefined;
+    const transport = 'url' in entry.config ? 'http' : 'stdio';
+    if (!policy.transports.includes(transport)) return 'Deployment policy mcp disallows ' + transport;
+    if (transport === 'stdio' && policy.stdioPlacement === 'managed' && scope.resourceOwner.kind !== 'managed_host') {
+      return 'Deployment policy mcp requires stdio to run on a managed resource';
+    }
+  }
+
   /** Subscribers share watches for the actual configuration sources; no per-request probes. */
   async subscribe(input: McpAuthorityScope, listener: (change: McpChange) => void): Promise<() => void> {
     if (this.#closed) fail('mcp-owner-closed');
@@ -556,7 +569,8 @@ export class McpAuthority {
     return createHash('sha256').update(stable([scope.key, this.#configurationIdentity(scope, entry), account ?? null])).digest('hex');
   }
   async #cachedTools(scope: ScopeRecord, signal: AbortSignal): Promise<readonly McpCachedTool[]> {
-    const groups = await Promise.allSettled([...scope.entries.values()].filter(entry => entry.config.enabled !== false && entry.config.exposure !== 'hidden').map(async entry => {
+    const groups = await Promise.allSettled([...scope.entries.values()].filter(entry =>
+      entry.config.enabled !== false && entry.config.exposure !== 'hidden' && !this.#deploymentProblem(scope.scope, entry)).map(async entry => {
       signal.throwIfAborted();
       // A variable source has no durable account/service identity. Ordinary literal
       // configuration still caches normally; no environment value or hash is persisted.
@@ -849,6 +863,8 @@ export class McpAuthority {
       scope.definitions.set(entry.name, this.#configurationIdentity(scope, entry));
     }
     if (entry.config.enabled === false) fail('mcp-server-disabled');
+    const policyProblem = this.#deploymentProblem(scope.scope, entry);
+    if (policyProblem) throw new DeploymentPolicyDeniedError('mcp', policyProblem);
     if (entry.scope !== 'extension') {
       const live = this.configuration(scope.scope);
       const configured = live.servers.find(candidate => candidate.name === entry.name);
@@ -1690,7 +1706,7 @@ export class McpAuthority {
       const observation = this.#observations.get(this.#connectionKey(scope, entry));
       const previous = this.#selected.get(stable([scope.key, entry.name, entry.config.isolation === 'session' ? scope.scope.sessionId : null]));
       const connection = current ?? previous;
-      const status = entry.config.enabled === false ? 'disabled' : current?.revoked ? 'closed'
+      const status = entry.config.enabled === false || this.#deploymentProblem(scope.scope, entry) ? 'disabled' : current?.revoked ? 'closed'
         : current ? current.connection.state : previous ? 'stale' : observation?.status ?? 'unprepared';
       const oauthUrl = runtime.mcpOAuthUrl(entry);
       let hasStoredOAuthGrant: boolean | undefined = false;

@@ -2,7 +2,7 @@ import {resourceThreadSource} from '../kernel/thread-context.js';
 import { createHash } from 'node:crypto';
 import type { ExternalCapturedFile, ExternalAttachmentOwner } from './attachments.js';
 import { isDeepStrictEqual } from 'node:util';
-import type { ExternalConversation } from '@varin/application-client';
+import type { ExternalAgentConfiguration, ExternalConversation } from '@varin/application-client';
 import type { ManagedSourceClient } from '../harness/managed-remote-client.js';
 import type { ManagedExternalControlReceipt } from '../harness/managed-remote-types.js';
 import { createManagedProcessClient } from '../kernel/managed-process-client.js';
@@ -21,7 +21,9 @@ export interface ManagedExternalOwner {
 /** The product record remains in the coordinator Catalog. Only its exact target
  * process may execute; an uncertain old dispatch must be reconciled before resume. */
 export async function openManagedExternalTransport(owner: ManagedExternalOwner, conversation: ExternalConversation,
-  command: <T>(input: Record<string,unknown>)=>Promise<T>, reportError:(error:Error)=>void, signal:AbortSignal, expectedLaunch?:{command:string;args:string[];configurationIdentity?:string}) {
+  command: <T>(input: Record<string,unknown>)=>Promise<T>, reportError:(error:Error)=>void, signal:AbortSignal,
+  expectedLaunch?: { command: string; args: string[]; configurationIdentity?: string },
+  admitConfiguration?: (configuration: ExternalAgentConfiguration) => void) {
   const source = conversation.executionSource;
   if (!source || source.resource_owner.kind !== 'managed_host') throw new Error('External source owner is not managed');
   const client = await owner.source(source.resource_owner,signal);
@@ -59,6 +61,7 @@ export async function openManagedExternalTransport(owner: ManagedExternalOwner, 
   }
   const launch = await client.externalBinding({coordinatorHostId:owner.coordinatorHostId,source,
     configurationId:conversation.configurationId,harness:conversation.harness,...(conversation.sessionId?{sessionId:conversation.sessionId}:{})},signal);
+  admitConfiguration?.(launch.configuration);
   if(expectedLaunch && (!isDeepStrictEqual({command:launch.configuration.command,args:launch.configuration.args},{command:expectedLaunch.command,args:expectedLaunch.args}) || expectedLaunch.configurationIdentity !== undefined && expectedLaunch.configurationIdentity !== launch.configurationIdentity))throw new Error('Original target external Harness launch changed after input admission');
   const binding = await client.bind({coordinatorHostId:owner.coordinatorHostId,scope:{kind:'external',conversationId:conversation.id,transportId:receipt.id},
     purpose:'external_harness',operationId:receipt.processId,retention:'caller',source:resourceThreadSource(source)!},signal);

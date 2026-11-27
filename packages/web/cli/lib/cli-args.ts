@@ -598,6 +598,7 @@ COMMANDS:
   startup        Manage launch at system startup
   logs           Tail Varin logs
   connect-url    Generate URL/QR for connecting another client
+  clients        Issue or revoke a gateway credential with the Host stopped
   update         Check for and install updates
 
 OPTIONS:

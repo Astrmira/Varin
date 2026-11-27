@@ -53,20 +53,23 @@ export async function withNodeRoleState<T>(dataDir: string, kernelPath: string |
 }
 
 export async function pairNodeRoleClient(dataDir: string, kernelPath: string | undefined, outputPath: string,
-  options: { label: string; capabilities: string[]; deniedDirectories?: string[] }): Promise<string> {
+  options: { label: string; deniedDirectories?: string[] } & (
+    { capabilities: string[]; profile?: never } | { profile: 'full-control'; capabilities?: never }
+  )): Promise<string> {
   dataDir = await nodeRoleDataDirectory(dataDir);
   const output = await canonicalizePathIdentity(nodeRoleAbsolute(outputPath, '--output'), { allowMissing: true });
   if ([dataDir, ...(options.deniedDirectories ?? [])].some(root => isPathWithinRoot(output, root))) {
     throw new Error('Store the new credential in a private file outside node state and shared resource directories');
   }
-  if (!options.capabilities.length) throw new Error('At least one explicit node capability is required');
+  if (options.capabilities?.length === 0) throw new Error('At least one explicit node capability is required');
   return withNodeRoleState(dataDir, kernelPath, async clients => {
     const file = await fs.open(output, 'wx', 0o600);
     const created = await file.stat({ bigint: true });
     let id: string | undefined;
     let committed = false;
     try {
-      const entry = await clients.createClient({ label: options.label, allowedDirectories: [], capabilities: options.capabilities });
+      const entry = await clients.createClient({ label: options.label, allowedDirectories: [],
+        ...(options.profile ? { profile: options.profile, authMethod: 'offline' } : { capabilities: options.capabilities }) });
       id = entry.client.id;
       await file.writeFile(JSON.stringify({ clientId: id, token: entry.token }) + '\n');
       await file.sync();

@@ -37,6 +37,7 @@ import { scheduleCommand } from './lib/commands-schedule.js';
 import { threadCommand } from './lib/commands-thread.js';
 import { modelsCommand } from './lib/commands-models.js';
 import { externalAccessCommand } from './lib/commands-external-access.js';
+import { clientsCommand } from './lib/commands-clients.js';
 import { projectsCommand } from './lib/commands-projects.js';
 import { createUpdateCommand } from './lib/commands-update.js';
 import { createConnectUrlCommand } from './lib/commands-connect-url.js';
@@ -176,6 +177,7 @@ const commands: CliCommands = {
 };
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'clients') return clientsCommand(process.argv.slice(3));
   const parsed = parseArgs();
   const { command, subcommand, tunnelAction, startupAction, scheduleAction, threadAction, externalAccessAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
   activeCommandOptions = options;

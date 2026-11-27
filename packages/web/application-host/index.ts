@@ -359,6 +359,8 @@ import { createGracefulShutdownRuntime, createShutdownCollector, ShutdownDeadlin
 import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteAdmission } from './lib/draining-admission.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { hostEnvironment } from './lib/security/host-environment.js';
+import { DeploymentPolicyDeniedError, readDeploymentJson, readDeploymentPolicy } from './lib/deployment/policy.js';
+import { createExtensionAdmission } from './lib/deployment/extension-admission.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -789,6 +791,13 @@ const platformRoutesRuntime = createPlatformRoutesRuntime({ clientReloadDelayMs:
 
 async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerController> {
   hostEnvironment.capture();
+  const deployment = await readDeploymentPolicy(process.env.VARIN_DEPLOYMENT_POLICY, VARIN_DATA_DIR);
+  const gatewayOnly = deployment?.ingress?.mode === 'gateway';
+  const background = deployment?.background;
+  const [modelDirectorySnapshot, pluginCatalogSnapshot] = background ? await Promise.all([
+    background.modelDirectorySnapshot && readDeploymentJson(background.modelDirectorySnapshot, VARIN_DATA_DIR, 'background.modelDirectorySnapshot'),
+    background.pluginCatalogSnapshot && readDeploymentJson(background.pluginCatalogSnapshot, VARIN_DATA_DIR, 'background.pluginCatalogSnapshot'),
+  ]) : [];
   platformEnvironmentRuntime.applyLoginShellEnvSnapshot();
   await assertDataRootMayStart(VARIN_DATA_DIR);
   if (server?.listening) throw new Error('Varin server is already running');
@@ -800,11 +809,12 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const configuredBindHost = host || process.env.VARIN_HOST?.trim() || '127.0.0.1';
   const effectiveBindHost = normalizeBindHost(configuredBindHost);
   if (!effectiveBindHost) throw new Error(getInvalidBindHostErrorMessage(configuredBindHost));
-  const uiPassword = typeof options.uiPassword === 'string'
+  const uiPassword = gatewayOnly ? null : typeof options.uiPassword === 'string'
     ? options.uiPassword
     : hostEnvironment.read('VARIN_UI_PASSWORD') ?? null;
   if (
     isNetworkExposedBindHost(effectiveBindHost)
+    && !gatewayOnly
     && !(typeof uiPassword === 'string' && uiPassword.trim())
     && !isUnsafeUnauthenticatedLanAllowed(process.env, options.allowUnauthenticatedLan)
   ) {
@@ -821,7 +831,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     ? options.getDesktopRuntimeConfig
     : null;
   let externalIngressConfig: ReturnType<typeof readExternalIngressEnvironment> = null;
-  if (options.externalIngress) {
+  if (gatewayOnly) {
+    externalIngressConfig = null;
+  } else if (options.externalIngress) {
     externalIngressConfig = normalizeExternalIngress(options.externalIngress);
   } else {
     try {
@@ -835,7 +847,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const apiOnly = options.apiOnly === true || isEnvFlagEnabled(process.env.VARIN_API_ONLY);
   const attachSignals = options.attachSignals !== false;
   const onTunnelReady = typeof options.onTunnelReady === 'function' ? options.onTunnelReady : undefined;
-  const startupTunnelRequest = (
+  const startupTunnelRequest = gatewayOnly ? null : (
     typeof options.tunnelMode === 'string'
     || typeof options.tunnelProvider === 'string'
     || options.tunnelConfigPath === null
@@ -867,13 +879,17 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const extensionCatalog = options.extensionCatalog
     || options.extensionRuntime?.catalog
     || new ApplicationExtensionCatalog({ dataDir: VARIN_DATA_DIR });
+  if (deployment?.extensions && (options.extensionPackages || options.extensionRuntime)) {
+    throw new Error('Deployment policy extensions requires Host-owned extension admission');
+  }
   const extensionPackages = options.extensionPackages
     || options.extensionRuntime?.packages
     || new ExtensionPackageManager({
-    catalog: extensionCatalog,
-    dataDir: VARIN_DATA_DIR,
-    varinVersion: VARIN_VERSION,
-  });
+      catalog: extensionCatalog,
+      dataDir: VARIN_DATA_DIR,
+      varinVersion: VARIN_VERSION,
+      ...(deployment?.extensions && { admission: createExtensionAdmission(deployment.extensions) }),
+    });
   let extensionRuntime = options.extensionRuntime || null;
   const pluginCredentialOwner: { current?: PluginCredentialCapability } = {};
   const ownsExtensionRuntime = !extensionRuntime;
@@ -903,6 +919,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   }));
   server = http.createServer(app);
   const localServer = server;
+  const upgradeServer = gatewayOnly ? http.createServer() : localServer;
+  if (gatewayOnly) localServer.on('upgrade', (req, socket, head) => {
+    void (async () => {
+      if (!await uiAuthController?.resolveRequestAuth(req)) { rejectWebSocketUpgrade(socket, 401, 'Unauthorized'); return; }
+      if (!socket.destroyed && !upgradeServer.emit('upgrade', req, socket, head)) socket.destroy();
+    })().catch(() => socket.destroy());
+  });
   const createIngress = (configuration: ExternalIngressConfiguration) => createPublicIngress({
     ...configuration,
     // App handlers receive the original request, including its unforgeable marker.
@@ -986,7 +1009,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     relayAvailable: resolveRelayEndpoint().state === 'configured',
   });
 
-  const sayTTSCapability = detectSayTtsCapability(process);
+  const allowLocalSpeech = deployment?.localInference?.speech !== false;
+  const sayTTSCapability = allowLocalSpeech ? detectSayTtsCapability(process)
+    : { available: false, voices: [], reason: 'Deployment policy localInference disables local speech' };
   const bootstrapResult = bootstrapRuntime.setupBaseRoutes(app, {
     process,
     varinVersion: VARIN_VERSION,
@@ -1013,6 +1038,8 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     },
     verboseRequestLogs: isEnvFlagEnabled(process.env.VARIN_VERBOSE_REQUEST_LOGS),
     uiPassword,
+    gatewayOnly,
+    updatesEnabled: background?.updateChecks !== false,
     tunnelAuthController,
     remoteClientAuthRuntime,
     clientPairingRuntime,
@@ -1035,6 +1062,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     readSettingsFromDisk,
     normalizeTunnelSessionTtlMs,
     sayTTSCapability,
+    allowLocalSpeech,
     ensurePushInitialized,
     getOrCreateVapidKeys,
     getUiSessionTokenFromRequest,
@@ -1059,16 +1087,31 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     mobilePushRuntime,
   });
   uiAuthController = bootstrapResult.uiAuthController;
+  app.get('/api/system/deployment-policy', uiAuthController.requireAuth, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const { egress, background, extensions, ...policy } = deployment ?? {};
+    res.json(deployment ? { ...policy, ...(egress && { egress: {
+      userDestinations: egress.userDestinations, proxyRequired: Boolean(egress.requiredProxy),
+    } }), ...(extensions && { extensions: {
+      sources: extensions.sources, realms: extensions.realms, agentStaging: extensions.agentStaging,
+      requiresApprovedIntegrity: extensions.artifactIntegrities !== undefined,
+    } }), ...(background && { background: {
+      updateChecks: background.updateChecks !== false,
+      managedModelDirectory: Boolean(background.modelDirectorySnapshot),
+      managedPluginCatalog: Boolean(background.pluginCatalogSnapshot),
+    } }) } : null);
+  });
   realtimeProxyRuntime = attachRealtimeProxy({
     isDraining: () => isShuttingDown,
     app,
-    server,
+    server: upgradeServer,
     getDesktopRuntimeConfig,
     getUiAuthController: () => uiAuthController,
     isRequestOriginAllowed,
   });
   const observations = attachObservations({
-    server,
+    server: upgradeServer,
+    listener: localServer,
     authenticate: async (request) => Boolean(await uiAuthController?.resolveWebSocketAuthContext(request)),
     isRequestOriginAllowed,
     rejectWebSocketUpgrade,
@@ -1092,11 +1135,12 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     storageRoot: path.join(VARIN_DATA_DIR, 'kernel', extensionRuntime.services.hostId),
     buildVersion: VARIN_VERSION,
     kernelBuildIdentity: VARIN_VERSION,
+    ...(deployment?.egress && { env: { VARIN_KERNEL_DEPLOYMENT_EGRESS: JSON.stringify(deployment.egress) } }),
     onExit: (error) => console.error('[VarinKernel] Kernel process exited:', error.message),
   });
   await kernelClient.start();
   await kernelClient.agentRuntimeRequest('runtime.principals.initialize', {
-    ownerPrincipalId: await hostPrincipals().ownerId(), claimLegacy: uiAuthController.enabled,
+    ownerPrincipalId: await hostPrincipals().ownerId(), claimLegacy: gatewayOnly || uiAuthController.enabled,
   });
   const scopeDirectory = async (scopeId: string): Promise<string> => { if (isBotScopeId(scopeId)) return botScopeRoot(scopeId); return (await documentsAuthority.inspectWorkspace(scopeId)).root; };
   const scopeDocumentWorkspace = async (scopeId: string): Promise<string> => isBotScopeId(scopeId) ? (await documentsAuthority.resolveWorkspace({ path: await scopeDirectory(scopeId) })).workspaceId : scopeId;
@@ -1261,6 +1305,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     return externalAgentIdentity(cwd);
   } });
   const externalAgents = new ExternalAgentsService({ managed: () => ({coordinatorHostId:agentRuntime.coordinatorHostId,source:(owner,signal)=>agentRuntime.managedSource(owner,signal)}), kernel: kernelClient, spawn: externalAgentProcesses.spawn, spawnAdmitted: externalAgentProcesses.spawnAdmitted, directory: externalAgentDirectory,
+    ...(deployment?.externalAgents && { deployment: deployment.externalAgents }),
     environment: platformEnvironmentRuntime,
     fetch: (input, init) => egressRuntime.fetch(input, init), removeProgram: externalAgentProcesses.removeProgram, fileContext: externalAgentProcesses.fileContext,
     onError: operationId => console.error('[ExternalAgents] Execution or resource cleanup needs reconciliation:', operationId),
@@ -1482,6 +1527,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   // All HTTP(S) consumers use the executing Host's network, including local
   // and Docker services. Proxy/NO_PROXY routing is shared across deployments.
   const egressRuntime = createEgressRuntime({
+    ...(deployment?.egress && { deployment: deployment.egress }),
     ...(options.desktopNetworkFetch ? { systemFetch: options.desktopNetworkFetch } : {}),
     getHostConfiguration: bindEgressHostConfiguration(
       settingsRuntime.createSettingsProjection(projectEgressSettings), serviceCredentials.read,
@@ -1843,7 +1889,11 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   const projectTrust = new ProjectTrustService(VARIN_DATA_DIR, (id, signal) => documentsAuthority.admitWorkspaceRegistration(id, signal));
   registerProjectTrustRoutes(app, projectTrust, uiAuthController.requireAuth);
-  const modelsService = new ModelsService(VARIN_DATA_DIR, { projectTrusted: cwd => projectTrust.trusted(cwd), fetch: egressRuntime.fetch as typeof globalThis.fetch });
+  const modelsService = new ModelsService(VARIN_DATA_DIR, { projectTrusted: cwd => projectTrust.trusted(cwd), fetch: egressRuntime.fetch as typeof globalThis.fetch,
+    directorySnapshot: modelDirectorySnapshot,
+    ...(deployment?.localInference && { localInference: deployment.localInference }),
+    ...(deployment?.modelCredentials && { credentialPolicy: deployment.modelCredentials }) });
+  if (modelDirectorySnapshot !== undefined) await modelsService.modelDirectory.ready;
   const searchConnectionSettings = createSearchConnectionSettings({ settings: modelsService.settings, credentials: serviceCredentials,
     searchFetch: egressRuntime.fetch as typeof globalThis.fetch, surfaces: clientSurfaceBridge,
     changed: request => broadcastGlobalUiEvent?.({ type: 'varin:search-credential-changed', properties: { requestId: request.id, status: request.status,
@@ -1931,6 +1981,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     }
   });
   const mcpAuthority = new McpAuthority({
+    ...(deployment?.mcp && { deployment: deployment.mcp }),
     reportDirectoryError: () => console.error('[MCP] Capability directory could not be persisted'),
     providerCredentialFiles: (_scope, providers) => providers.length ? [modelsService.credentialPath] : [],
     fetch: egressRuntime.fetch as typeof globalThis.fetch,
@@ -2892,13 +2943,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     });
     registerManagedBrowserRoutes(app, { hostId, resources: browserResources, settings: browserSettings, requireAuth: authController.requireAuth, clientId: browserPeerClient });
   }
-  const desktopMedia = attachDesktopMedia({ isDraining: () => isShuttingDown, server, hostId, computers: computerService,
+  const desktopMedia = attachDesktopMedia({ isDraining: () => isShuttingDown, server: upgradeServer, hostId, computers: computerService,
     authenticate: async (request) => Boolean(await uiAuthController?.ensureSessionToken(request, { setHeader: () => undefined })),
     originAllowed: isRequestOriginAllowed,
   });
   // Target side of `environment.forward`: authenticated coordinator Hosts
   // bridge a WebSocket onto a TCP address resolved on THIS machine.
-  const serviceForward = attachServiceForward({ isDraining: () => isShuttingDown, server, hostId,
+  const serviceForward = attachServiceForward({ isDraining: () => isShuttingDown, server: upgradeServer, hostId,
     authenticate: async (request) => Boolean(await uiAuthController?.ensureSessionToken(request, { setHeader: () => undefined })),
     originAllowed: isRequestOriginAllowed,
   });
@@ -2906,7 +2957,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   registerDeviceRoutes(app, createDeviceRegistry(VARIN_DATA_DIR), uiAuthController?.requireAuth ?? ((_request, _response, next) => next()));
   const connectionProxy = attachConnectionProxy({
     isDraining: () => isShuttingDown,
-    app, server, settings: connections.settingsStore,
+    app, server: upgradeServer, settings: connections.settingsStore,
     requireAuth: uiAuthController?.requireAuth ?? ((_request, _response, next) => next()),
     authenticateUpgrade: (request) => uiAuthController?.resolveAuthContext(request, null, { allowClientAuth: true, allowUrlToken: true }) ?? Promise.resolve(null),
     originAllowed: isRequestOriginAllowed,
@@ -3143,10 +3194,14 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       }
     },
   });
-  registerLocalSemanticComponentRoutes(app, { manager: localKnowledgeComponent, requireAuth: uiAuthController.requireAuth });
+  registerLocalSemanticComponentRoutes(app, { manager: localKnowledgeComponent, requireAuth: uiAuthController.requireAuth,
+    allowDownload: deployment?.localInference?.embedding !== false && deployment?.localInference?.componentDownloads !== false });
   const knowledgeEmbedding = createKnowledgeEmbeddingOwner(kernelClient, semanticInference, {
-    resolve: () => localKnowledgeEmbedder ??= createLocalSemanticEmbedder({ dataDir: VARIN_DATA_DIR,
-      cpu: { mode: embeddingRequestSettings.active().localCpuMode ?? 'auto', maxThreads: embeddingRequestSettings.active().localCpuThreads ?? null } }),
+    resolve: () => {
+      if (deployment?.localInference?.embedding === false) throw new DeploymentPolicyDeniedError('localInference', 'Deployment policy localInference disables local embeddings');
+      return localKnowledgeEmbedder ??= createLocalSemanticEmbedder({ dataDir: VARIN_DATA_DIR,
+        cpu: { mode: embeddingRequestSettings.active().localCpuMode ?? 'auto', maxThreads: embeddingRequestSettings.active().localCpuThreads ?? null } });
+    },
     close: async () => {
       await localKnowledgeEmbedder?.retire?.();
     },
@@ -3400,8 +3455,10 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       return false;
     },
   });
-  relayServiceInstance = relayService;
-  relayService.registerRoutes(app);
+  if (!gatewayOnly) {
+    relayServiceInstance = relayService;
+    relayService.registerRoutes(app);
+  }
   const getHostActivity = (signal: AbortSignal) => projectHostActivity({
     kernelEpoch: () => kernelClient.isReady ? kernelClient.kernelEpoch : null,
     draining: () => isShuttingDown,
@@ -3423,6 +3480,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   await platformRoutesRuntime.registerRoutes(app, {
     onProjectGitDispatcher: dispatch => { projectGitDispatcher = dispatch; },
     onGitHubProjectReader: reader => { projectGitHubReader = reader; },
+    pluginCatalogSnapshot,
     pluginFetch: (url, init) => {
       const { dispatcher: _dispatcher, ...request } = init ?? {};
       return egressRuntime.fetch(url, request);
@@ -3480,7 +3538,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const previewProxyRuntime = createPreviewProxyRuntime({ crypto, URL, createProxyMiddleware, responseInterceptor });
   previewProxyRuntime.attach(app, {
     isDraining: () => isShuttingDown,
-    server,
+    server: upgradeServer,
     express,
     uiAuthController,
     isRequestOriginAllowed,
@@ -3506,6 +3564,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     isDraining: () => isShuttingDown,
     app,
     server,
+    upgradeServer,
     express,
     fs,
     path,
@@ -3539,6 +3598,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     attachSignals,
     apiOnly,
     dictationModelsDir: path.join(VARIN_USER_CONFIG_ROOT, 'speech-models'),
+    ...(deployment?.localInference && { localInference: deployment.localInference }),
     fetchModel: (input, init) => egressRuntime.fetch(input, init),
     documents: documentsAuthority,
   });
@@ -3553,9 +3613,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   await scheduledTasksRuntime.start().catch((error) => {
     console.warn('[ScheduledTasks] Failed to start runtime:', error?.message || error);
   });
-  void relayService.reconcile();
-  const relayReconcileTimer = setInterval(() => void relayService.reconcile(), 60_000);
-  relayReconcileTimer.unref?.();
+  if (!gatewayOnly) void relayService.reconcile();
+  const relayReconcileTimer = gatewayOnly ? undefined : setInterval(() => void relayService.reconcile(), 60_000);
+  relayReconcileTimer?.unref();
 
   let stopTask: Promise<void> | undefined;
   const setExternalIngressEnabled = async (enabled: boolean): Promise<void> => {
@@ -3804,7 +3864,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       externalIngressError ??= 'Environment-managed public access could not start';
       console.warn('External ingress could not start:', error instanceof Error ? error.message : String(error));
     });
-  } else {
+  } else if (!gatewayOnly) {
     // Startup restoration is independent of settings UI or browser lifetime.
     void selfHosted.start().catch(() => console.warn('Saved external access could not start; see local Host settings.'));
   }

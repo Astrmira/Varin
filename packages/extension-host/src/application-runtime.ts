@@ -357,6 +357,7 @@ export class ApplicationExtensionRuntime {
       if (!entry?.desired.enabled) throw new Error("extension_package_enable_required");
       if (!entry.candidate || entry.candidate.integrity !== request.candidateIntegrity) throw new Error("extension_package_candidate_changed");
       if (!entry.candidate.capabilitiesReviewed) throw new Error("extension_package_capability_review_required");
+      this.packages.admission?.artifact({ ...entry.candidate, integrity: request.candidateIntegrity });
       signal?.throwIfAborted();
       onMutation?.();
       const requested = await this.catalog.requestCandidateApplication(request.extensionId, request.candidateIntegrity, request.expectedRevision);
@@ -568,11 +569,10 @@ export class ApplicationExtensionRuntime {
     requestValue: VarinExtensionCandidateSelectionRequest | unknown,
   ): Promise<VarinExtensionCatalogSnapshot> {
     const request = parseVarinExtensionCandidateSelectionRequest(requestValue);
-    return this.#mutateCatalog(() => this.catalog.requestCandidateApplication(
-      request.extensionId,
-      request.candidateIntegrity,
-      request.expectedRevision,
-    ));
+    return this.#mutateCatalog(async () => {
+      await this.packages.checkCandidateAdmission(request.extensionId, request.candidateIntegrity);
+      return this.catalog.requestCandidateApplication(request.extensionId, request.candidateIntegrity, request.expectedRevision);
+    });
   }
 
   reviewCandidateCapabilities(
