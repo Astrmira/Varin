@@ -24,17 +24,19 @@ export function routerTransport(router: ReturnType<typeof express.Router>) {
       },
     });
     const requestHeaders = new Headers(init.headers);
-    if (init.body != null && !requestHeaders.has('content-length') && !requestHeaders.has('transfer-encoding')) {
-      requestHeaders.set('transfer-encoding', 'chunked');
-    }
     const incomingHeaders = Object.fromEntries(requestHeaders);
-    const binary = express.request.is.call({ headers: incomingHeaders }, 'application/octet-stream') === 'application/octet-stream';
+    // JSON is already decoded below. Let Express match the content type without
+    // making its body parser wait for a network stream on the in-memory request.
+    const matchingHeaders = init.body != null && !requestHeaders.has('content-length') && !requestHeaders.has('transfer-encoding')
+      ? { ...incomingHeaders, 'transfer-encoding': 'chunked' } : incomingHeaders;
+    const is: Request['is'] = types => express.request.is.call({ headers: matchingHeaders }, types);
+    const binary = is('application/octet-stream') === 'application/octet-stream';
     const request = Object.assign(new EventEmitter(), {
       method: init.method ?? 'GET',
       url: target.pathname + target.search,
       headers: incomingHeaders,
       header: (name: string) => requestHeaders.get(name) ?? undefined,
-      is: express.request.is,
+      is,
       body: init.body && !binary ? JSON.parse(String(init.body)) : undefined,
       async *[Symbol.asyncIterator]() {
         if (binary && init.body && typeof (init.body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === 'function')
