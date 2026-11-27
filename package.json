@@ -181,7 +181,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@clack/prompts": "^1.8.1",
+    "@clack/prompts": "^1.9.0",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/dom-speech-recognition": "^0.0.12",
@@ -189,7 +189,7 @@
     "@types/react": "^19.3.3",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
-    "autoprefixer": "^10.6.2",
+    "autoprefixer": "^10.7.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "cors": "^2.8.6",
     "cross-env": "^10.1.0",
