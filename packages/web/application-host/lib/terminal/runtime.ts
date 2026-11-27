@@ -1224,5 +1224,10 @@ export function createTerminalRuntime({
     inspectSession,
     subscribeCommands,
   };
-  return { beginDraining: () => { shuttingDown = true; }, shutdown, ...api };
+  const activity = () => ({
+    sessions: [...sessions.values()].filter(session => session.process !== null && session.status !== 'exited').length,
+    preparing: pendingSessionCreates.size + pendingSessionRestarts.size,
+    stopping: pendingTerminations.size,
+  });
+  return { beginDraining: () => { shuttingDown = true; }, activity, shutdown, ...api };
 }

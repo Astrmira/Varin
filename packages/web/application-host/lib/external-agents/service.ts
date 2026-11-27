@@ -88,6 +88,15 @@ const launchKey = (launch: (Pick<ExternalAgentConfiguration, 'command' | 'args'>
 export class ExternalAgentsService {
   private readonly installer: ExternalAgentInstaller;
   private readonly gatewayConnections = new Set<() => Promise<void>>();
+  activity() {
+    return {
+      sessions: this.connections.size,
+      opening: this.connecting.size + this.authenticating.size,
+      running: this.running.size + this.childTasks.size,
+      stopping: this.disconnecting.size + this.reclaiming.size,
+      installations: this.installer.activeOperations(),
+    };
+  }
   async connectProgramGateway(configuration: ExternalAgentConfiguration, launch: { command: string; args: string[]; env: NodeJS.ProcessEnv }, signal?: AbortSignal) {
     if ((configuration.profileId ?? configuration.id) !== 'hermes' || launch.env.HERMES_TUI_GATEWAY_URL) return { env: launch.env, release: async () => {} };
     const bridge = await connectHermesGateway({ ...launch, spawn: this.deps.spawn, cwd: path.join(this.deps.directory, 'probe'), ...(signal ? { signal } : {}) });

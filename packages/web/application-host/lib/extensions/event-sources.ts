@@ -238,6 +238,10 @@ export class PluginEventSources {
       throw unavailable('event_receiver_stopped');
     } finally { this.#receivers.delete(held.scope); unrestricted?.(); held.release(); }
   }
+  activity() {
+    return { receivers: this.#flights.size, reconciling: Boolean(this.#pumping), retries: this.#retries.size };
+  }
+
   async close(): Promise<void> {
     this.#stop.abort(); for (const remove of this.#removers.splice(0)) remove();
     for (const timer of this.#retries.values()) clearTimeout(timer); this.#retries.clear();

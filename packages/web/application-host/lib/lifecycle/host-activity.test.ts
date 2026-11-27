@@ -22,6 +22,17 @@ it('serves authenticated, content-free owner activity even while shutting down',
       browser: () => ({preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0,privatePage:'do not publish'}),
       computerOperations: () => 1,
       dictation: () => ({state:'retiring',pendingRequests:0,sessions:0,warm:false,privateTranscript:'do not publish'}),
+      execution: async () => ({authorities:3,activeProcess:true,activeFileOperations:false,activeComputation:false,privatePath:'do not publish'}),
+      terminal: () => ({ sessions:1, preparing:0, stopping:0 }),
+      externalAgents: () => ({ sessions:0, opening:1, running:0, stopping:0, installations:0 }),
+      mcp: () => ({ preparations:0, requests:0, retainedHolders:0, closing:0, tasks:1, subscriptions:0 }),
+      eventSources: () => ({ receivers:1, reconciling:false, retries:0, privateCursor:'do not publish' }),
+      eventTransport: () => ({ connections:0, reconciling:false, retries:1 }),
+      language: () => ({ sourceViews:1, workspaceHolders:0, starting:0, stopping:0 }),
+      preview: () => ({ requests:0, sockets:1 }),
+      relay: () => ({ running:true, reconciling:false }),
+      knowledgeRequests: () => 1,
+      installingComponent: () => true,
     }, signal),
   );
   const unauthorized = await request(app).get(HOST_ACTIVITY_PATH).expect(401);
@@ -39,10 +50,20 @@ it('serves authenticated, content-free owner activity even while shutting down',
       reasons: ['host-draining', 'catalog-local-compute', 'catalog-queued-work', 'calendar-active-occurrence',
         'calendar-pending-delivery', 'calendar-reconciliation', 'calendar-asset-watch', 'calendar-wake-not-transferred',
         'http-observation-streams', 'http-thread-writes', 'external-ingress-active', 'browser-owner-activity', 'computer-owner-activity', 'dictation-owner-activity',
+        'execution-owner-activity', 'terminal-owner-activity', 'external-agent-owner-activity', 'mcp-owner-activity',
+        'event-receivers-not-transferred', 'event-transport-active', 'language-owner-activity', 'preview-owner-activity',
+        'relay-owner-activity', 'knowledge-owner-activity', 'local-component-installing',
         'owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'],
     },
     owners: {browser:{preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0},
-      computerOperations:1,dictation:{state:'retiring',pendingRequests:0,sessions:0,warm:false}},
+      computerOperations:1,dictation:{state:'retiring',pendingRequests:0,sessions:0,warm:false},
+      execution:{authorities:3,activeProcess:true,activeFileOperations:false,activeComputation:false},
+      terminal:{sessions:1,preparing:0,stopping:0},
+      externalAgents:{sessions:0,opening:1,running:0,stopping:0,installations:0},
+      mcp:{preparations:0,requests:0,retainedHolders:0,closing:0,tasks:1,subscriptions:0},
+      eventSources:{receivers:1,reconciling:false,retries:0},eventTransport:{connections:0,reconciling:false,retries:1},
+      language:{sourceViews:1,workspaceHolders:0,starting:0,stopping:0},preview:{requests:0,sockets:1},
+      relay:{running:true,reconciling:false},knowledgeRequests:1,installingComponent:true},
     parking: { supported: false, eligible: false },
   });
 });
@@ -60,7 +81,7 @@ it('keeps missing owner facts distinct from zero and never advertises parking', 
   const result = await projectHostActivity(owners, new AbortController().signal);
   expect(result.catalog).toBeNull();
   expect(result.calendar?.activeOccurrences).toBe(0);
-  expect(result.owners).toEqual({browser:null,computerOperations:null,dictation:null});
+  expect(Object.values(result.owners).every(value => value === null)).toBe(true);
   expect(result.retention.reasons).toContain('catalog-admission-unavailable');
   expect(result.parking).toEqual({ supported: false, eligible: false });
   expect(JSON.stringify(result)).not.toContain('secret content');

@@ -383,6 +383,16 @@ export class McpAuthority {
   #closed = false;
   constructor(options: McpAuthorityOptions = {}) { this.#options = options; }
 
+  activity() {
+    const scopes = [...this.#scopes.values()];
+    return {
+      preparations: scopes.reduce((count, scope) => count + scope.preparations, 0),
+      requests: scopes.reduce((count, scope) => count + scope.inflight, 0),
+      retainedHolders: scopes.reduce((count, scope) => count + scope.retainedHolders, 0),
+      closing: this.#closings.size,
+    };
+  }
+
   #deploymentProblem(scope: McpAuthorityScope, entry: McpServerEntry): string | undefined {
     const policy = this.#options.deployment;
     if (!policy) return undefined;

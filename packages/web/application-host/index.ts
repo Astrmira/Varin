@@ -23,6 +23,7 @@ import { permissionService } from './lib/kernel/permission-service.js';
 import { createPermissionJudge } from './lib/kernel/permission-judge.js';
 import { createPermissionPersistence } from './lib/kernel/permission-persistence.js';
 import { createLocalSemanticComponentManager } from './lib/knowledge/semantic/local-component.js';
+import { activeKnowledgeStorageRequests } from './lib/knowledge/store-process.js';
 import { registerLocalSemanticComponentRoutes } from './lib/knowledge/semantic/local-component-routes.js';
 import { createKnowledgeEmbeddingOwner } from './lib/knowledge/vectors/embedding-owner.js';
 import { createStorageService } from './lib/storage/service.js';
@@ -3488,6 +3489,18 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     browser: () => browserResources.activity(),
     computerOperations: () => computerService.activities().filter(row => row.activity.status === 'running').length,
     dictation: () => dictationRuntime?.activity() ?? null,
+    execution: signal => kernelClient.sourceRequest('source.retention', {}, signal),
+    terminal: () => terminalRuntime?.activity() ?? null,
+    externalAgents: () => externalAgents.activity(),
+    mcp: () => ({ ...mcpAuthority.activity(),
+      tasks: mcpTaskRuntime.activeOperations(), subscriptions: mcpResourceRuntime.activeOperations() }),
+    eventSources: () => pluginEventSources.activity(),
+    eventTransport: () => pluginEventTransport.activity(),
+    language: languageSupervisor.activity,
+    preview: () => previewProxyRuntime.activity(),
+    relay: () => relayServiceInstance?.activity() ?? null,
+    knowledgeRequests: activeKnowledgeStorageRequests,
+    installingComponent: localKnowledgeComponent.installing,
   }, signal);
   registerHostActivityRoute(app, uiAuthController.requireAuth, async request => {
     const auth = await uiAuthController!.resolveRequestAuth(request, { allowUrlToken: false });
