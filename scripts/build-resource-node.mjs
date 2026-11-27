@@ -14,6 +14,7 @@ function selectRole(role) {
   const basename = roleEntry[role];
   return { basename, entrypoint: `packages/web/server/${basename}.js`, lockPath: path.join(root, `scripts/${basename}.bun.lock`) };
 }
+export const resourceNodeLockPaths = Object.freeze(Object.keys(roleEntry).map(role => selectRole(role).lockPath));
 const original = (relative) => path.join(root, relative);
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const writeJson = (file, json) => {

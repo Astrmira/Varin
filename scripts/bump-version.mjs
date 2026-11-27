@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resourceNodeLockPaths } from './build-resource-node.mjs';
 import { syncWorkspaceLockVersions } from './sync-workspace-lock-versions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,9 +41,9 @@ const workspace = (directory) => {
 syncWorkspaceLockVersions(path.join(ROOT, 'bun.lock'), [
   workspace('packages/electron'), workspace('packages/ui'), workspace('packages/web'),
 ]);
-syncWorkspaceLockVersions(path.join(ROOT, 'scripts/cloud-runtime.bun.lock'), [workspace('packages/web')]);
-for (const role of ['resource', 'browser', 'computer']) {
-  syncWorkspaceLockVersions(path.join(ROOT, `scripts/${role}-node.bun.lock`), [workspace('packages/web')]);
+const webWorkspace = workspace('packages/web');
+for (const lockPath of [path.join(ROOT, 'scripts/cloud-runtime.bun.lock'), ...resourceNodeLockPaths]) {
+  syncWorkspaceLockVersions(lockPath, [webWorkspace]);
 }
 console.log('  bun.lock and role runtime locks: workspace versions synchronized');
 
