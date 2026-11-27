@@ -141,6 +141,8 @@ Expose a dev/test machine's files and commands to an existing Agent Host without
    ```
 3. Start the node (`docker compose -f docker-compose.resource-node.yml up -d`, bound to `127.0.0.1:3001` by default; reach cross-machine via SSH forward or controlled HTTPS) and register its address + token in your Agent Host's Connections settings. Revoke with `revoke <clientId>` while stopped.
 
+Command-enabled credentials also support JavaScript script sessions and project MCP over stdio. Both execute on the node under the selected live workspace. The node reads project instructions from that workspace. To enable its `.mcp.json`, record the node's canonical workspace path in `project-trust.json` in the node state directory, for example `{"/home/varin/workspaces": true}`.
+
 The node image stages only the JavaScript and assets reachable by its compiled Resource Node entrypoint, a role-specific frozen Bun lock, and the workspace packages reachable by that role. Its build follows the frozen installed dependency graph and rejects unrelated installed packages. Use `bun run update:resource-node-lock` for dependency/version metadata changes; for a changed import graph, build the Cloud Runtime first, then run `node scripts/build-resource-node.mjs artifacts/cloud-runtime artifacts/resource-node --update-lock` before rebuilding the image. The node health check probes its live resource kernel control channel without starting a kernel or acquiring a workspace.
 
 ### On-demand Resource Node provider

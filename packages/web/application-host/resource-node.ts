@@ -1,4 +1,4 @@
-/** Standalone managed live-directory node. No Agent, UI backend, extension activation or outbound connections. */
+/** Standalone managed live-directory node. Its coordinator owns the Agent and UI. */
 import crypto from 'node:crypto';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import express from 'express';
 import { ExtensionCatalogStore } from '@varin/extension-host';
+import { readProjectTrust } from '@varin/settings-store';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { hostEnvironment } from './lib/security/host-environment.js';
@@ -14,10 +15,16 @@ import { createDocumentRootGuard } from './lib/documents/allowed-roots.js';
 import { createDocumentAuthority } from './lib/documents/authority.js';
 import { bindDocumentTextCodec } from './lib/documents/inspect.js';
 import { createManagedResourceTarget } from './lib/harness/managed-resource-target.js';
+import { createManagedMcpTarget } from './lib/harness/managed-mcp-target.js';
+import { isManagedMcpObservation } from './lib/harness/managed-remote-routes.js';
+import { McpAuthority, McpCompositions } from './lib/mcp/authority.js';
 import { createResourceFilesOwner } from './lib/workspace/resource-files.js';
 import { createHostResourceStorage, createHostResourceExecution } from './lib/kernel/host-resource-owners.js';
 import { createKernelClient } from './lib/kernel/kernel-client.js';
 import { createLiveSourceOwner } from './lib/kernel/live-source.js';
+import { createSourceQueryService } from './lib/kernel/source-query-service.js';
+import { createManagedRecoveryService } from './lib/kernel/managed-recovery-service.js';
+import { createKernelWorkspaceWorkingStateAccess } from './lib/kernel/storage-adapter.js';
 import { SourceAdmissionError } from './lib/kernel/source-admission-error.js';
 import { createPrincipalStore } from './lib/ui-auth/principals.js';
 import { createUiAuth } from './lib/ui-auth/ui-auth.js';
@@ -154,10 +161,45 @@ export async function startResourceNode(options: NodeOptions) {
       loadPtyProvider: async () => execution.kernelProcesses.ptyProvider });
     cleanup.push(() => terminal.shutdown());
     const liveSources = createLiveSourceOwner({ documents, kernel });
+    const projectTrusted = (cwd: string) => readProjectTrust(dataDir, cwd) === true;
+    const sourceQuery = createSourceQueryService({
+      kernel, documents, storage: storage.kernelStorageAdapter, validateLiveSource: liveSources.validate,
+      resourceOwners: {
+        dataDirectory: dataDir, projectOnly: true, homeDir: workspaceRoot, documents,
+        workingStates: createKernelWorkspaceWorkingStateAccess(storage.kernelStorageAdapter),
+        validateLiveSource: liveSources.validate, projectTrusted,
+        configuration: async () => ({ packages: [] }),
+        withSourceRead: storage.kernelStorageAdapter.withResourceRead.bind(storage.kernelStorageAdapter),
+      },
+    });
+    cleanup.push(() => sourceQuery.dispose());
+    const mcpAuthority = new McpAuthority({
+      deployment: { transports: ['stdio'], stdioPlacement: 'managed' },
+      adaptTransport: (scope, transport) => mcp.adaptTransport(scope, transport),
+      interactions: (input, scope) => mcp.receiveInteraction(scope, input),
+      sampling: (input, scope) => mcp.receiveSampling(scope, input),
+      interactionErrors: (input, scope) => mcp.receiveInteractionError(scope, input),
+    });
+    const mcp = createManagedMcpTarget({ kernel, documents, authority: mcpAuthority,
+      compositions: new McpCompositions(mcpAuthority, code => console.error('[ResourceNode MCP]', code)), agentDir: dataDir, hostId,
+      projectTrusted,
+      onError: () => console.error('[ResourceNode] Managed MCP process observation unavailable'),
+    });
+    cleanup.push(() => mcpAuthority.close(), () => mcp.close(), kernel.subscribeExit(() => { void mcp.close(); }));
     const target = createManagedResourceTarget({ kernel, liveSourceOnly: true, storageAvailable: false,
       onError: () => console.error('[ResourceNode] Managed resource observation unavailable') });
     cleanup.push(() => target.dispose());
     target.attachSources({ documents, deviceFileAccess: false, validateLiveSource: liveSources.validate,
+      ...mcp.continuations,
+      serviceOperation: (scope, operation, signal) => operation.kind === 'mcp'
+        ? mcp.request(scope, operation.action, signal) : sourceQuery(scope, operation, signal),
+      async releaseSource(scope, retention) {
+        const [, receipt] = await Promise.all([sourceQuery.release(scope), mcp.release(scope, retention)]);
+        return { mcpExecutorStopped: receipt.executorStopped, mcpTaskControlsDrained: receipt.taskControlsDrained };
+      },
+      cleanupSource: sourceQuery.cleanup,
+      recovery: createManagedRecoveryService({ kernel, hostId, documents, deviceFileAccess: false,
+        storage: storage.kernelStorageAdapter, store: storage.kernelRecoveryStore, validateLiveSource: liveSources.validate }).handle,
       terminal: createManagedTerminalOwner({ terminal: () => terminal, documents }),
       workspaceFiles: createResourceFilesOwner(documents, storage.kernelRecoveryFileResources, { restrictedRoot: workspaceRoot }),
       async prepareSource(input, signal) {
@@ -191,12 +233,15 @@ export async function startResourceNode(options: NodeOptions) {
     });
     app.use((req, res, next) => {
       if (draining) { res.status(503).json({ code: 'host-draining' }); return; }
-      if (['/api/harness/managed-execution/v1/sources/processSubscribe', '/api/harness/managed-execution/v1/sources/terminalStream'].includes(req.path)) {
+      next();
+    });
+    app.use(express.json({ limit: '4mb' }));
+    app.use('/api/harness/managed-execution/v1/sources', (req, res, next) => {
+      if (['/processSubscribe', '/terminalStream'].includes(req.path) || req.path === '/service' && isManagedMcpObservation(req.body?.operation)) {
         observers.add(res); res.once('close', () => observers.delete(res));
       }
       next();
     });
-    app.use(express.json({ limit: '4mb' }));
     target.mount(app, { documents, requireAuth: auth.requireAuth, resolveAuthContext: auth.resolveAuthContext, isDraining: () => draining });
     // Body parser and middleware failures must not echo request fragments, bearer data or stack traces.
     const fail: express.ErrorRequestHandler = (error, _req, res, _next) => {

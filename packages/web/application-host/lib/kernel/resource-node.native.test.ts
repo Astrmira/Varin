@@ -7,11 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { expect, it as test } from 'vitest';
 import { ExtensionCatalogStore } from '@varin/extension-host';
 import { pairResourceNode, revokeResourceNodeClient, startResourceNode } from '../../resource-node.js';
-import { toolOperationId } from './protocol.generated.js';
+import { toolOperationId, type AgentResourceSnapshot, type NodeBinding } from './protocol.generated.js';
+import { resourceSource } from './thread-context.js';
+import { encodeScriptFrame, SCRIPT_PROTOCOL_VERSION } from '@varin/script-runtime';
 import type { ThreadPreparedSource } from '@varin/application-client';
 import type { ManagedRemoteIdentity, ManagedSourceBinding, ManagedSourceReceipt, ManagedSourceResolveReceipt } from '../harness/managed-remote-types.js';
 import { createSocketResourceProvider } from '../deployment/resource-provider.js';
 import { createManagedRemoteTargetRegistry } from '../harness/managed-remote-client.js';
+import type { ManagedMcpAction, ManagedMcpReply } from '../harness/managed-mcp-contract.js';
+import type { McpAuthorityTool } from '../mcp/authority.js';
 
 const kernelPath = process.env.VARIN_TEST_KERNEL_PATH ?? fileURLToPath(new URL(
   '../../../../../kernel/target/release/' + (process.platform === 'win32' ? 'varin-kernel.exe' : 'varin-kernel'), import.meta.url));
@@ -64,14 +68,18 @@ it('discovers a dormant provider workspace and reads it after the Resource Node 
     expect(first.label).toBe('Managed test workspace');
     expect((await registry.sourceTargets()).targets[0]).toEqual(first);
     expect(acquired).toBe(0);
-    const source = await registry.source(first.resourceOwner);
-    const resolved = await source.resolve({ coordinatorHostId, path: workspaceRoot });
-    const prepared = await source.prepare({ coordinatorHostId, input: {
-      runtime: 'agent', threadId: 'thread:provider', branchId: 'branch:provider', key: 'prepare',
-      resourceOwner: first.resourceOwner, workspaceId: resolved.workspaceId, mode: 'live_root', content: { mode: 'saved-files' }, captureScopes: [],
-    } });
-    const binding = await source.bind({ coordinatorHostId, source: prepared.source, scope: { kind: 'source_read',
-      threadId: 'thread:provider', branchId: 'branch:provider', key: 'provider-read' }, purpose: 'read', retention: 'caller' });
+    const { source, resolved, binding } = await registry.withSourceUse(first.resourceOwner, async () => {
+      const source = await registry.source(first.resourceOwner);
+      const resolved = await source.resolve({ coordinatorHostId, path: workspaceRoot });
+      const prepared = await source.prepare({ coordinatorHostId, input: {
+        runtime: 'agent', threadId: 'thread:provider', branchId: 'branch:provider', key: 'prepare',
+        resourceOwner: first.resourceOwner, workspaceId: resolved.workspaceId, mode: 'live_root', content: { mode: 'saved-files' }, captureScopes: [],
+      } });
+      const binding = await source.bind({ coordinatorHostId, source: prepared.source, scope: { kind: 'source_read',
+        threadId: 'thread:provider', branchId: 'branch:provider', key: 'provider-read' }, purpose: 'read', retention: 'caller' });
+      return { source, resolved, binding };
+    });
+    expect(acquired).toBe(1);
     expect(leases.size).toBe(1);
     await source.release({ coordinatorHostId, authorityId: binding.authorityId, resourceEpoch: binding.resourceEpoch, mode: 'retire' });
     await expect.poll(() => leases.size).toBe(0);
@@ -107,6 +115,8 @@ it('pairs offline, serves an actual original live file and process, and reopens 
   try {
     await fs.mkdir(workspaceRoot);
     await fs.writeFile(path.join(workspaceRoot, 'note.txt'), 'original node bytes');
+    await fs.writeFile(path.join(workspaceRoot, 'AGENTS.md'), 'Instructions from the resource workspace.');
+    await fs.writeFile(path.join(dir, 'AGENTS.md'), 'Outside workspace instructions.');
     const reader = await creds('read', false, false), worker = await creds('work', true, true);
     node = await startResourceNode(options);
     const origin = () => 'http://127.0.0.1:' + node!.port;
@@ -153,6 +163,11 @@ it('pairs offline, serves an actual original live file and process, and reopens 
     }));
     expect(await accepted(api('/retention', worker.token))).toMatchObject({ retireReady: false, authorities: 1 });
     const address = { authorityId: binding.authorityId, resourceEpoch: binding.resourceEpoch };
+    const originalDocument = await accepted<{ bytesBase64: string; fileObservation: { path: string; readVersion: string } }>(
+      source('service', worker.token, { ...address, requestId: 'document-capture',
+        operation: { kind: 'document_read', operationId: 'document-capture', path: 'note.txt' } }));
+    expect(Buffer.from(originalDocument.bytesBase64, 'base64').toString('utf8')).toBe('original node bytes');
+    expect(originalDocument.fileObservation).toEqual({ path: 'note.txt', readVersion: expect.any(String) });
     const execute = async (name: string, args: unknown) => {
       const declaration = binding.capabilities.tools.find(tool => tool.name === name);
       if (!declaration) throw new Error(`The node did not admit ${name}`);
@@ -178,6 +193,83 @@ it('pairs offline, serves an actual original live file and process, and reopens 
       { ...address, operationId: spawned.operationId }))).executorStopped).toBe(true);
     expect(await fs.readFile(path.join(workspaceRoot, 'process.txt'), 'utf8')).toBe('ran on node');
     await accepted(source('release', worker.token, { ...address, mode: 'retire' }));
+    const branchId = 'branch:node';
+    const context = await accepted<ManagedSourceBinding>(source('bind', worker.token, { source: prepared,
+      scope: { kind: 'source_read', threadId, branchId, key: 'prepare-instructions' }, purpose: 'read', retention: 'caller' }));
+    const contextAddress = { authorityId: context.authorityId, resourceEpoch: context.resourceEpoch };
+    const snapshot = await accepted<AgentResourceSnapshot>(source('service', worker.token, { ...contextAddress, requestId: randomUUID(),
+      operation: { kind: 'resources_prepare', identity: { runtime: 'agent', threadId, branchId },
+        admitted: { mode: 'agent', threadRole: 'main', projectId: null } },
+    }));
+    expect(snapshot.instructions.map(instruction => instruction.reference.path)).toEqual(['AGENTS.md']);
+    expect(snapshot.capturedFiles.find(file => file.reference.path === 'AGENTS.md')?.content.trim()).toBe('Instructions from the resource workspace.');
+    await accepted(source('release', worker.token, { ...contextAddress, mode: 'retire' }));
+    const scriptSource = resourceSource(prepared);
+    expect((await source('scriptBinding', reader.token, { source: scriptSource })).ok).toBe(false);
+    const evaluator = await accepted<NodeBinding>(source('scriptBinding', worker.token, { source: scriptSource }));
+    const processId = 'script:node';
+    const script = await accepted<ManagedSourceBinding>(source('bind', worker.token, {
+      source: { ...prepared, tools: [] }, scope, purpose: 'script_environment', operationId: processId, retention: 'caller',
+    }));
+    const scriptAddress = { authorityId: script.authorityId, resourceEpoch: script.resourceEpoch, processId };
+    expect(await accepted(source('scriptSpawn', worker.token, { ...scriptAddress, node: evaluator, cwd: '' })))
+      .toMatchObject({ processId, mode: 'pipe' });
+    const frames = [
+      encodeScriptFrame({ type: 'initialize', v: SCRIPT_PROTOCOL_VERSION, environmentId: processId, bindingIdentity: evaluator.configuration_identity }),
+      encodeScriptFrame({ type: 'eval', v: SCRIPT_PROTOCOL_VERSION, environmentId: processId, cellId: 'node-script',
+        script: 'await (await import("node:fs/promises")).writeFile("script.txt", "executed on node")' }),
+    ];
+    await accepted(source('processWrite', worker.token, { ...scriptAddress, operationId: randomUUID(),
+      bytesBase64: Buffer.from(frames.join('')).toString('base64') }));
+    await expect.poll(() => fs.readFile(path.join(workspaceRoot, 'script.txt'), 'utf8').catch(() => null)).toBe('executed on node');
+    const control = (stop: boolean) => source('scriptControl', worker.token, { threadId, runId, processId, source: scriptSource, stop });
+    await accepted(control(true));
+    await expect.poll(async () => accepted(control(false))).toMatchObject({ executorStopped: true });
+    await accepted(source('release', worker.token, { ...scriptAddress, mode: 'retire' }));
+    const mcp = await accepted<ManagedSourceBinding>(source('bind', worker.token, {
+      source: prepared, scope, purpose: 'mcp_owner', retention: 'run',
+    }));
+    const mcpAddress = { authorityId: mcp.authorityId, resourceEpoch: mcp.resourceEpoch };
+    const requestMcp = (action: ManagedMcpAction, requestId = randomUUID()) => accepted<ManagedMcpReply>(source('service', worker.token,
+      { ...mcpAddress, requestId, operation: { kind: 'mcp', action } }));
+    const view = { kind: 'snapshot', handleId: 'node-view', creationRequestId: randomUUID() } as const;
+    expect(await requestMcp(view, view.creationRequestId)).toMatchObject({ ok: false, error: { code: 'mcp_source_authority_denied' } });
+    const mcpServer = `
+      const fs = require('node:fs');
+      const replies = {
+        initialize: ({ protocolVersion }) => ({ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }),
+        'tools/list': () => ({ tools: [{ name: 'record', description: 'Record execution location', inputSchema: { type: 'object' } }] }),
+        'tools/call': () => {
+          fs.writeFileSync('mcp.txt', process.cwd());
+          return { content: [{ type: 'text', text: 'recorded' }] };
+        },
+      };
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const { id, method, params } = JSON.parse(line);
+        if (id === undefined) return;
+        const response = replies[method]
+          ? { result: replies[method](params) }
+          : { error: { code: -32601, message: 'Unknown method' } };
+        console.log(JSON.stringify({ jsonrpc: '2.0', id, ...response }));
+      });
+    `;
+    await fs.writeFile(path.join(workspaceRoot, 'mcp-fixture.cjs'), mcpServer);
+    await fs.writeFile(path.join(workspaceRoot, '.mcp.json'), JSON.stringify({ mcpServers: {
+      fixture: { command: process.execPath, args: ['mcp-fixture.cjs'], exposure: 'direct' },
+    } }));
+    await fs.writeFile(path.join(dataDir, 'project-trust.json'), JSON.stringify({ [await fs.realpath(workspaceRoot)]: true }));
+    const trustedView = { ...view, creationRequestId: randomUUID() };
+    const trustedReply = await requestMcp(trustedView, trustedView.creationRequestId);
+    expect(trustedReply.ok, JSON.stringify(trustedReply)).toBe(true);
+    const discovery = await requestMcp({ kind: 'discover', handleId: view.handleId, server: 'fixture' });
+    expect(discovery.ok, JSON.stringify(discovery)).toBe(true);
+    if (!discovery.ok) throw new Error('MCP fixture tools were not discovered');
+    const [record] = discovery.value as McpAuthorityTool[];
+    expect(record).toBeDefined();
+    expect(await requestMcp({ kind: 'call', handleId: view.handleId, name: record!.name, schemaVersion: record!.schemaVersion, arguments: {} }))
+      .toMatchObject({ ok: true });
+    expect(await fs.realpath(await fs.readFile(path.join(workspaceRoot, 'mcp.txt'), 'utf8'))).toBe(await fs.realpath(workspaceRoot));
+    await accepted(source('release', worker.token, { ...mcpAddress, mode: 'retire' }));
     expect(await accepted(api('/retention', worker.token))).toMatchObject({ retireReady: true });
     const terminal = (command: object) => source('terminal', worker.token, { sessionId: 'resource-node-terminal', command });
     const shell = process.platform === 'win32' ? 'cmd' : 'sh';

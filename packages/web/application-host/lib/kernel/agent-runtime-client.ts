@@ -237,12 +237,16 @@ export class AgentRuntimeClient {
       for (const controller of this.mcpUpdates.values()) controller.abort();
       this.mcpUpdates.clear();
     });
-    kernel.onToolReleased((runId) => {
+    kernel.onToolReleased((runId, terminal) => {
       this.closePolicyObservation(runId);
       this.releaseToolComposition(runId);
       this.mcpPreparations.delete(runId);
       this.mcpUpdates.get(runId)?.abort();
       this.mcpUpdates.delete(runId);
+      const access = this.managedSourceBindings.get(runId) ?? this.managedSourceBindings.get(`mcp:${runId}`);
+      if (access && terminal) void this.kernel.agentRuntimeRequest<Run, 'runtime.run.inspect'>('runtime.run.inspect', { runId })
+        .then(run => this.retireManagedSourceScope(run, access.client))
+        .catch(error => console.error('[Source] Completed Run resource retirement requires reconciliation:', runId, error instanceof Error ? error.message : error));
     });
   }
 
@@ -547,16 +551,19 @@ export class AgentRuntimeClient {
     await Promise.all([this.mcpResourceOwner?.releaseSource(runId), this.mcpInteractionOwner?.releaseSource(runId)]);
     await this.managedMcpInteractions?.releaseSource(runId);
   }
+  private async retireManagedSourceScope(run: Run, service: ManagedSourceClient): Promise<void> {
+    const result = await service.releaseScope({ coordinatorHostId: this.coordinatorHostId, threadId: run.thread_id, runId: run.id, mode: 'retire' });
+    if (!result || typeof result !== 'object' || !('pendingAuthorities' in result) || !Array.isArray(result.pendingAuthorities)
+      || result.pendingAuthorities.length) throw new Error('The original managed source still requires cleanup');
+    this.managedSourceBindings.delete(run.id);
+    this.managedSourceBindings.delete(`mcp:${run.id}`);
+  }
   async retireSourceGrants(runId: string): Promise<void> {
     await this.releaseMcpResourceSource(runId);
     const [run, launch] = await Promise.all([this.run(runId), this.launch(runId)]);
     if (launch?.selection.source?.resource_owner.kind === 'managed_host') {
       const service = await this.managedSource(launch.selection.source.resource_owner);
-      const result = await service.releaseScope({ coordinatorHostId: this.coordinatorHostId, threadId: run.thread_id, runId, mode: 'retire' });
-      if (!result || typeof result !== 'object' || !('pendingAuthorities' in result) || !Array.isArray(result.pendingAuthorities)
-        || result.pendingAuthorities.length) throw new Error('The original managed source still requires cleanup');
-      this.managedSourceBindings.delete(runId);
-      this.managedSourceBindings.delete(`mcp:${runId}`);
+      await this.retireManagedSourceScope(run, service);
       return;
     }
     await this.kernel.releaseLanguageSource(runId);

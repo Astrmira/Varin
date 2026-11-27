@@ -33,7 +33,7 @@ import {
 } from "./managed-remote-types.js";
 import { decodeManagedProjectManagementResponse, decodeManagedSourceCancellation, decodeManagedSourceReceiptRelease, decodeManagedSourceResponse } from './managed-source-response.js';
 import { consumeManagedProcessStream } from './managed-process-stream.js';
-import { createProviderLeaseOwner, providerResourceOwner, type ProviderLease, type ProviderResource, type ResourceProvider } from '../deployment/resource-provider.js';
+import { createProviderLeaseOwner, isProviderResourceOwner, providerResourceOwner, type ProviderLease, type ProviderResource, type ResourceProvider } from '../deployment/resource-provider.js';
 
 const BASE_PATH = "/api/harness/managed-execution/v1";
 const TARGET_REFRESH_WORKSPACE = "__varin_managed_remote__";
@@ -262,6 +262,20 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
       (role === 'resources' ? resource.capabilities.includes('sources') : role === 'browser' && Boolean(resource.browserId)))
       .map(resource => ({ resource, resourceOwner: providerResourceOwner(provider.id, resource), label: resource.label, capabilities: resource.capabilities }));
   };
+  const providerEntryFor = async (owner: ManagedHostSourceOwner, role: 'resources' | 'browser', signal?: AbortSignal) => {
+    const entry = (await describeProvider(signal, role)).find(candidate => candidate.resourceOwner.connectionId === owner.connectionId);
+    if (!entry || entry.resourceOwner.hostId !== owner.hostId || entry.resourceOwner.endpointIdentity !== owner.endpointIdentity) {
+      throw new Error('The original provider resource is unavailable');
+    }
+    return entry;
+  };
+  /** Keep a multi-request preparation on the same generation until its durable binding takes over. */
+  const withSourceUse = async <T>(owner: import('@varin/protocol').SourceResourceOwner, work: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (!acquireProviderLease || owner.kind !== 'managed_host' || !isProviderResourceOwner(owner)) return work();
+    const entry = await providerEntryFor(owner, 'resources', signal);
+    const use = await acquireProviderLease(entry.resource.id, signal);
+    try { return await work(); } finally { use.release(); }
+  };
   const providerConnection = (resource: ProviderResource, lease: ProviderLease): ConfiguredHost => {
     const owner = providerResourceOwner(provider!.id, resource);
     return { id: owner.connectionId, label: resource.label, source: 'configured-host', apiUrl: lease.endpoint,
@@ -482,11 +496,8 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
 
   const forwardTarget = async (owner: ManagedHostSourceOwner, signal?: AbortSignal, providerRole: 'resources' | 'browser' = 'resources'): Promise<ManagedTarget> => {
     signal?.throwIfAborted();
-    if (provider && owner.connectionId.startsWith('provider:')) {
-      const entry = (await describeProvider(signal, providerRole)).find(candidate => candidate.resourceOwner.connectionId === owner.connectionId);
-      if (!entry || entry.resourceOwner.hostId !== owner.hostId || entry.resourceOwner.endpointIdentity !== owner.endpointIdentity) {
-        throw new Error('The original provider resource is unavailable');
-      }
+    if (provider && isProviderResourceOwner(owner)) {
+      const entry = await providerEntryFor(owner, providerRole, signal);
       const use = await acquireProviderLease!(entry.resource.id, signal);
       try {
         const connection = providerConnection(entry.resource, use.lease);
@@ -1109,7 +1120,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     };
   };
 
-  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, providerBrowsers,
+  return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, providerBrowsers, withSourceUse,
     clientFor: makeClient, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
 }
 

@@ -470,7 +470,7 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
       requireReadPrincipal(principal, input.coordinatorHostId);
       if (input.source.mode === 'fixed_branch' || !['terminal:use', 'process:control'].every(capability => principal.capabilities.includes(capability)))
         throw new SourceAdmissionError('source_authority_denied');
-      await registration(input.source, signal);
+      await registration(input.source, signal, false, principal);
       const node = await resolveScriptNodeBinding();
       signal?.throwIfAborted();
       return node;
@@ -648,7 +648,7 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
     async bind(principal, input, signal) {
       requireReadPrincipal(principal, input.coordinatorHostId);
       const source = selectedSource(input);
-      if (options.liveSourceOnly && (!['read', 'source', 'result', 'process_view', 'work_location', 'work_location_read'].includes(input.purpose) || !['run', 'source_read'].includes(input.scope.kind) || input.handoff || input.continuation))
+      if (options.liveSourceOnly && (!['read', 'source', 'result', 'process_view', 'script_environment', 'work_location', 'work_location_read', 'mcp_owner'].includes(input.purpose) || !['run', 'source_read'].includes(input.scope.kind) || input.handoff || input.continuation))
         throw new SourceAdmissionError('source_unavailable');
       if (input.purpose === 'external_harness' && (input.scope.kind !== 'external' || input.retention !== 'caller' || input.operationId !== input.scope.transportId)) throw new SourceAdmissionError('source_authority_denied');
       const alternate = input.purpose === 'work_location_read' || input.purpose === 'work_location';
@@ -789,7 +789,7 @@ export function createManagedSourceService(options: ManagedSourceServiceOptions)
         ...(input.journal ? { journal: input.journal } : {}) }, signal);
     },
     async service(principal, input, signal) {
-      if (options.liveSourceOnly && input.operation.kind !== 'validate') {
+      if (options.liveSourceOnly && !['validate', 'resources_prepare', 'resource_read', 'resource_list', 'document_read', 'mcp'].includes(input.operation.kind)) {
         if (input.operation.kind !== 'native_resource' || !['read', 'process_observation', 'reconcile_mutation'].includes(input.operation.action.kind))
           throw new SourceAdmissionError('source_unavailable');
         if (input.operation.action.kind === 'reconcile_mutation' && !principal.capabilities.includes('filesystem:write'))

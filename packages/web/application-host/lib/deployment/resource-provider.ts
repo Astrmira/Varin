@@ -55,6 +55,10 @@ export function providerResourceOwner(providerId: string, resource: Pick<Provide
   return { kind: 'managed_host', hostId: resource.hostId, connectionId: `provider:${identity}`, endpointIdentity: `sha256-${identity}` };
 }
 
+export function isProviderResourceOwner(owner: SourceResourceOwner): boolean {
+  return owner.kind === 'managed_host' && owner.connectionId.startsWith('provider:');
+}
+
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid resource provider response');
   return value as Record<string, unknown>;

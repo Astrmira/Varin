@@ -32,6 +32,10 @@ export interface ManagedRemoteRoutesOptions {
 
 const noAuth: RequestHandler = (_request, _response, next) => next();
 const value = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+export function isManagedMcpObservation(input: unknown): boolean {
+  const operation = value(input);
+  return operation.kind === 'mcp' && ['changed', 'resource_watch', 'interaction_watch'].includes(String(value(operation.action).kind));
+}
 const isManagedMcpCleanup = (operation: Record<string, unknown>): boolean => operation.kind === 'mcp'
   && ['release', 'derivation_inspect', 'derivation_release', 'child_inspect', 'child_release', 'task_inspect', 'task_cancel', 'task_release', 'resource_inspect', 'resource_release', 'interaction_inspect', 'interaction_ack', 'interaction_release', 'interaction_close'].includes(String(value(operation.action).kind));
 const asString = (input: unknown, label: string): string => {
@@ -194,7 +198,7 @@ export function registerManagedRemoteRoutes(
       // A disconnected observer is not a cancelled or drained accepted effect.
       // Cancellation and retirement have their own original-owner receipts.
       const sourceOperation = value(body.operation);
-      const mcpObserver = method === 'service' && sourceOperation.kind === 'mcp' && ['changed', 'resource_watch', 'interaction_watch'].includes(String(value(sourceOperation.action).kind));
+      const mcpObserver = method === 'service' && isManagedMcpObservation(sourceOperation);
       const result = !mcpObserver && (method === 'workspace' && !['open', 'locations', 'list', 'bytes', 'readlink', 'filename-search', 'content-search'].includes(String(value(body.command).kind)) || method === 'recovery' || method === 'terminal' || method === 'externalCapture' || method === 'externalChildSource' || method === 'externalProjectSource' || method === 'projectManagement' || method === 'externalControl' || method === 'externalSpawn' || method === 'scriptSpawn' || method === 'scriptControl' || method === 'processWrite' || method === 'processResize' || method === 'processControl' || method === 'execute' || method === 'service' || method === 'cancelService' || method === 'cancel' || method === 'releaseReceipt' || method === 'release' || method === 'releaseScope')
         ? await invoke() : await whileResponseOpen(response, invoke);
       if (!response.destroyed) {

@@ -120,8 +120,7 @@ import { registeredModelSettingsScope } from './lib/models/project-settings-scop
 import { createThreadSourcePreparer, createThreadSourceAdmission, createThreadSourceDirectory, parseSourceResourceOwner } from './lib/kernel/thread-sources.js';
 import { createManagedSourceConsumers } from './lib/kernel/managed-source-consumers.js';
 import { createSourceQueryService } from './lib/kernel/source-query-service.js';
-import { createManagedMcpService } from './lib/harness/managed-mcp-service.js';
-import { createManagedMcpProcesses } from './lib/kernel/managed-mcp-processes.js';
+import { createManagedMcpTarget } from './lib/harness/managed-mcp-target.js';
 import { createManagedMcpLease } from './lib/kernel/managed-mcp-lease.js';
 import { createManagedMcpInteractions } from './lib/kernel/managed-mcp-interactions.js';
 import { createManagedMcpPreparer, selectMcpServers } from './lib/kernel/managed-mcp-preparation.js';
@@ -362,7 +361,7 @@ import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteA
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { hostEnvironment } from './lib/security/host-environment.js';
 import { DeploymentPolicyDeniedError, readDeploymentJson, readDeploymentPolicy } from './lib/deployment/policy.js';
-import { createSocketResourceProvider, providerResourceOwner } from './lib/deployment/resource-provider.js';
+import { createSocketResourceProvider, isProviderResourceOwner, providerResourceOwner } from './lib/deployment/resource-provider.js';
 import { createExtensionAdmission } from './lib/deployment/extension-admission.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
@@ -2089,6 +2088,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     judgePermission,
   });
   managedMcpOwner.current = createManagedMcpPreparer({ runtime: () => agentRuntime, createLease: input => createManagedMcpLease({ ...input, ...(managedMcpInteractionsOwner.current ? { interactions: managedMcpInteractionsOwner.current } : {}) }),
+    awaitInitialInventory: isProviderResourceOwner,
     changed: runId => { void agentRuntime.refreshMcp(runId).catch(() => console.error('[MCP] Target contribution preparation requires attention')); },
     onError: () => console.error('[MCP] Target contribution is unavailable; original calls are not replayed'),
   });
@@ -2525,7 +2525,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       return listWorkLocations(saved, sanitizeProjects(saved.projects) ?? [], workspaceConfig.root, providerDefault);
     } });
   const modelWorkLocations = createModelWorkLocations({runtime: agentRuntime, kernel: kernelClient, directory: sourceDirectory,
-    prepare: prepareThreadSource, executionEnvironment: () => executionEnvironment.snapshot(),
+    prepare: prepareThreadSource, withSourceUse: managedRemoteTargets.withSourceUse, executionEnvironment: () => executionEnvironment.snapshot(),
     async captureLocationContext(run, source, signal, instructionDirectories) {
       const checkpoint = await agentRuntime.context(run.branch_id, signal);
       const admitted = checkpoint?.personalization;
@@ -2688,15 +2688,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     workspaceRoot: async workspaceId => (await documentsAuthority.admitWorkspaceRegistration(workspaceId)).canonicalPath,
     receipts: targetScheduleReceipts,
     onReceiptError: operationId => console.error('[Schedules] Original target receipt publication is pending:', operationId) });
-  const targetMcpService = createManagedMcpService({ kernel: kernelClient, authority: mcpAuthority, compositions: mcpCompositions, agentDir: agentMcpDir, hostId,
-    admitSource: async (scope, signal) => {
-      await kernelClient.sourceRequest('source.service.call', { principalId: scope.principal.principalId,
-        coordinatorHostId: scope.coordinatorHostId, authorityId: scope.authorityId, resourceEpoch: scope.resourceEpoch,
-        requestId: `mcp-validate:${crypto.randomUUID()}`, clientCapabilities: [...scope.principal.capabilities], operation: { kind: 'validate' } }, signal);
-    },
-    transportOwner: (scope, readmit) => createManagedMcpProcesses({ kernel: kernelClient, scope, readmit,
-      onError: () => console.error('[MCP] Original target process observation is unavailable') }),
-    admitWorkspaceRegistration: (id, signal) => documentsAuthority.admitWorkspaceRegistration(id, signal),
+  const targetMcpService = createManagedMcpTarget({ kernel: kernelClient, documents: documentsAuthority,
+    authority: mcpAuthority, compositions: mcpCompositions, agentDir: agentMcpDir, hostId,
+    onError: () => console.error('[MCP] Original target process observation is unavailable'),
     projectTrusted: cwd => projectTrust.trusted(cwd),
   });
   kernelClient.subscribeExit(() => { void targetMcpService.close(); });
@@ -2732,12 +2726,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     draftSourceSkills: (workspaceId, signal) => threadResources.draftSourceSkills!(workspaceId, signal),
     recovery: targetRecovery.handle,
     readCodeExchange: targetExchangeReader,
-    releaseMcpView: (scope, action) => targetMcpService.releaseView(scope, action),
-    mcpTaskContinuation: (scope, action, signal) => targetMcpService.taskContinuation(scope, action, signal),
-    mcpResourceContinuation: (scope, action, signal) => targetMcpService.resourceContinuation(scope, action, signal),
-    mcpInteractionContinuation: (scope, action, signal) => targetMcpService.interactionContinuation(scope, action, signal),
-    mcpDerivationContinuation: (scope, action, signal) => targetMcpService.derivationContinuation(scope, action, signal),
-    mcpChildContinuation: (scope, action, signal) => targetMcpService.childContinuation(scope, action, signal),
+    ...targetMcpService.continuations,
     releaseSource: async (scope, retention) => {
       const [, mcp] = await Promise.all([targetSourceQuery.release(scope), targetMcpService.release(scope, retention), targetScheduleReceipts.flush(scope)]);
       return { mcpExecutorStopped: mcp.executorStopped, mcpTaskControlsDrained: mcp.taskControlsDrained };
@@ -2846,7 +2835,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     onError: error => console.warn('[Calendar] preparation or asset synchronization requires attention:', calendarErrorCode(error)),
   });
   scheduledTasksRuntime.setCalendarOwner(calendarOwner);
-  scriptRuntimeOwner.current = createScriptRuntime({ kernel: kernelClient, runtime: agentRuntime, resolveLiveSource: liveSources.validate, prepareDormantDefault: modelWorkLocations.prepareScriptDefault, onError: () => console.error('[Script] Original environment requires reconciliation') });
+  scriptRuntimeOwner.current = createScriptRuntime({ kernel: kernelClient, runtime: agentRuntime, resolveLiveSource: liveSources.validate,
+    prepareDormantDefault: modelWorkLocations.prepareScriptDefault, withSourceUse: managedRemoteTargets.withSourceUse,
+    onError: () => console.error('[Script] Original environment requires reconciliation') });
   computerRuntimeOwner.current = createComputerRuntime({ kernel: kernelClient, runtime: agentRuntime, computers: computerService, enabled: async runId => {
     const launch = await kernelClient.agentRuntimeRequest<import('./lib/kernel/protocol.generated.js').LaunchIntent | null, 'runtime.launch.inspect'>('runtime.launch.inspect', { runId });
     const workspace = launch?.selection.source?.resource_owner.kind === 'local' ? await documentsAuthority.admitWorkspaceRegistration(launch.selection.source.workspace_id) : undefined;
