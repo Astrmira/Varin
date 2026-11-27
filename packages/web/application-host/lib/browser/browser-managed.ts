@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BINARY_EVENT_CONTENT_TYPE, encodeBinaryEvent, decodeBinaryEvents } from '@varin/application-client';
-import type { Express, Request, RequestHandler, Response } from 'express';
+import { json, type Express, type Request, type RequestHandler, type Response } from 'express';
 import { BROWSER_TOOL_DECLARATIONS } from '@varin/extension-builtins';
 import {
   BrowserExecutionError, isBrowserExecutionError, type BrowserAction, type BrowserActionResult,
@@ -15,6 +15,7 @@ import type { BrowserResources } from './browser-resources.js';
 import type { BrowserManagementSnapshot, BrowserSettingsSnapshot } from '@varin/protocol';
 import type { BrowserSettingsOwner } from './browser-settings.js';
 import { probeBrowserConnection } from './browser-settings.js';
+import { EgressError } from '../harness/egress.js';
 
 const base = '/api/harness/managed-execution/v1/browser';
 const relative = '/browser';
@@ -131,8 +132,11 @@ export function registerManagedBrowserRoutes(app: Express, options: {
   const principals = new WeakMap<Request, string>();
   const route = (handler: (req: Request, res: Response) => Promise<void>): RequestHandler => (req, res) => {
     void handler(req, res).catch(error => {
-      if (!res.headersSent && !res.destroyed) res.status(409).json({
+      if (res.headersSent || res.destroyed) return;
+      const denied = error instanceof EgressError && error.kind === 'deployment-policy-denied';
+      res.status(denied ? 403 : 409).json({
         error: error instanceof Error ? error.message : 'Browser resource is unavailable',
+        ...(denied && { code: error.kind, section: 'egress' }),
         effect: isBrowserExecutionError(error) ? error.effect : 'none',
         executorStopped: isBrowserExecutionError(error) ? error.executorStopped : true,
       });
@@ -150,7 +154,7 @@ export function registerManagedBrowserRoutes(app: Express, options: {
       principals.set(req, clientId); next();
     }).catch(next);
   });
-  if (options.parseRequestBody) app.use(base, options.parseRequestBody);
+  app.use(base, options.parseRequestBody ?? json({ limit: '50mb' }));
   app.get(`${base}/resources`, route(async (_req, res) => {
     // Never publish imported peers: discovery and dispatch are strictly one hop.
     res.json({ resources: await options.resources.list({ localOnly: true }) });
@@ -171,7 +175,9 @@ export function registerManagedBrowserRoutes(app: Express, options: {
     const settings = await options.settings.save(req.body.revision, req.body);
     res.json({ settings, resources: await options.resources.list({ localOnly: true }) });
   }));
-  if (options.allowProbe !== false) app.post(`${base}/probe`, route(async (req, res) => { res.json(await probeBrowserConnection(req.body)); }));
+  if (options.allowProbe !== false) app.post(`${base}/probe`, route(async (req, res) => {
+    res.json(await (options.settings?.probe ?? probeBrowserConnection)(req.body));
+  }));
   app.post(`${base}/call`, route(async (req, res) => {
     const call = parseCall(req.body);
     const resource = (await options.resources.list({ localOnly: true })).find(item => item.browserId === call.browserId);

@@ -101,9 +101,10 @@ the operator addresses or file paths.
 - `modelCredentials.sources` admits stored API keys (`api-key`), declared `oauth` issuers,
   `environment`, `google-adc`, `aws-chain`, `anthropic-federation`, and anonymous credentials (`none`)
   individually. The Host keeps existing channel settings and marks excluded credentials unavailable.
-- `egress.userDestinations` can be `all` or `public`. With `public`, the Host HTTP egress owner and
-  the kernel model transport check destination addresses on connection. `operatorOrigins` permits
-  exact HTTP(S) origins. Set `requiredProxy` to an operator HTTP(S) proxy origin to delegate
+- `egress.userDestinations` can be `all` or `public`. With `public`, the Host HTTP egress owner,
+  kernel model transport, Host-configured CDP connections and outgoing managed Host connections
+  check destination addresses on connection. `operatorOrigins` permits exact HTTP(S) origins,
+  including privately provisioned Resource Nodes. Set `requiredProxy` to an operator HTTP(S) proxy origin to delegate
   destination enforcement to that proxy. These controls apply to those HTTP transports.
   Commands, external programs and browser networking need their own isolation and network policy.
 - `mcp.transports` controls MCP HTTP and stdio. `stdioPlacement: "managed"` requires a managed

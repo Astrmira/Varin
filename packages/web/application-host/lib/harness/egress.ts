@@ -15,10 +15,10 @@
  *   `proxy-config-invalid`.
  * - Each request freezes its own policy version; env edits apply to the next
  *   resolution, never mid-request.
- * - All deployments may reach local/LAN/container services. The executing
- *   Host's resolver and route determine reachability; IP classification is
- *   diagnostic only. A proxy resolves the target itself; diagnostics label
- *   that `proxy-side` honestly. Every route checks the HTTP(S) URL scheme.
+ * - Personal deployments retain local/LAN/container reachability. A deployment
+ *   policy can require public addresses at connection time or a specific proxy.
+ *   A proxy resolves the target itself; diagnostics report that as
+ *   `proxy-side`. Every route checks the HTTP(S) URL scheme.
  * - Credentials embedded in a proxy URL are used for CONNECT auth and are
  *   never copied into errors, logs, or diagnostics.
  */

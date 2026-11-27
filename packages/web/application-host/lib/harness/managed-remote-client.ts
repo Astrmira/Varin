@@ -93,13 +93,16 @@ export type ManagedSourceClient = Omit<{ [Method in keyof ManagedSourceService]:
   documents(path: string, method: 'GET' | 'POST', body?: unknown, signal?: AbortSignal): Promise<Response>;
   service<Operation extends SourceServiceOperation>(input: Omit<ManagedSourceServiceRequest, 'operation'> & { operation: Operation }, signal?: AbortSignal): Promise<SourceServiceResponse<Operation>>;
 };
+type ManagedTransportInit = RequestInit & { dispatcher?: never };
+type ManagedTransportFetch = (input: string | URL, init?: ManagedTransportInit) => Promise<Response>;
+type ManagedStreamInit = Omit<ManagedTransportInit, "body"> & { body?: RequestInit["body"] | AsyncIterable<Uint8Array> };
 
 export interface ManagedRemoteTargetRegistryOptions {
   coordinatorHostId: string;
   kernel: KernelClient;
   resources: ResourceService;
   readSettings(): Promise<Record<string, unknown>>;
-  fetch?: typeof fetch;
+  fetch?: ManagedTransportFetch;
   /**
    * A managed target that was unreachable (or never probed) answered an
    * identity probe again. Consumers re-attach — never resubmit — durable
@@ -119,7 +122,7 @@ export class ManagedResponseError extends Error {
 export class ManagedTargetClient {
   constructor(
     readonly target: ManagedTarget,
-    private readonly fetchImpl: typeof fetch,
+    private readonly fetchImpl: ManagedTransportFetch,
   ) {}
 
   private headers(extra: Record<string, string> = {}): Headers {
@@ -134,7 +137,7 @@ export class ManagedTargetClient {
     return headers;
   }
 
-  async response(relativePath: string, init: Omit<RequestInit, "body"> & { body?: RequestInit["body"] | AsyncIterable<Uint8Array> } = {}, preserveErrorResponse = false): Promise<Response> {
+  async response(relativePath: string, init: ManagedStreamInit = {}, preserveErrorResponse = false): Promise<Response> {
     const url = managedEndpointUrl(this.target.connection, relativePath).toString();
     const { body, ...rest } = init;
     const asyncBody = body !== undefined && typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === "function";
@@ -159,7 +162,7 @@ export class ManagedTargetClient {
     return response;
   }
 
-  async request<Result>(relativePath: string, init: Omit<RequestInit, "body"> & { body?: RequestInit["body"] | AsyncIterable<Uint8Array> } = {}): Promise<Result> {
+  async request<Result>(relativePath: string, init: ManagedStreamInit = {}): Promise<Result> {
     return (await this.response(relativePath, init)).json() as Promise<Result>;
   }
 

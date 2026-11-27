@@ -793,6 +793,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   hostEnvironment.capture();
   const deployment = await readDeploymentPolicy(process.env.VARIN_DEPLOYMENT_POLICY, VARIN_DATA_DIR);
   const gatewayOnly = deployment?.ingress?.mode === 'gateway';
+  const constrainedEgress = deployment?.egress?.userDestinations === 'public' || Boolean(deployment?.egress?.requiredProxy);
   const background = deployment?.background;
   const [modelDirectorySnapshot, pluginCatalogSnapshot] = background ? await Promise.all([
     background.modelDirectorySnapshot && readDeploymentJson(background.modelDirectorySnapshot, VARIN_DATA_DIR, 'background.modelDirectorySnapshot'),
@@ -1403,6 +1404,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     kernel: kernelClient,
     resources: resourceService,
     readSettings: async () => await readSettingsFromDisk() as unknown as Record<string, unknown>,
+    ...(constrainedEgress && { fetch: (url, init) => egressRuntime.fetch(String(url), init) }),
     // A reconnected target re-attaches to its durable jobs — the attempt
     // records already carry the backend job identity, so the experiment
     // reconcile inspects and re-polls rather than resubmitting.
@@ -2223,6 +2225,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     { dispose: false, source: 'embedded', device: { kind: 'service' } });
   const browserSettings = createBrowserSettings({ resources: browserResources, read: readSettingsFromDisk,
     update: change => updateSettingsOnDisk(current => change(current) as typeof current),
+    ...(constrainedEgress && { egress: egressRuntime }),
     environment: { endpoint: process.env.VARIN_BROWSER_CDP_ENDPOINT, scratchDirectory: process.env.VARIN_BROWSER_CDP_SCRATCH_DIRECTORY } });
   browserResources.setPreferences(browserSettings.preferred);
   const linuxBrowsers = createLinuxBrowserResources({ computers: computerService, runtime: agentRuntime });

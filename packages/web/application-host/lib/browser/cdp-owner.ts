@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { BrowserExecutionError } from '@varin/protocol';
 import type { BrowserAction, BrowserActionResult, BrowserDownload, BrowserElement, BrowserEvent, BrowserObservation, BrowserOwner, BrowserPage, BrowserReadRequest, BrowserConnectionState, BrowserResourceCapability } from '@varin/protocol';
-import { CdpDisconnectedError, CdpTransport, type CdpEvent, type CdpResult } from './cdp-transport.js';
+import { CdpDisconnectedError, CdpTransport, type CdpEgress, type CdpEvent, type CdpResult } from './cdp-transport.js';
 
 type Target = { targetId: string; type: string; title: string; url: string };
 type Frame = { id: string; parentId?: string; url: string; loaderId?: string };
@@ -22,6 +22,7 @@ export interface CdpBrowserOwnerOptions {
   scratchDirectory?: string;
   /** Owner-supplied authentication; never included in resource metadata. */
   headers?: Record<string, string>;
+  egress?: CdpEgress;
 }
 
 /** Browser process owner independent of Electron, desktop selection and workspace.
@@ -58,7 +59,7 @@ export class CdpBrowserOwner implements BrowserOwner {
     if (this.transport) return;
     this.connection('connecting');
     const connecting = (async () => {
-      const transport = await CdpTransport.connect(this.options.endpoint, this.options.headers);
+      const transport = await CdpTransport.connect(this.options.endpoint, this.options.headers, this.options.egress);
       if (this.disposed) { transport.close(); throw new Error('This browser owner has ended'); }
       const previousInstance = this.instanceId;
       this.transport = transport;
