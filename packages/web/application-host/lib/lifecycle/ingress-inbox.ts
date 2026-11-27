@@ -13,6 +13,8 @@ export interface InboxEntry extends InboxCommand {
   id: string;
   replayMethod: InboxMethod;
   queueNext: boolean;
+  /** Starts when this entry reaches the head of its branch for the first replay. */
+  firstAttemptAtMs: number;
 }
 type Pending<T> = T | Promise<T>;
 

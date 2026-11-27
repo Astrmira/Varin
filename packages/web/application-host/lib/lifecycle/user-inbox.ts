@@ -108,6 +108,7 @@ export class SupervisorUserInbox implements IngressInbox {
   async replay(receive: (entry: InboxEntry) => Promise<InboxResult>, signal: AbortSignal, settled?: () => void): Promise<void> {
     const next = this.db.prepare('SELECT seq,id,principal,thread,branch,meta,payload FROM admissions WHERE result IS NULL AND seq > ? ORDER BY seq LIMIT 1');
     const payload = this.db.prepare('SELECT body FROM ingress_payloads WHERE id = ?');
+    const start = this.db.prepare("UPDATE admissions SET meta = json_set(meta, '$.firstAttemptAtMs', ?) WHERE id = ?");
     const blocked = new Set<string>();
     const acknowledge = this.db.prepare('UPDATE admissions SET payload = NULL, meta = ?, result = ? WHERE id = ? AND result IS NULL');
     const retire = this.db.prepare('DELETE FROM ingress_payloads WHERE id = ? AND NOT EXISTS (SELECT 1 FROM admissions WHERE payload = ?)');
@@ -124,7 +125,10 @@ export class SupervisorUserInbox implements IngressInbox {
       try {
         const body = payload.get(row.payload)?.body;
         if (!(body instanceof Uint8Array)) throw new Error('Supervisor inbox payload is missing');
-        const entry = { ...JSON.parse(row.meta) as Omit<InboxEntry, 'id' | 'body'>, id: row.id, body };
+        const meta = JSON.parse(row.meta) as Omit<InboxEntry, 'id' | 'body' | 'firstAttemptAtMs'> & { firstAttemptAtMs?: number };
+        const firstAttemptAtMs = meta.firstAttemptAtMs ?? Date.now();
+        if (meta.firstAttemptAtMs === undefined) start.run(firstAttemptAtMs, row.id);
+        const entry = { ...meta, firstAttemptAtMs, id: row.id, body };
         result = await receive(entry);
       } catch {
         signal.throwIfAborted();

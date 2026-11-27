@@ -501,6 +501,7 @@ impl Catalog {
         }
         // A tombstone closes new user admission, never accepted ingress or child duty.
         if matches!(origin, submissions::SubmissionOrigin::User { .. }) {
+            inbox::require_unexpired(tx, &command.key, &command.thread_id, &command.branch_id)?;
             threads::require_available(tx, &command.thread_id)?;
             threads::initialize_title(tx, &command.thread_id, prepared.title.as_deref())?;
         }

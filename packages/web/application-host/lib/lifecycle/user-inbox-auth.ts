@@ -23,6 +23,7 @@ export async function requestInboxReplayProof(): Promise<string> {
   const nonce = randomUUID();
   return await new Promise((resolve, reject) => {
     const cleanup = () => {
+      clearTimeout(timeout);
       process.off('message', receive);
       process.off('disconnect', disconnected);
     };
@@ -33,14 +34,18 @@ export async function requestInboxReplayProof(): Promise<string> {
       cleanup();
       resolve(message.proof);
     };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('Supervisor inbox credential request timed out'));
+    }, 5000);
     process.on('message', receive);
     process.once('disconnect', disconnected);
     process.send!({ type: 'varin:inbox-proof', nonce }, error => { if (error) disconnected(); });
   });
 }
 
-export function createInboxReplayAuth(launchId: string, isOwner: (principal: string) => Promise<boolean>) {
-  const proof = Buffer.from(launchId);
+export function createInboxReplayAuth(replayProof: string, isOwner: (principal: string) => Promise<boolean>) {
+  const proof = Buffer.from(replayProof);
   return async (req: { method?: string | undefined; originalUrl?: string | undefined; url?: string | undefined;
     headers: IncomingHttpHeaders; socket?: { remoteAddress: string | undefined } }): Promise<{
     ok: true; principalId: string; clientId: string; client: import('../client-auth/request-context.js').VarinAuthenticatedClient;

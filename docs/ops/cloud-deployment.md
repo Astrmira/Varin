@@ -312,6 +312,9 @@ Give each sandbox credential JSON a random `token`. The provider mounts it benea
 root-only directory. Each extension has a separate unprivileged UID and group, private
 scratch and verified artifact directory, and its own scoped broker credential.
 The Node relay and provider hold the credentials. Workers have a private IPC channel.
+Workers create files with owner-only permissions by default. Extensions in one shared
+container use the same network namespace, including loopback and abstract sockets.
+Use dedicated containers when extensions need separate network namespaces.
 Set `network` to an engine network with the outbound rules the extensions need.
 Extension storage and capability decisions stay on the Application Host. Package paths
 point to the sandbox copy. Use Host capabilities for resources outside the sandbox.

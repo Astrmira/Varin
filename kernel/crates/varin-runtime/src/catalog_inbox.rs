@@ -36,7 +36,9 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
             command_key TEXT NOT NULL, method TEXT NOT NULL, preexisting INTEGER NOT NULL, result TEXT, rejected TEXT
          );
          CREATE INDEX IF NOT EXISTS supervisor_input_rejections ON supervisor_inputs(principal_id,thread_id,branch_id)
-           WHERE rejected IS NOT NULL;"
+           WHERE rejected IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS supervisor_input_expired ON supervisor_inputs(command_key,thread_id,branch_id)
+           WHERE json_extract(result,'$.body.code')='inbox-replay-expired';"
     )?;
     Ok(())
 }
@@ -48,6 +50,24 @@ pub struct InboxDismiss {
     principal_id: String,
     thread_id: String,
     branch_id: String,
+}
+
+pub(super) fn require_unexpired(
+    tx: &Transaction<'_>,
+    key: &str,
+    thread: &str,
+    branch: &str,
+) -> Result<()> {
+    let expired = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM supervisor_inputs WHERE command_key=?1 AND thread_id=?2 AND branch_id=?3
+         AND json_extract(result,'$.body.code')='inbox-replay-expired')",
+        params![key, thread, branch],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if expired {
+        return Err(RuntimeError::Conflict("supervisor inbox input expired".into()));
+    }
+    Ok(())
 }
 
 impl Catalog {

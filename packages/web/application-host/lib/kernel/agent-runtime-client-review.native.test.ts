@@ -98,7 +98,26 @@ it('recovers the original inbox admission from Catalog after losing the coordina
   await f.crash();
   const reopened = createKernelClient(f.options);
   try {
-    expect(await reopened.agentRuntimeRequest('runtime.inbox.reconcile', command)).toEqual({ result: { status: 200, body: receipt } });
+    const expiry = { status: 409, body: { code: 'inbox-replay-expired', admission: 'not_started' } };
+    expect(await reopened.agentRuntimeRequest('runtime.inbox.reconcile', { ...command, result: expiry }))
+      .toEqual({ result: { status: 200, body: receipt } });
+    const resume = new AgentRuntimeClient(reopened);
+    for (const method of ['submit', 'enqueue'] as const) {
+      const key = 'expired-' + method;
+      const late = { key, threadId: command.threadId, branchId: command.branchId, input: { text: key } };
+      const attempt = { ...command, method, key, inboxId: key };
+      await reopened.agentRuntimeRequest('runtime.inbox.reconcile', attempt);
+      const draft = { text: key };
+      expect(await reopened.agentRuntimeRequest('runtime.inbox.reconcile', { ...attempt, result: expiry, draft }))
+        .toEqual({ result: expiry });
+      const dispatch = method === 'submit' ? resume.submit({ ...late, expectedHead: receipt.input_id, configuration: {} })
+        : resume.enqueue({ ...late, mode: 'next_run' });
+      await expect(dispatch).rejects.toThrow(/supervisor inbox input expired/i);
+      expect(await reopened.agentRuntimeRequest('runtime.inbox.rejections', {
+        principalId, threadId: command.threadId, branchId: command.branchId,
+      })).toEqual([{ inboxId: key, key, status: 409, code: 'inbox-replay-expired', draft }]);
+      await reopened.agentRuntimeRequest('runtime.inbox.dismiss', { inboxId: key, principalId, threadId: command.threadId, branchId: command.branchId });
+    }
     await expect(reopened.agentRuntimeRequest('runtime.inbox.reconcile', { ...command, principalId: 'other-owner' })).rejects.toThrow(/identity changed/i);
     const rejected = { ...command, inboxId: 'supervisor-second', key: 'rejected-input' };
     const draft = { text: 'draft to edit', attachments: [{ ref: 'retained-file' }] };

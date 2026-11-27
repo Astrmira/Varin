@@ -66,7 +66,7 @@ test.runIf(process.platform === 'linux' && process.getuid?.() === 0)('isolates t
             const file = path.join(process.env.HOME, 'scratch.txt');
             fs.writeFileSync(file, 'owned by this worker');
             await context.storage.update({ saved: true });
-            return { uid: process.getuid(), readOtherFile: fs.existsSync(otherFile), temporaryHome: process.cwd() === process.env.HOME, file };
+            return { uid: process.getuid(), readOtherFile: fs.existsSync(otherFile), temporaryHome: process.cwd() === process.env.HOME, mode: fs.statSync(file).mode & 0o777, file };
           },
           async read() { return (await context.storage.refresh()).document.data.saved; },
         });
@@ -98,9 +98,9 @@ test.runIf(process.platform === 'linux' && process.getuid?.() === 0)('isolates t
     await runtime.installOrStage({ expectedRevision: first.revision,
       source: { display: 'Second sandbox fixture', kind: 'local', specifier: secondPackage } });
     const original = await runtime.invokeService({ serviceId: extensionId, version: 1, method: 'save', args: [secret] }) as { uid: number; file: string };
-    expect(original).toMatchObject({ uid: 10000, readOtherFile: false, temporaryHome: true });
+    expect(original).toMatchObject({ uid: 10000, readOtherFile: false, temporaryHome: true, mode: 0o600 });
     expect(await runtime.invokeService({ serviceId: otherExtension, version: 1, method: 'save', args: [original.file] }))
-      .toMatchObject({ uid: 10001, readOtherFile: false, temporaryHome: true });
+      .toMatchObject({ uid: 10001, readOtherFile: false, temporaryHome: true, mode: 0o600 });
     await runtime.stop();
     const retention = await fetch(endpoint + extensionNodeBase + '/retention', { headers: { Authorization: 'Bearer ' + credentials.token } });
     expect(await retention.json()).toEqual({ retireReady: true });

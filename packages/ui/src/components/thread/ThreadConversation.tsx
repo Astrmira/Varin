@@ -1,3 +1,4 @@
+import { retainParkingObservations } from '@varin/application-client';
 import { shareSnapshot } from '@/lib/agent-runtime/structural-sharing';
 import { ThreadStreamingStore } from '@/lib/agent-runtime/thread-streaming-store';
 import { countUiWork } from '@/lib/performance-observation';
@@ -12,7 +13,7 @@ import { useThreadComposerCommands } from './ThreadComposerCommands';
 import { composerFileSelections, composerHistoryAttachments, selectComposerFile, removeComposerFile } from '@/components/chat/composer/submit/fileSelections';
 import { ComposerSelectedFiles } from './ComposerSelectedFiles';
 import { composerInputReferences } from '@/components/chat/composer/submit/references';
-import { canRespondToQuestion } from './threadOperations';
+import { canRespondToQuestion, hasPendingThreadInteraction } from './threadOperations';
 import { useOpenThreadContext } from '@/lib/openThreadContext';
 import { toast } from '@/components/ui';
 import { ActiveEditorSuggestion } from '../conversation/ActiveEditorSuggestion';
@@ -215,7 +216,7 @@ export function ThreadConversation({ api, identity, onBranchCreated, initialWork
       };
       void api.observeInbox(inboxId, abort.signal).then(settled, cause => {
         if (abort.signal.aborted) return;
-        if (cause instanceof ThreadRequestError && cause.admission === 'not_started') settled();
+        if (cause instanceof ThreadRequestError && (cause.admission === 'not_started' || cause.code === 'inbox-input-not-found')) settled();
         else {
           setFailedInboxObservation(true);
           setError(cause instanceof Error ? cause.message : String(cause));
@@ -335,6 +336,8 @@ export function ThreadConversation({ api, identity, onBranchCreated, initialWork
   const workFocus = useThreadWorkFocus(draftKey, botSurface ? undefined : workspacePath ?? initialWorkspacePath,
     launch?.selection.agent?.workFocus, Boolean(snapshot) && !botSurface && !creationDefaultsPending, botSurface ? undefined : confirmedWorkspaceSource);
   const agent = { profileId: null, workFocus };
+  const keepLive = active || !readOnly && hasPendingThreadInteraction(snapshot?.operations, { run, launch });
+  React.useEffect(() => keepLive ? retainParkingObservations(host) : undefined, [host, keepLive]);
   const pause = run?.state === 'waiting' && launch?.pause?.wait_id === run.waiting_on ? launch.pause : null;
   const policy = snapshot?.policySelection;
   const policyUpdate = policy?.desired && policy.desired.run_id === run?.id ? policy.desired : null;

@@ -4,7 +4,8 @@ import { afterEach, beforeEach, it } from 'node:test';
 import { isAllowedObservationRequest, type ObservationClientMessage, type ObservationServerMessage } from '../src/transport/observation-protocol.js';
 import { clearRuntimeAuthCredentialProvider, setLocalRuntimeAuthCredentialProvider, setLocalRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders, setRuntimeUrlAuthToken } from '../src/transport/runtime-auth.js';
 import { configureRuntimeUrlResolver } from '../src/transport/runtime-url.js';
-import { switchRuntimeEndpoint } from '../src/transport/runtime-switch.js';
+import { retainParkingObservations } from '../src/transport/observation-transport.js';
+import { getRuntimeEndpointGeneration, switchRuntimeEndpoint } from '../src/transport/runtime-switch.js';
 import { fetchWithoutRuntimeRouting, runtimeFetch } from '../src/transport/runtime-fetch.js';
 import { registerRelayTunnelProvider } from '../src/transport/relay-provider.js';
 
@@ -129,7 +130,7 @@ it('never connects an already aborted observation and never replays or HTTP-fall
   headers(freshSocket, opens(freshSocket)[0]!.id); await (await fresh).body!.cancel();
 });
 
-it('releases a parking-enabled Host observation after visible idle time and wakes on interaction', async context => {
+it('keeps observation open for active views, then releases it after idle time and wakes on interaction', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const page = Object.assign(new EventTarget(), { visibilityState: 'visible' });
@@ -145,6 +146,8 @@ it('releases a parking-enabled Host observation after visible idle time and wake
     return new Response(null, { headers: { 'x-varin-host-parking': 'enabled' } });
   };
   const abort = new AbortController();
+  const firstView = retainParkingObservations(getRuntimeEndpointGeneration());
+  const secondView = retainParkingObservations(getRuntimeEndpointGeneration());
   try {
     await runtimeFetch('/api/system/info');
     const first = runtimeFetch('/api/threads/observe');
@@ -153,6 +156,12 @@ it('releases a parking-enabled Host observation after visible idle time and wake
     socket.open(); await flush();
     headers(socket, opens(socket)[0]!.id);
     const stream = (await first).body!.getReader();
+    context.mock.timers.tick(60_000);
+    assert.equal(socket.readyState, 1);
+    firstView();
+    context.mock.timers.tick(60_000);
+    assert.equal(socket.readyState, 1);
+    secondView();
     const suspended = assert.rejects(stream.read(), /observation suspended/);
     context.mock.timers.tick(59_000);
     assert.equal(socket.readyState, 1);
@@ -175,6 +184,7 @@ it('releases a parking-enabled Host observation after visible idle time and wake
     headers(resumed, opens(resumed)[0]!.id);
     await (await reconnect).body!.cancel();
   } finally {
+    firstView(); secondView();
     abort.abort(); ready();
     globalThis.fetch = async () => Response.json({ token: 'personal', expiresAt: Date.now() + 60_000 });
     switchRuntimeEndpoint({ apiBaseUrl: '' });

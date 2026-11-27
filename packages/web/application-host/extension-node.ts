@@ -148,7 +148,8 @@ export async function startExtensionNode(options: {
         try {
           await chown(scratch, uid, uid);
           if (peer.readyState !== WebSocket.OPEN || closing) return;
-          const child = fork(broker, [], { uid, gid: uid, detached: true, execArgv: [], cwd: scratch,
+          const child = fork(broker, [], { uid, gid: uid, detached: true,
+            execArgv: ['--import', 'data:text/javascript,process.umask(0o077)'], cwd: scratch,
             env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: scratch, TMPDIR: scratch, LANG: 'C.UTF-8' },
             serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
           const signal = (name: NodeJS.Signals) => {

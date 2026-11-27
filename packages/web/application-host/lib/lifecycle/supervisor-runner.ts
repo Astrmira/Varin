@@ -38,6 +38,7 @@ const wait = (ms: number, signal: AbortSignal) => delay(ms, undefined, { signal 
 function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof createSupervisorSandbox>) {
   const launchId = randomUUID();
   const inboxProof = randomUUID();
+  let inboxProofDelivered = false;
   const child = spawn(process.execPath, [options.entry], {
     env: { ...options.env, VARIN_HOST: '127.0.0.1', VARIN_LOCAL_SUPERVISOR: '1', [SUPERVISOR_LAUNCH]: launchId,
       [SUPERVISOR_PARKING]: options.parking ? '1' : '0', ...(options.parking && { VARIN_PORT: '0' }) },
@@ -63,8 +64,10 @@ function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof cr
   });
   child.on('message', (message: unknown) => {
     if (!object(message)) return;
-    if (message.type === 'varin:inbox-proof' && options.parking && typeof message.nonce === 'string')
+    if (message.type === 'varin:inbox-proof' && options.parking && !inboxProofDelivered && typeof message.nonce === 'string') {
+      inboxProofDelivered = true;
       child.send({ nonce: message.nonce, proof: inboxProof }, () => undefined);
+    }
     if (message.type === 'varin:ready' && livePort(message.port) && port === undefined) port = message.port;
     if (message.type === 'varin:supervisor-can-park' && message.launchId === launchId) canPark = true;
     if (message.type === 'varin:supervisor-park-declined' && message.launchId === launchId && park === undefined) parkRequestedAt = undefined;

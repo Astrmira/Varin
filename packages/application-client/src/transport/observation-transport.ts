@@ -90,7 +90,30 @@ const activeConnectionKey = () => {
 const OBSERVATION_IDLE_MS = 60_000;
 const activityEvents = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
 let parkAware: { generation: number; key: string; signal: AbortSignal; suspended: boolean;
-  resume?: Promise<void>; changes: EventTarget; dispose(): void } | undefined;
+  resume?: Promise<void>; changes: EventTarget; retentionChanged(): void; dispose(): void } | undefined;
+const retainedByView = new Map<number, number>();
+
+/** A visible work surface holds the active Host's observation while it needs live updates. */
+export function retainParkingObservations(generation: number): () => void {
+  if (generation !== getRuntimeEndpointGeneration()) return () => {};
+  const notify = () => {
+    if (parkAware?.generation === generation) parkAware.retentionChanged();
+  };
+  const count = retainedByView.get(generation) ?? 0;
+  retainedByView.set(generation, count + 1);
+  if (count === 0) notify();
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    const remaining = (retainedByView.get(generation) ?? 1) - 1;
+    if (remaining) retainedByView.set(generation, remaining);
+    else {
+      retainedByView.delete(generation);
+      notify();
+    }
+  };
+}
 
 export function enableParkingObservations(generation: number, wake: () => Promise<unknown>) {
   if (typeof document === 'undefined' || generation !== getRuntimeEndpointGeneration() || parkAware?.generation === generation) return;
@@ -98,10 +121,16 @@ export function enableParkingObservations(generation: number, wake: () => Promis
   const page = document;
   const ended = new AbortController();
   let lastActivity = performance.now();
-  let timer: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const retained = () => retainedByView.has(generation);
   const unsubscribe = subscribeRuntimeEndpointChanged(() => state.dispose());
   const state: NonNullable<typeof parkAware> = {
     generation, key: activeConnectionKey(), signal: ended.signal, suspended: false, changes: new EventTarget(),
+    retentionChanged() {
+      lastActivity = performance.now();
+      plan();
+      if (retained()) resume();
+    },
     dispose() {
       clearTimeout(timer);
       page.removeEventListener('visibilitychange', visibility);
@@ -116,16 +145,14 @@ export function enableParkingObservations(generation: number, wake: () => Promis
   };
   const plan = () => {
     clearTimeout(timer);
+    if (retained()) return;
     timer = setTimeout(() => {
-      if (ended.signal.aborted) return;
+      if (ended.signal.aborted || retained()) return;
       state.suspended = true;
       connections.get(state.key)?.suspend();
     }, Math.max(0, lastActivity + OBSERVATION_IDLE_MS - performance.now()));
   };
-  const activity = () => {
-    if (ended.signal.aborted || page.visibilityState === 'hidden') return;
-    lastActivity = performance.now();
-    plan();
+  const resume = () => {
     if (!state.suspended) return;
     state.suspended = false;
     // A foreground read is wake demand. Background observation retries never supply it.
@@ -136,9 +163,15 @@ export function enableParkingObservations(generation: number, wake: () => Promis
       state.changes.dispatchEvent(new Event('resume'));
     });
   };
+  const activity = () => {
+    if (ended.signal.aborted || page.visibilityState === 'hidden') return;
+    lastActivity = performance.now();
+    plan();
+    resume();
+  };
   const visibility = () => { if (page.visibilityState !== 'hidden') activity(); };
   parkAware = state;
-  configureBackgroundUrlAuthRefresh(() => !ended.signal.aborted && (state.suspended || Boolean(state.resume) || page.visibilityState === 'hidden'));
+  configureBackgroundUrlAuthRefresh(() => !ended.signal.aborted && (state.suspended || Boolean(state.resume) || page.visibilityState === 'hidden' && !retained()));
   page.addEventListener('visibilitychange', visibility);
   for (const event of activityEvents) page.addEventListener(event, activity, { capture: true, passive: true });
   plan();

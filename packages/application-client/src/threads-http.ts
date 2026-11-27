@@ -41,8 +41,12 @@ export function createThreadsHttpAPI(): ThreadsAPI {
         observation.throwIfAborted();
         if (generation !== getRuntimeEndpointGeneration()) throw new Error('Application Host changed during inbox observation');
         const response = await runtimeFetch('/api/threads/inbox/status?inboxId=' + encodeURIComponent(inboxId), { signal: observation });
-        const status = await response.json();
+        const status = await response.json().catch(error => {
+          if (response.ok) throw error;
+          return undefined;
+        });
         observation.throwIfAborted();
+        if (response.status === 404) throw new ThreadRequestError(404, 'inbox-input-not-found');
         decodeResult(response.status, status);
         if (status.result) return decodeResult<T>(status.result.status, status.result.body, true);
       }

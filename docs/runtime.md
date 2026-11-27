@@ -145,9 +145,14 @@ The journal requires POSIX directory sync.
 The local supervisor's durable user inbox accepts input and referenced uploads during
 wake-up. One branch's pending replay preserves its order. Unrelated branches and reads
 can proceed. Catalog keeps the original command receipt and exposes definitively rejected
-drafts until the owner dismisses them. This storage is additive within Catalog format 103.
-Parking-aware clients close observations after one minute without interaction and reconnect
-on foreground interaction. Personal clients keep their existing observation behavior.
+drafts until the owner dismisses them. Automatic replay has a two-minute window once an
+entry reaches its branch head. Catalog either recovers its original receipt or records a
+rejection and fences a late submission before replay continues. This storage is additive
+within Catalog format 103.
+
+Parking-aware clients close observations after one minute of idle time. A conversation
+that is running, awaiting approval or awaiting an answer keeps its observation open.
+Personal clients keep their existing observation behavior.
 
 `IngressInbox` and `WakePublisher` define durable acceptance and wake publication. The local
 implementations serve a single Host. An embedding deployment can provide its event inbox and scheduler through the gateway-mode Host startup options and call the controller’s park method. The local supervisor also accepts an alternative user-input inbox.

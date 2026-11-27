@@ -19,6 +19,9 @@ interface DurableIngress {
 const json = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, {
   'Content-Type': 'application/json', 'Cache-Control': 'no-store',
 }).end(JSON.stringify(body));
+// Allow a slow Host several bounded replay attempts once an entry reaches its branch head.
+const INBOX_REPLAY_WINDOW_MS = 2 * 60_000;
+const expiredInput: InboxResult = { status: 409, body: { code: 'inbox-replay-expired', admission: 'not_started' } };
 const contentType = (command: Pick<InboxCommand, 'method'>) => command.method === 'attachments/upload' ? 'application/octet-stream' : 'application/json';
 
 async function bufferRequest(req: IncomingMessage): Promise<Buffer> {
@@ -51,8 +54,8 @@ function decodeCommand(actor: InboxActor, method: InboxCommand['method'], url: U
     queueable: method !== 'enqueue' || input.mode !== 'interrupt' };
 }
 
-const replayHeaders = (launchId: string, entry: InboxActor) => ({
-  [INBOX_REPLAY_HEADER]: launchId, [INBOX_ACTOR_HEADER]: JSON.stringify({ principalId: entry.principalId, clientId: entry.clientId }),
+const replayHeaders = (replayProof: string, entry: InboxActor) => ({
+  [INBOX_REPLAY_HEADER]: replayProof, [INBOX_ACTOR_HEADER]: JSON.stringify({ principalId: entry.principalId, clientId: entry.clientId }),
   'Content-Type': 'application/json',
 });
 
@@ -253,7 +256,7 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
       await waitWithSignal(demand.promise, until).catch(error => { if (!until.aborted) throw error; });
     },
     quietFor: async () => active || await durable?.inbox.hasPending() ? 0 : performance.now() - lastTraffic,
-    activate(value: number, launchId: string, signal: AbortSignal) {
+    activate(value: number, replayProof: string, signal: AbortSignal) {
       if (target !== value) {
         target = value;
         replayAfter = 0;
@@ -266,7 +269,7 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
         if (!await durable.inbox.hasPending()) { inboxBacklog = false; return; }
         inboxBacklog = true;
         await durable.inbox.replay(async entry => {
-          const headers = replayHeaders(launchId, entry.actor);
+          const headers = replayHeaders(replayProof, entry.actor);
           const replaySignal = AbortSignal.any([signal, stopSignal.signal, AbortSignal.timeout(20_000)]);
           const origin = 'http://127.0.0.1:' + value;
           const input = entry.method === 'submit' || entry.method === 'enqueue';
@@ -280,6 +283,14 @@ export async function openSupervisorGateway(port: number, durable?: DurableIngre
             if (!response.ok) throw new Error('The original Catalog has not reconciled inbox input');
             return await response.json() as { result?: InboxResult };
           };
+          if (Date.now() - entry.firstAttemptAtMs >= INBOX_REPLAY_WINDOW_MS) {
+            if (!input) return expiredInput;
+            // Catalog checks for the original command and fences a late admission
+            // in the same transaction if it records the rejection instead.
+            const settled = await lookup(expiredInput);
+            if (!settled.result) throw new Error('Catalog inbox settlement unavailable');
+            return settled.result;
+          }
           if (input) {
             const persisted = await lookup();
             if (persisted.result) return persisted.result;

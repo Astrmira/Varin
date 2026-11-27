@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { openSupervisorGateway } from './supervisor-gateway.js';
 import { SupervisorUserInbox } from './user-inbox.js';
 
@@ -124,20 +124,26 @@ test('stages files and ordered inputs while recovering a lost Catalog acknowledg
   }
 });
 
-test('an uncertain replay blocks its branch only and resolves later through its original receipt', async () => {
+test('an uncertain replay preserves branch order until the Catalog recovers or expires the input', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'varin-ingress-isolation-'));
   const inbox = new SupervisorUserInbox(directory);
   const gateway = await openSupervisorGateway(0, { inbox, authenticate: async () => ({ principalId: 'owner', clientId: 'gateway' }) });
   const delivered: string[] = [];
   const rejected = new Map<string, unknown>();
+  const drafts = new Map<string, unknown>();
+  let attemptedExpired = false;
   const owner = createServer(async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
     const input = JSON.parse(body || '{}');
     if (req.url?.endsWith('/reconcile')) {
-      if (input.result) rejected.set(input.key, input.result);
+      if (input.result && !rejected.has(input.key)) {
+        rejected.set(input.key, input.result);
+        drafts.set(input.key, input.draft);
+      }
       res.end(JSON.stringify({ result: rejected.get(input.key) }));
-    } else if (input.key === 'uncertain') {
+    } else if (input.key === 'uncertain' || input.key === 'expired') {
+      if (input.key === 'expired') attemptedExpired = true;
       res.writeHead(500).end(JSON.stringify({ code: 'unexpected-host-error' }));
     } else if (input.key === 'invalid') {
       res.writeHead(400).end(JSON.stringify({ code: 'invalid-params' }));
@@ -160,6 +166,8 @@ test('an uncertain replay blocks its branch only and resolves later through its 
     const next = await submit('one', 'second');
     const invalid = await submit('two', 'invalid');
     const independent = await submit('two', 'separate');
+    const expired = await submit('three', 'expired');
+    const afterExpired = await submit('three', 'after-expired');
     const port = (owner.address() as AddressInfo).port;
     gateway.activate(port, 'proof', new AbortController().signal);
     expect((await fetch(base + '/api/version')).status).toBe(200);
@@ -167,13 +175,23 @@ test('an uncertain replay blocks its branch only and resolves later through its 
     expect(inbox.status('owner', invalid)).toMatchObject({ status: 400 });
     expect(inbox.status('owner', blocked)).toBeNull();
     expect(inbox.status('owner', next)).toBeNull();
+    await expect.poll(() => attemptedExpired).toBe(true);
+    expect(inbox.status('owner', expired)).toBeNull();
+    expect(inbox.status('owner', afterExpired)).toBeNull();
     expect(delivered).toEqual(['separate']);
     expect((await submit('one', 'third'))).toBeTruthy();
     rejected.set('uncertain', { status: 200, body: { input_id: 'original-receipt' } });
     await new Promise(resolve => setTimeout(resolve, 2100));
-    gateway.activate(port, 'proof', new AbortController().signal);
+    const leap = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001);
+    try {
+      gateway.activate(port, 'proof', new AbortController().signal);
+      await expect.poll(() => inbox.status('owner', afterExpired)).toMatchObject({ status: 200 });
+      expect(inbox.status('owner', expired)).toMatchObject({ status: 409, body: { code: 'inbox-replay-expired' } });
+      expect(drafts.get('expired')).toMatchObject({ text: 'expired' });
+    } finally { leap.mockRestore(); }
     await expect.poll(() => inbox.status('owner', next)).toMatchObject({ status: 200 });
     expect(inbox.status('owner', blocked)).toMatchObject({ body: { input_id: 'original-receipt' } });
+    await expect.poll(() => gateway.quietFor()).toBeGreaterThan(0);
   } finally {
     await gateway.close();
     inbox.close();
