@@ -28,7 +28,7 @@ interface ActivityOwners {
   terminal?(): {sessions:number;preparing:number;stopping:number} | null;
   externalAgents?(): {sessions:number;opening:number;running:number;stopping:number;installations:number};
   mcp?(): {preparations:number;requests:number;retainedHolders:number;closing:number;tasks:number;subscriptions:number};
-  eventSources?(): {receivers:number;reconciling:boolean;retries:number};
+  eventSources?(): {receivers:number;untransferred?:number;reconciling:boolean;retries:number};
   eventTransport?(): {connections:number;reconciling:boolean;retries:number};
   language?(): {sourceViews:number;workspaceHolders:number;starting:number;stopping:number};
   preview?(): {requests:number;sockets:number};
@@ -106,7 +106,7 @@ export const projectHostActivity = async (owners: ActivityOwners, signal: AbortS
       ? ['external-agent-owner-activity'] : []),
     ...(mcp && (mcp.preparations || mcp.requests || mcp.retainedHolders || mcp.closing || mcp.tasks || mcp.subscriptions)
       ? ['mcp-owner-activity'] : []),
-    ...(eventSources && (eventSources.receivers || eventSources.reconciling || eventSources.retries) ? ['event-receivers-not-transferred'] : []),
+    ...(eventSources && ((eventSources.untransferred ?? eventSources.receivers) || eventSources.reconciling || eventSources.retries) ? ['event-receivers-not-transferred'] : []),
     ...(eventTransport && (eventTransport.connections || eventTransport.reconciling || eventTransport.retries) ? ['event-transport-active'] : []),
     ...(language && (language.sourceViews || language.workspaceHolders || language.starting || language.stopping) ? ['language-owner-activity'] : []),
     ...(preview && (preview.requests || preview.sockets) ? ['preview-owner-activity'] : []),

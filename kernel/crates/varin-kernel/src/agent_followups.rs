@@ -210,10 +210,11 @@ pub(super) fn execute(
             let mut catalog = catalog
                 .lock()
                 .map_err(|_| KernelError::Storage("Catalog owner unavailable".into()))?;
-            let result = catalog.admit_event_receive(prepared).map_err(domain)?;
-            if method == "runtime.followup.events.receiveDurable" {
-                catalog.confirm_event_receive_durable().map_err(domain)?;
-            }
+            let result = if method == "runtime.followup.events.receiveDurable" {
+                catalog.admit_durable_event_receive(prepared)
+            } else {
+                catalog.admit_event_receive(prepared)
+            }.map_err(domain)?;
             Ok(serde_json::to_value(result)?)
         }
         "runtime.followup.eventSources.list" => {

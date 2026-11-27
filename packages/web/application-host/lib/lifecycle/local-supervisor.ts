@@ -6,6 +6,7 @@ import { SupervisorJournal } from './supervisor-journal.js';
 import { runLocalSupervisor } from './supervisor-runner.js';
 import type { FollowupEventReceiveParams } from '@varin/protocol';
 import { readDeploymentPolicy } from '../deployment/policy.js';
+import { deploymentResourceProvider, type ResourceProvider } from '../deployment/resource-provider.js';
 
 async function readPage(): Promise<FollowupEventReceiveParams> {
   const chunks: Buffer[] = [];
@@ -63,6 +64,7 @@ async function main(argv: string[]): Promise<unknown> {
   if (action === 'status' && !args.length) return { wake: await journal.currentWake(), pending: await journal.hasPendingEvents() };
   if (action === 'run') {
     let parking: { idleMs: number; listenPort: number } | undefined;
+    let sandboxProvider: ResourceProvider | undefined;
     if (args.length) {
       const [idleFlag, idle, portFlag, port] = args;
       const idleMs = Number(idle), listenPort = Number(port);
@@ -73,13 +75,15 @@ async function main(argv: string[]): Promise<unknown> {
       parking = { idleMs, listenPort };
       const policy = await readDeploymentPolicy(process.env.VARIN_DEPLOYMENT_POLICY, path.dirname(journal.directory));
       if (policy?.ingress?.mode !== 'gateway') throw new Error('Host parking requires a deployment policy with private gateway ingress');
+      if (policy.extensions?.brokeredTransport === 'sandbox' && policy.resourceProvider)
+        sandboxProvider = await deploymentResourceProvider(policy.resourceProvider, path.dirname(journal.directory));
     }
     const stop = new AbortController();
     const requestStop = () => stop.abort();
     process.on('SIGTERM', requestStop);
     process.on('SIGINT', requestStop);
     try {
-      const outcome = await runLocalSupervisor({ journal, entry: fileURLToPath(new URL('../../index.js', import.meta.url)),
+      const outcome = await runLocalSupervisor({ journal, ...(sandboxProvider && { sandboxProvider }), entry: fileURLToPath(new URL('../../index.js', import.meta.url)),
         env: { ...process.env, VARIN_DATA_DIR: path.dirname(journal.directory) }, signal: stop.signal,
         ...(parking && { parking, listening: port => console.log(JSON.stringify({ supervisor: 'listening', port })) }),
         status: (state, pid) => console.log(JSON.stringify({ supervisor: state, ...(pid === undefined ? {} : { pid }) })) });

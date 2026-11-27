@@ -362,9 +362,10 @@ import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteA
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { hostEnvironment } from './lib/security/host-environment.js';
 import { DeploymentPolicyDeniedError, readDeploymentJson, readDeploymentPolicy } from './lib/deployment/policy.js';
-import { createProviderLeaseOwner, createSocketResourceProvider, isProviderResourceOwner, providerResourceOwner } from './lib/deployment/resource-provider.js';
+import { createProviderLeaseOwner, deploymentResourceProvider, isProviderResourceOwner, providerResourceOwner } from './lib/deployment/resource-provider.js';
 import { createExtensionAdmission } from './lib/deployment/extension-admission.js';
 import { extensionSandboxTransport } from './lib/deployment/extension-sandbox-transport.js';
+import { SandboxRelayClient } from './lib/lifecycle/sandbox-relay-client.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -390,6 +391,8 @@ import { pathLooksUserConfigured, mergePathValues } from './lib/platform/path-ut
 import { createProjectDirectoryRuntime } from './lib/platform/project-directory-runtime.js';
 import { projectHostActivity, registerHostActivityRoute } from './lib/lifecycle/host-activity.js';
 import { startSupervisorInbox } from './lib/lifecycle/supervisor-inbox.js';
+import { createInboxReplayAuth } from './lib/lifecycle/user-inbox-auth.js';
+import { INBOX_RECONCILE_PATH } from './lib/lifecycle/user-inbox-wire.js';
 import { SupervisorJournal } from './lib/lifecycle/supervisor-journal.js';
 import { createParkIngress, parkHost, PARK_EXIT_CODE, SUPERVISOR_LAUNCH, SUPERVISOR_PARKING, validSupervisorLaunch } from './lib/lifecycle/host-parking.js';
 import { registerVarinRoutes } from './lib/platform/varin-routes.js';
@@ -802,13 +805,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     : undefined;
   const placement = denyLocalExecution ? { denyLocal: denyLocalExecution } : {};
   const providerOptions = deployment?.resourceProvider;
-  let resourceProvider;
-  if (providerOptions) {
-    const credentials = await readDeploymentJson(providerOptions.credentialFile, VARIN_DATA_DIR, 'resourceProvider.credentialFile');
-    const bearer = credentials && typeof credentials === 'object' && 'token' in credentials ? credentials.token : null;
-    if (typeof bearer !== 'string' || !bearer || /\s/u.test(bearer)) throw new Error('resourceProvider.credentialFile must contain a token');
-    resourceProvider = createSocketResourceProvider({ ...providerOptions, bearer });
-  }
+  const resourceProvider = providerOptions ? await deploymentResourceProvider(providerOptions, VARIN_DATA_DIR) : undefined;
   const providerLeases = resourceProvider && deployment?.extensions?.brokeredTransport === 'sandbox'
     ? createProviderLeaseOwner(resourceProvider, () => console.warn('[ResourceProvider] A resource lease could not be renewed or released'))
     : undefined;
@@ -819,6 +816,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const supervisorLaunch = process.env[SUPERVISOR_LAUNCH];
   const parkIngress = gatewayOnly && process.env[SUPERVISOR_PARKING] === '1'
     && validSupervisorLaunch(supervisorLaunch) && process.connected && process.send ? createParkIngress() : undefined;
+  const sandboxRelay = parkIngress && providerLeases ? new SandboxRelayClient() : undefined;
+  const authenticateInboxReplay = parkIngress && supervisorLaunch
+    ? createInboxReplayAuth(supervisorLaunch, id => hostPrincipals().isOwner(id)) : undefined;
   const constrainedEgress = deployment?.egress?.userDestinations === 'public' || Boolean(deployment?.egress?.requiredProxy);
   const background = deployment?.background;
   const [modelDirectorySnapshot, pluginCatalogSnapshot] = background ? await Promise.all([
@@ -1072,6 +1072,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     verboseRequestLogs: isEnvFlagEnabled(process.env.VARIN_VERBOSE_REQUEST_LOGS),
     uiPassword,
     gatewayOnly,
+    ...(authenticateInboxReplay && { authenticateInboxReplay }),
     updatesEnabled: background?.updateChecks !== false,
     tunnelAuthController,
     remoteClientAuthRuntime,
@@ -1163,7 +1164,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       dataDir: VARIN_DATA_DIR,
       packages: extensionPackages,
       varinVersion: VARIN_VERSION,
-      ...(resourceProvider && providerLeases && { sandboxTransportFactory: extensionSandboxTransport(resourceProvider, providerLeases) }),
+      ...(resourceProvider && providerLeases && { sandboxTransportFactory: extensionSandboxTransport(resourceProvider, providerLeases, sandboxRelay) }),
     });
   }
   const cacheRoot = deploymentCacheRoot(process.env.VARIN_CACHE_DIR, extensionRuntime.services.hostId);
@@ -2879,7 +2880,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     new AuthorizationFlows());
   pluginCredentialOwner.current = pluginCredentials;
   pluginCredentials.start();
-  const pluginEventSources = new PluginEventSources(extensionRuntime, agentRuntime, pluginCredentials, 5_000, hostId);
+  const pluginEventSources = new PluginEventSources(extensionRuntime, agentRuntime, pluginCredentials, 5_000, hostId, sandboxRelay);
   const pluginEventTransport = new PluginEventTransport(hostId, agentRuntime, managedRemoteTargets,
     principalId => principalId ? hostPrincipals().isOwner(principalId) : Promise.resolve(false), egressRuntime.fetch as typeof fetch);
   pluginEventSources.setRemote(pluginEventTransport);
@@ -2889,6 +2890,25 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const conversationOrganization = new ConversationOrganizationService({ runtime: agentRuntime, threads, external: externalAgents, readSettings: readSettingsFromDisk });
   registerConversationOrganizationRoutes(app, conversationOrganization, uiAuthController.requireAuth, (req, res) => uiAuthController!.resolveAuthContext(req, res));
   registerThreadRoutes(app, threads, uiAuthController?.requireAuth ?? ((_request, _response, next) => next()), researchRuntime.user, computerRuntimeOwner.current.user, webRuntimeOwner.current.user, userIntegrations, pluginEventSources, threadWriteAdmission);
+  if (authenticateInboxReplay) {
+    app.post(INBOX_RECONCILE_PATH, async (req, res) => {
+      const actor = await authenticateInboxReplay(req);
+      if (!actor) { res.status(403).json({ code: 'forbidden' }); return; }
+      const { inboxId, key, threadId, branchId, method, result, draft } = req.body ?? {};
+      if (![inboxId, key, threadId, branchId].every(value => typeof value === 'string' && value.length)
+        || method !== 'submit' && method !== 'enqueue') {
+        res.status(400).json({ code: 'invalid-inbox-input' }); return;
+      }
+      try {
+        res.json(await kernelClient!.agentRuntimeRequest('runtime.inbox.reconcile', { inboxId, principalId: actor.principalId,
+          key, threadId, branchId, method, ...(result && { result }), ...(draft && { draft }) }));
+      } catch {
+        res.status(503).json({ code: 'inbox-unavailable' });
+      }
+    });
+    threads.bindInboxRejections((identity, principalId, signal) => kernelClient!.agentRuntimeRequest(
+      'runtime.inbox.rejections', { principalId, threadId: identity.threadId, branchId: identity.branchId }, signal));
+  }
   const agentProfiles = createAgentProfilesAPI({ settings: modelsService.settings,
     capabilities: signal => agentRuntime.childCapabilities(signal),
     contextAgentDefinition: signal => agentRuntime.contextAgentDefinition(signal),
@@ -3379,11 +3399,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   const supervisorInbox = supervisorJournal
     ? startSupervisorInbox(supervisorJournal,
       (page, signal) => agentRuntime.receiveDurablePluginEvents(page, signal),
-      () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'))
+      () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'),
+      () => { void pluginEventSources.reconcile(); })
     : undefined;
   // Reconcile committed input before the listeners and live event receivers
   // can advance the same Catalog cursors.
   await supervisorInbox?.initialReplay;
+  if (supervisorInbox) pluginEventSources.setInboxBarrier(supervisorInbox.blocksReceiver);
   pluginEventSources.start();
   pluginEventTransport.start();
   botLifecycleRuntime = createBotLifecycleRuntime({
@@ -3915,6 +3937,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
         },
         reserveNative: () => kernelClient!.agentRuntimeRequest('runtime.park.reserve', {}),
         releaseNative: () => kernelClient!.agentRuntimeRequest('runtime.park.release', {}),
+        handoff: () => pluginEventSources.prepareParking(),
         stop: cursor => {
           parkCatalogCursor = cursor;
           return controller.stop({ exitProcess: false });

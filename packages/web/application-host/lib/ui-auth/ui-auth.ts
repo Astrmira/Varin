@@ -79,6 +79,7 @@ interface UiAuthOptions {
   readSettingsFromDisk?: () => Promise<Record<string, unknown>>;
   requireClientAuth?: boolean;
   issuedClientsOnly?: boolean;
+  authenticateInboxReplay?: (req: UiAuthRequest) => Promise<ClientAuthResult | null>;
   sessionTtlMs?: number;
   principals?: PrincipalStore;
 }
@@ -523,6 +524,7 @@ export const createUiAuth = ({
   clientAuthController = null,
   requireClientAuth = false,
   issuedClientsOnly = false,
+  authenticateInboxReplay,
   principals = hostPrincipals(),
   getServerId = async () => null,
 }: UiAuthOptions = {}) => {
@@ -659,6 +661,8 @@ export const createUiAuth = ({
     req: UiAuthRequest,
     { allowUrlToken = true }: { allowUrlToken?: boolean } = {},
   ): Promise<ClientAuthResult | null> => {
+    const replay = await authenticateInboxReplay?.(req);
+    if (replay) return replay;
     // A presented browser cookie selects this device, even if empty, expired or
     // revoked. Neither a native bearer nor an older URL grant may replace it.
     const deviceToken = await browserToken(req);

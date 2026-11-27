@@ -1,9 +1,14 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import crypto, { randomUUID } from 'node:crypto';
+import fsPromises from 'node:fs/promises';
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { SupervisorJournal } from './supervisor-journal.js';
 import { openSupervisorGateway } from './supervisor-gateway.js';
 import { PARK_EXIT_CODE, SUPERVISOR_LAUNCH, SUPERVISOR_PARKING } from './host-parking.js';
+import { authenticateOfflineGateway } from '../client-auth/remote-clients.js';
+import type { ResourceProvider } from '../deployment/resource-provider.js';
+import type { createSupervisorSandbox } from './supervisor-sandbox.js';
 
 interface Exit { code: number | null; signal: NodeJS.Signals | null }
 export interface SupervisorRunnerOptions {
@@ -17,6 +22,7 @@ export interface SupervisorRunnerOptions {
   startupMs?: number;
   stopMs?: number;
   parking?: { listenPort: number; idleMs: number };
+  sandboxProvider?: ResourceProvider;
   listening?(port: number): void;
 }
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -27,13 +33,14 @@ const wait = (ms: number, signal: AbortSignal) => delay(ms, undefined, { signal 
   if (!signal.aborted) throw error;
 });
 
-function launch(options: SupervisorRunnerOptions) {
+function launch(options: SupervisorRunnerOptions, sandbox?: ReturnType<typeof createSupervisorSandbox>) {
   const launchId = randomUUID();
   const child = spawn(process.execPath, [options.entry], {
     env: { ...options.env, VARIN_HOST: '127.0.0.1', VARIN_LOCAL_SUPERVISOR: '1', [SUPERVISOR_LAUNCH]: launchId,
       [SUPERVISOR_PARKING]: options.parking ? '1' : '0', ...(options.parking && { VARIN_PORT: '0' }) },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
+  sandbox?.attach(child);
   let exit: Exit | undefined;
   let port: number | undefined;
   let ready = false;
@@ -117,14 +124,34 @@ function launch(options: SupervisorRunnerOptions) {
 }
 
 export async function runLocalSupervisor(options: SupervisorRunnerOptions): Promise<{ stoppedCleanly: boolean }> {
-  const gateway = options.parking ? await openSupervisorGateway(options.parking.listenPort) : undefined;
+  const inbox = options.parking ? new (await import('./user-inbox.js')).SupervisorUserInbox(options.journal.directory) : undefined;
+  let gateway: Awaited<ReturnType<typeof openSupervisorGateway>> | undefined;
+  let receiverWake = false;
+  const sandbox = options.parking && options.sandboxProvider
+    ? (await import('./supervisor-sandbox.js')).createSupervisorSandbox(options.sandboxProvider, options.journal, () => {
+      receiverWake = true; gateway?.wake();
+    })
+    : undefined;
   try {
+    if (options.parking && inbox) {
+      const storePath = path.join(path.dirname(options.journal.directory), 'remote-clients.json');
+      gateway = await openSupervisorGateway(options.parking.listenPort, { inbox,
+        authenticate: authorization => authenticateOfflineGateway(authorization, { crypto, fsPromises, path, storePath }) });
+    }
     if (gateway) options.listening?.(gateway.port);
-    return await supervise(options, gateway);
-  } finally { await gateway?.close(); }
+    return await supervise(options, gateway, sandbox, () => receiverWake, () => { receiverWake = false; });
+  } finally {
+    try { await sandbox?.close(); }
+    finally {
+      try { await gateway?.close(); }
+      finally { inbox?.close(); }
+    }
+  }
 }
 
-async function supervise(options: SupervisorRunnerOptions, gateway?: Awaited<ReturnType<typeof openSupervisorGateway>>): Promise<{ stoppedCleanly: boolean }> {
+async function supervise(options: SupervisorRunnerOptions, gateway: Awaited<ReturnType<typeof openSupervisorGateway>> | undefined,
+  sandbox: ReturnType<typeof createSupervisorSandbox> | undefined, hasReceiverDemand: () => boolean,
+  clearReceiverDemand: () => void): Promise<{ stoppedCleanly: boolean }> {
   const interval = options.pollMs ?? 1000;
   let start = true; // A fresh supervisor conservatively reconciles the original Host.
   let failures = 0;
@@ -132,7 +159,7 @@ async function supervise(options: SupervisorRunnerOptions, gateway?: Awaited<Ret
     if (!start) {
       const wanted = await options.journal.currentWake();
       // Crash replay stays with the child Catalog; no journal body leaves this process.
-      if (!gateway?.hasDemand() && !await options.journal.hasPendingEvents() && (wanted?.nextWakeAtMs == null || wanted.nextWakeAtMs > Date.now())) {
+      if (!hasReceiverDemand() && !gateway?.hasDemand() && !await options.journal.hasPendingEvents() && (wanted?.nextWakeAtMs == null || wanted.nextWakeAtMs > Date.now())) {
         const untilWake = wanted?.nextWakeAtMs == null ? interval : Math.max(1, wanted.nextWakeAtMs - Date.now());
         const delayMs = Math.min(interval, untilWake);
         if (gateway) await gateway.waitForDemand(delayMs, options.signal);
@@ -141,7 +168,9 @@ async function supervise(options: SupervisorRunnerOptions, gateway?: Awaited<Ret
       }
     }
     if (options.signal.aborted) break;
-    const child = launch(options);
+    await sandbox?.returnReceivers();
+    clearReceiverDemand();
+    const child = launch(options, sandbox);
     let readyAt = 0;
     let fault: unknown;
     try {
@@ -149,14 +178,24 @@ async function supervise(options: SupervisorRunnerOptions, gateway?: Awaited<Ret
       if (await child.awaitReady()) {
         readyAt = performance.now();
         let lastParkAttempt = readyAt;
-        options.status?.('ready', child.pid);
+        let announcedReady = false;
+        const announceReady = () => {
+          if (announcedReady) return;
+          announcedReady = true;
+          options.status?.('ready', child.pid);
+        };
+        if (!gateway) announceReady();
         let receiptRevision: number | undefined;
         const noReceipt = new Error('Original Host is not ready');
         while (!child.signal.aborted) {
           if (gateway && options.parking) {
             if (child.parkTimedOut()) break;
-            gateway.setTarget(child.port());
-            if (child.port() && child.canPark() && gateway.quietFor() >= options.parking.idleMs && performance.now() - lastParkAttempt >= options.parking.idleMs) {
+            const port = child.port();
+            if (port) {
+              try { await gateway.activate(port, child.launchId, child.signal); announceReady(); }
+              catch { await wait(interval, child.signal); continue; }
+            }
+            if (port && child.canPark() && gateway.quietFor() >= options.parking.idleMs && performance.now() - lastParkAttempt >= options.parking.idleMs) {
               lastParkAttempt = performance.now();
               gateway.setTarget(undefined);
               child.requestPark();

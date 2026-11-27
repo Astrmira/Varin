@@ -84,13 +84,15 @@ interface BrokerCancelMessage { kind: "cancel"; id: string; }
 
 type BrokerMessage = BrokerRequestMessage | BrokerResponseMessage | BrokerEventMessage | BrokerCancelMessage;
 
-export interface BrokeredHostStopResult { processExited: true; cleanup: "confirmed" | "unconfirmed" }
+export type BrokeredHostStopResult = { processExited: true; cleanup: "confirmed" | "unconfirmed" }
+  | { processExited: false; cleanup: "transferred" };
 
 export class BrokeredHostUnavailableError extends Error {
   readonly code = 'extension-host-unavailable';
 }
 
 export interface BrokeredHostTransport {
+  readonly transfersInvocationScopes?: boolean;
   forceTerminate(): void;
   request(method: string, params?: unknown, signal?: AbortSignal): Promise<unknown>;
   terminate(): Promise<BrokeredHostStopResult | void>;
@@ -209,10 +211,12 @@ export interface BrokeredHostChannel {
     received(message: unknown): void;
     failed(error: Error): void;
     stopped(error: Error, processExited: boolean): void;
+    transferred(): void;
   }): void;
 }
 
 export class BrokeredHostRpcTransport implements BrokeredHostTransport {
+  readonly transfersInvocationScopes: boolean;
   readonly #channel: BrokeredHostChannel;
   readonly #childRequests = new Map<string, AbortController>();
   readonly #onCrash: (error: Error) => void;
@@ -222,6 +226,7 @@ export class BrokeredHostRpcTransport implements BrokeredHostTransport {
   readonly #shutdownGraceMs: number;
   #termination: Promise<BrokeredHostStopResult> | undefined;
   #cleanupConfirmed = false;
+  #transferred = false;
   readonly #requestFromChild: (method: string, params: unknown, signal: AbortSignal) => Promise<JsonValue>;
   #intentional = false;
   #crashed = false;
@@ -231,6 +236,7 @@ export class BrokeredHostRpcTransport implements BrokeredHostTransport {
   constructor(options: {
     channel: BrokeredHostChannel;
     shutdownGraceMs?: number;
+    transfersInvocationScopes?: boolean;
     onCrash(error: Error): void;
     requestFromChild(method: string, params: unknown, signal: AbortSignal): Promise<JsonValue>;
   }) {
@@ -238,6 +244,7 @@ export class BrokeredHostRpcTransport implements BrokeredHostTransport {
     if (!Number.isSafeInteger(this.#shutdownGraceMs) || this.#shutdownGraceMs <= 0) throw new Error("Broker shutdown grace must be a positive integer");
     this.#onCrash = options.onCrash;
     this.#requestFromChild = options.requestFromChild;
+    this.transfersInvocationScopes = options.transfersInvocationScopes === true;
     this.#channel = options.channel;
     let resolveExited!: () => void;
     let rejectExited!: (error: Error) => void;
@@ -250,6 +257,15 @@ export class BrokeredHostRpcTransport implements BrokeredHostTransport {
     // while retaining the original rejected promise for every later request.
     void this.#ready.catch(() => undefined);
     void this.#exited.catch(() => undefined);
+    const settleChannel = (error: Error, ownershipEnded: boolean) => {
+      if (ownershipEnded) resolveExited();
+      else rejectExited(error);
+      rejectReady(error);
+      for (const pending of this.#pending.values()) pending.reject(error);
+      this.#pending.clear();
+      for (const controller of this.#childRequests.values()) controller.abort(error);
+      this.#childRequests.clear();
+    };
     this.#channel.observe({
       received: value => {
         const message = value as BrokerMessage;
@@ -258,14 +274,13 @@ export class BrokeredHostRpcTransport implements BrokeredHostTransport {
       },
       failed: error => { if (!this.#intentional) this.#failChannel(error); },
       stopped: (error, processExited) => {
-        if (processExited) resolveExited();
-        else rejectExited(error);
-        rejectReady(error);
-        for (const pending of this.#pending.values()) pending.reject(error);
-        this.#pending.clear();
-        for (const controller of this.#childRequests.values()) controller.abort(error);
-        this.#childRequests.clear();
+        settleChannel(error, processExited);
         if (!this.#intentional && !this.#crashed) { this.#crashed = true; this.#onCrash(error); }
+      },
+      transferred: () => {
+        this.#transferred = true;
+        this.#intentional = true;
+        settleChannel(new Error("Extension broker transferred to the supervisor"), true);
       },
     });
   }
@@ -311,6 +326,7 @@ export class BrokeredHostRpcTransport implements BrokeredHostTransport {
 
   terminate(): Promise<BrokeredHostStopResult> {
     if (this.#termination) return this.#termination;
+    if (this.#transferred) return Promise.resolve({ processExited: false, cleanup: "transferred" });
     if (this.#intentional) return this.#exited.then(() => ({ processExited: true, cleanup: this.#cleanupConfirmed ? "confirmed" : "unconfirmed" }));
     this.#intentional = true;
     this.#termination = (async () => {
@@ -1541,6 +1557,7 @@ export class BrokeredHostSupervisor {
               serviceId: descriptor.id,
               version: descriptor.version,
               ...(invocationId ? { invocationId } : {}),
+              ...(broker.transfersInvocationScopes && context.invocation && { hostScopeId: context.invocation.id }),
             }, context.signal));
           } finally {
             lifetime?.abort(new Error("Host capability invocation has expired"));

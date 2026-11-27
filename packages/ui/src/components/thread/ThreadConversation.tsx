@@ -77,7 +77,7 @@ import { subscribeVarinEvents } from '@/lib/varinEvents';
 import React from 'react';
 import { tapHaptic } from '@/lib/motion/haptics';
 import { createModelConnectionsHttpAPI, defaultConversationModel, threadSourceFailureMessage, ThreadRequestError, getRuntimeEndpointGeneration, subscribeRuntimeEndpointChanged } from '@varin/application-client';
-import type { ThreadIdentity, ThreadModel, ThreadModelInfo, ThreadThinkingLevel, ThreadSnapshot, ThreadsAPI, ThreadPreparedSource } from '@varin/application-client';
+import type { ThreadIdentity, ThreadInboxRejection, ThreadModel, ThreadModelInfo, ThreadThinkingLevel, ThreadSnapshot, ThreadsAPI, ThreadPreparedSource } from '@varin/application-client';
 import { Button } from '@/components/ui/button';
 import { ThreadComposer } from './ThreadComposer';
 import { useThreadNextStep } from './useThreadNextStep';
@@ -197,6 +197,32 @@ export function ThreadConversation({ api, identity, onBranchCreated, initialWork
     return () => { active = false; unsubscribe(); };
   }, [api, host, t]);
   const [error, setError] = React.useState<string>();
+  const [restoredInbox, rememberRestoredInbox] = React.useState<ReadonlySet<string>>(() => new Set());
+  const [inboxRetry, retryInboxObservation] = React.useReducer(version => version + 1, 0);
+  const [failedInboxObservation, setFailedInboxObservation] = React.useState<string>();
+  const inboxObservation = draft.inboxObservation;
+  React.useEffect(() => {
+    if (readOnly || !inboxObservation || !api.observeInbox) return;
+    const abort = new AbortController();
+    setFailedInboxObservation(undefined);
+    const release = (sent: boolean) => useThreadDraftStore.getState().patch(draftKey, current =>
+      current.inboxObservation?.inboxId === inboxObservation.inboxId ? {
+        inboxObservation: undefined,
+        ...(sent && current.text === inboxObservation.text ? { text: '' } : {}),
+      } : {});
+    void api.observeInbox(inboxObservation.inboxId, abort.signal).then(
+      () => { release(true); void projection.current?.refresh(); },
+      cause => {
+        if (abort.signal.aborted) return;
+        if (cause instanceof ThreadRequestError && (cause.admission === 'not_started' || cause.status === 404)) {
+          release(false);
+          void projection.current?.refresh();
+        } else setFailedInboxObservation(inboxObservation.inboxId);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+    return () => abort.abort();
+  }, [api, draftKey, inboxObservation, inboxRetry, readOnly]);
   const [loadFailure, setLoadFailure] = React.useState<{ scope: typeof viewScope; message: string }>();
   const loadError = loadFailure?.scope === viewScope ? loadFailure.message : undefined;
   const loadingTitle = useThreadStore(state => state.threads.find(thread => thread.thread_id === identity.threadId)?.title);
@@ -427,9 +453,25 @@ export function ThreadConversation({ api, identity, onBranchCreated, initialWork
   const composerSource = active ? launch?.selection.source
     : draft.sourceDisabled ? null : preparedSource?.source ?? confirmedWorkspaceSource;
   const referenceScope = JSON.stringify([host, draftKey, composerSource === undefined ? workspacePath : composerSource]);
+  const restoreInboxDraft = (rejection: ThreadInboxRejection) => {
+    if (!rejection.draft) return;
+    const captured = rejection.draft;
+    useThreadDraftStore.getState().patch(draftKey, current => ({
+      ...(current.text || current.images.length || current.markerObjects?.length ? {} : restoreDraftReferences({ identity, editorText: captured.text, editorContentReferences: captured.contentReferences,
+        editorContentReferenceOccurrences: captured.contentReferenceOccurrences })),
+      materials: [...current.materials, ...(captured.materials ?? []).filter(item =>
+        !current.materials.some(existing => existing.snapshotId === item.snapshotId))
+        .map(item => ({ ...item, filename: item.snapshotId }))],
+      selectedAttachments: [...(current.selectedAttachments ?? []), ...(captured.attachments ?? []).filter(selection =>
+        !current.selectedAttachments?.some(file => file.selection.ref === selection.ref && file.selection.path === selection.path))
+        .map(selection => ({ id: crypto.randomUUID(), host, selection, sourceKey: referenceScope,
+          filename: selection.path?.split(/[\\/]/u).at(-1) ?? selection.ref ?? '' }))],
+    }));
+    rememberRestoredInbox(current => new Set([...current, rejection.inboxId]));
+  };
   const submissionFingerprint = () => JSON.stringify([identity.threadId, identity.branchId, projectedText, draft.references, draft.markerObjects, draft.selectedAttachments, requestImages, materials, draft.files?.map(file => file.id), providerId, modelId, thinkingLevel, preparedSource?.source, draft.sourceDisabled, agent]);
   const sourceCannotBeApplied = active && Boolean(preparedSource) && !pendingInput.current;
-  const sendBlocked = pending || (!draft.pendingInput && (!snapshot || preparingDelegation || preparingSource || sourceCannotBeApplied
+  const sendBlocked = pending || Boolean(inboxObservation) || (!draft.pendingInput && (!snapshot || preparingDelegation || preparingSource || sourceCannotBeApplied
     || (hasDraftInlineImages(draft) && acceptsImages === false)
     || (!active && (delegated ? !api.collaboration || !run : !providerId || !modelId))));
   const hasComposerInput = Boolean(text.trim() || images.length || materials.length || draft.files?.length || draft.selectedAttachments?.length || inlineDrafts.length || editorContext.length || draft.markerObjects?.length);
@@ -735,6 +777,17 @@ export function ThreadConversation({ api, identity, onBranchCreated, initialWork
         ? t(snapshot.launch.preparation_failure === 'binding_changed' ? 'calendar.failure.reason.binding_changed' : 'calendar.failure.reason.credentials_unavailable')
         : snapshot.launch.preparation_failure_detail ?? threadSourceFailureMessage(snapshot.launch.preparation_failure) ?? snapshot.launch.preparation_failure })}</p>}
       {draft.pendingInput?.status === 'unknown' && <p role="status" className="text-sm text-muted-foreground">{draft.pendingInput.kind === 'submit' && draft.pendingInput.acceptedRunId ? t('chat.send.goalPending') : t('chat.send.unconfirmed')}</p>}
+      {(draft.pendingInput?.status === 'waiting' || inboxObservation) && <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+        {t('chat.send.waitingForHost')}
+        {inboxObservation && failedInboxObservation === inboxObservation.inboxId && <Button type="button" variant="ghost" size="sm"
+          onClick={() => { setError(undefined); retryInboxObservation(); }}>{t('chat.send.checkReceipt')}</Button>}
+      </div>}
+      {!readOnly && snapshot?.inboxRejected?.filter(item => !restoredInbox.has(item.inboxId)).map(item => <div role="status" key={item.inboxId}
+        className="flex items-center gap-2 text-sm text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate" title={item.code ?? undefined}>{t('chat.send.inboxRejected')}{item.draft?.text.trim() ? ' · ' + item.draft.text : ''}</span>
+        {item.draft && <Button type="button" variant="ghost" size="sm" disabled={pending || Boolean(draft.pendingInput || inboxObservation || hasComposerInput && text !== item.draft.text)}
+          onClick={() => restoreInboxDraft(item)}>{t('chat.send.editRejected')}</Button>}
+      </div>)}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {draft.firstSend?.error && <p role="alert" className="text-sm text-destructive">{draft.firstSend.error}</p>}
       {draft.sendError && <p role="alert" className="text-sm text-destructive">{draft.sendError}</p>}

@@ -32,6 +32,7 @@ export type ServerBootstrapOptions =
     mobilePushRuntime: MobileDependencies['mobilePushRuntime'];
     uiPassword: UiAuthOptions['password'];
     gatewayOnly?: boolean;
+    authenticateInboxReplay?: UiAuthOptions['authenticateInboxReplay'];
     updatesEnabled?: boolean;
     verboseRequestLogs?: CommonRequestMiddlewareDependencies['verboseRequestLogs'];
   };
@@ -115,6 +116,7 @@ export const createServerBootstrapRuntime = (dependencies: ServerBootstrapDepend
     const uiAuthController = createUiAuth({
       password: uiPassword,
       issuedClientsOnly: options.gatewayOnly === true,
+      ...(options.authenticateInboxReplay && { authenticateInboxReplay: options.authenticateInboxReplay }),
       readSettingsFromDisk,
       clientAuthController: remoteClientAuthRuntime,
       ...(getServerId ? { getServerId } : {}),

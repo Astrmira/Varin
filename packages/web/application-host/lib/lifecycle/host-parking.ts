@@ -57,6 +57,7 @@ export async function parkHost(options: {
   launchId: string;
   pid: number;
   activity(): Promise<{ eligible: boolean; calendarWakeAtMs: number | null }>;
+  handoff?(): Promise<{ nextWakeAtMs: number | null; commit(): Promise<unknown>; rollback(): Promise<unknown> } | undefined>;
   reserveNative(): Promise<RuntimeParkReservation>;
   releaseNative(): Promise<unknown>;
   stop(cursor: number): Promise<void>;
@@ -64,29 +65,36 @@ export async function parkHost(options: {
   if (!options.ingress.seal()) return null;
   let reserved = false;
   let committed = false;
+  let receivers: Awaited<ReturnType<NonNullable<typeof options.handoff>>>;
   try {
     const activity = await options.activity();
     if (!activity.eligible || await options.journal.hasPendingEvents()) return null;
+    try { receivers = await options.handoff?.(); }
+    catch { return null; }
     const native = await options.reserveNative();
     if (!native.reserved) return null;
     reserved = true;
     if (native.eventCursor === null) throw new Error('Native park reservation lacks a Catalog checkpoint');
     // Calendar owns filesystem observations and other Host preparation. Native
     // continuation reservations supply the latest durable Catalog deadline.
-    const deadlines = [native.nextWakeAtMs, activity.calendarWakeAtMs].filter((at): at is number => at !== null);
+    const deadlines = [native.nextWakeAtMs, activity.calendarWakeAtMs, receivers?.nextWakeAtMs ?? null].filter((at): at is number => at !== null);
     const nextWakeAtMs = deadlines.length ? Math.min(...deadlines) : null;
     if (nextWakeAtMs !== null && nextWakeAtMs <= Date.now()) return null;
     const { revision } = await options.journal.publishWake({
       revision: ((await options.journal.currentWake())?.revision ?? 0) + 1, nextWakeAtMs,
     });
+    await receivers?.commit();
     committed = true;
     await options.stop(native.eventCursor);
     await options.journal.recordPark({ launchId: options.launchId, pid: options.pid, revision });
     return revision;
   } finally {
     if (!committed) {
-      if (reserved) await options.releaseNative();
-      options.ingress.reopen();
+      try { if (reserved) await options.releaseNative(); }
+      finally {
+        try { await receivers?.rollback(); }
+        finally { options.ingress.reopen(); }
+      }
     }
   }
 }

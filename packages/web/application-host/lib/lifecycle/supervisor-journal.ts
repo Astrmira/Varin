@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt } from '@varin/protocol';
+import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt, FollowupEventSourceIdentity } from '@varin/protocol';
 import { validSupervisorLaunch } from './host-parking.js';
 
 const maxRecordBytes = 4 * 1024 * 1024;
@@ -47,8 +47,8 @@ export interface SupervisorJournalFaults {
 
 const validPage = (page: unknown): page is FollowupEventReceiveParams => {
   if (!object(page) || !object(page.identity) || !object(page.identity.source) || !identifier(page.identity.principalId)
-    || !cursor(page.expectedCursor) || !cursor(page.nextCursor) || page.expectedCursor === page.nextCursor
-    || !Array.isArray(page.events) || page.events.length === 0
+    || !cursor(page.expectedCursor) || !cursor(page.nextCursor)
+    || !Array.isArray(page.events)
     || !(page.status === null || object(page.status))
     || !page.events.every(event => object(event) && identifier(event.eventId) && integer(event.occurredAtMs)
       && (event.objectId === null || identifier(event.objectId)) && (event.revision === null || identifier(event.revision))
@@ -230,7 +230,8 @@ export class SupervisorJournal {
     return (await readdir(this.directory)).some(name => /^[a-f0-9]{64}\.pending$/.test(name));
   }
 
-  async replay(receiveDurably: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>, signal?: AbortSignal) {
+  async replay(receiveDurably: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>, signal?: AbortSignal,
+    keepReceiverParked?: (identity: FollowupEventSourceIdentity) => void) {
     let delivered = 0;
     const load = async (name: string) => {
       signal?.throwIfAborted();
@@ -254,17 +255,23 @@ export class SupervisorJournal {
       const before = encode([identity, expectedCursor]);
       const after = encode([identity, nextCursor]);
       entries.set(name, { before, after });
-      previous.add(after);
+      if (before !== after) previous.add(after);
       const later = successors.get(before) ?? [];
       later.push(name);
       successors.set(before, later);
     }
-    const ready = [...entries].filter(([, edge]) => !previous.has(edge.before)).map(([name]) => name);
+    // Counterless push sources can keep their cursor. Apply those pages
+    // before an edge that advances the original checkpoint.
+    const orderedEdges = (names: string[]) => names.sort((left, right) => {
+      const a = entries.get(left)!, b = entries.get(right)!;
+      return Number(b.before === b.after) - Number(a.before === a.after);
+    });
+    const ready = orderedEdges([...entries].filter(([, edge]) => !previous.has(edge.before)).map(([name]) => name));
     const ordered = new Set<string>();
     for (const name of ready) {
       if (ordered.has(name)) continue;
       ordered.add(name);
-      for (const next of successors.get(entries.get(name)!.after) ?? []) ready.push(next);
+      for (const next of orderedEdges(successors.get(entries.get(name)!.after) ?? [])) ready.push(next);
     }
     // Catalog still decides admission if a receiver reuses a cursor value
     // and the pending pages alone cannot establish its starting point.
@@ -281,7 +288,11 @@ export class SupervisorJournal {
           const result = await receiveDurably(record.page, signal);
           if (!isDeepStrictEqual(result.checkpoint.identity, record.page.identity) || result.checkpoint.cursor !== record.page.nextCursor
             || result.accepted + result.duplicates !== record.page.events.length) throw new Error('Invalid Catalog acknowledgement');
-        } catch { if (signal?.aborted) throw signal.reason; continue; }
+        } catch {
+          if (signal?.aborted) throw signal.reason;
+          keepReceiverParked?.(record.page.identity);
+          continue;
+        }
         this.faults.afterCatalogReceipt?.();
         await this.put(key + '.ack', { version, owner: this.owner, digest: fingerprint, durable: true });
       }

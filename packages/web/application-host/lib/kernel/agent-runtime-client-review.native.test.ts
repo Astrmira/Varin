@@ -87,6 +87,28 @@ it('client submits, inspects, cancels, replays events and preserves receipt on r
   } finally { await reopened.close(); }
 }, 30_000);
 
+it('recovers the original inbox admission from Catalog after losing the coordinator acknowledgement', async () => {
+  const f = await fixture();
+  const principalId = 'inbox-owner';
+  const command = { inboxId: 'supervisor-first', principalId, key: 'inbox-command', threadId: 'inbox-thread', branchId: 'inbox-branch', method: 'submit' };
+  await f.runtimeClient.createThread(command.threadId, command.branchId, undefined, principalId);
+  expect(await f.host.agentRuntimeRequest('runtime.inbox.reconcile', command)).toEqual({});
+  const receipt = await f.runtimeClient.submit({ key: command.key, threadId: command.threadId, branchId: command.branchId,
+    expectedHead: null, input: { text: 'original parked message' }, configuration: {} });
+  await f.crash();
+  const reopened = createKernelClient(f.options);
+  try {
+    expect(await reopened.agentRuntimeRequest('runtime.inbox.reconcile', command)).toEqual({ result: { status: 200, body: receipt } });
+    await expect(reopened.agentRuntimeRequest('runtime.inbox.reconcile', { ...command, principalId: 'other-owner' })).rejects.toThrow(/identity changed/i);
+    const rejected = { ...command, inboxId: 'supervisor-second', key: 'rejected-input' };
+    const draft = { text: 'draft to edit', attachments: [{ ref: 'retained-file' }] };
+    await reopened.agentRuntimeRequest('runtime.inbox.reconcile', { ...rejected, draft, result: { status: 409, body: { code: 'thread-conflict' } } });
+    expect(await reopened.agentRuntimeRequest('runtime.inbox.rejections', {
+      principalId, threadId: command.threadId, branchId: command.branchId,
+    })).toEqual([{ inboxId: rejected.inboxId, key: rejected.key, status: 409, code: 'thread-conflict', draft }]);
+  } finally { await reopened.close(); }
+}, 30_000);
+
 it('framed IPC rejects malformed parameters and stale or grant-scoped authority', async () => {
   const f = await fixture();
   for (const request of [

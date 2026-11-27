@@ -4,26 +4,31 @@ import WebSocket from 'ws';
 import { BrokeredHostRpcTransport, BrokeredHostUnavailableError, type BrokeredHostChannel, type BrokeredHostTransportFactory } from '@varin/extension-host';
 import { brokerFrame, extensionBrokerPath, extensionNodeBase, extensionSandboxProtocolVersion } from './extension-sandbox-protocol.js';
 import { createProviderLeaseOwner, type ResourceProvider } from './resource-provider.js';
+import type { SandboxRelayClient } from '../lifecycle/sandbox-relay-client.js';
 
 /** The allocation and bidirectional capability channel belong to one verified extension owner. */
-export function extensionSandboxTransport(provider: ResourceProvider, leases = createProviderLeaseOwner(provider)): BrokeredHostTransportFactory {
+export function extensionSandboxTransport(provider: ResourceProvider, leases = createProviderLeaseOwner(provider),
+  relay?: SandboxRelayClient): BrokeredHostTransportFactory {
   return options => {
     const opening = new AbortController();
     let stream: WebSocket | undefined;
     let ready = false;
     let receivedExit = false;
+    let relayed: ReturnType<SandboxRelayClient['open']> | undefined;
     const channel: BrokeredHostChannel = {
-      connected: () => ready && stream?.readyState === WebSocket.OPEN,
+      connected: () => ready && (relayed !== undefined || stream?.readyState === WebSocket.OPEN),
       send(message, callback) {
         if (brokerFrame(message) && message.kind === 'request' && brokerFrame(message.params)) {
           const { method, params } = message;
           if (method === 'activate') message = { ...message, params: { storage: params.storage, dependencies: params.dependencies } };
           else if (method === 'migrate') message = { ...message, params: { input: params.input } };
         }
-        stream!.send(JSON.stringify(message), error => callback?.(error ?? null));
+        if (relayed) relayed.send(message, error => callback?.(error ?? null));
+        else stream!.send(JSON.stringify(message), error => callback?.(error ?? null));
       },
       stop(force) {
-        if (channel.connected()) stream!.send(JSON.stringify({ kind: 'stop', force }));
+        if (relayed) relayed.send({ kind: 'stop', force });
+        else if (channel.connected()) stream!.send(JSON.stringify({ kind: 'stop', force }));
         else if (!ready) opening.abort(new BrokeredHostUnavailableError('Extension sandbox preparation stopped'));
       },
       observe(events) {
@@ -57,6 +62,22 @@ export function extensionSandboxTransport(provider: ResourceProvider, leases = c
             await response.body?.cancel();
             if (!response.ok) throw new BrokeredHostUnavailableError('Extension sandbox rejected the verified artifact');
             signal.throwIfAborted();
+            if (relay) {
+              const transferred = await new Promise<boolean>(resolve => {
+                relayed = relay.open(resource, allocation.lease.generation, options.artifact.integrity, message => {
+                  if (message.kind === 'open') { opened = true; ready = true; }
+                  if (message.kind === 'frame' && brokerFrame(message.frame)) events.received(message.frame);
+                  if (message.kind === 'transferred') resolve(true);
+                  if (message.kind === 'closed') { receivedExit = brokerFrame(message.frame) && message.frame.confirmed === true; resolve(false); }
+                });
+                signal.addEventListener('abort', () => { relayed?.send({ kind: 'stop', force: true }); resolve(false); }, { once: true });
+              });
+              relayed?.close(); relayed = undefined;
+              ready = false;
+              if (transferred) events.transferred();
+              else events.stopped(new BrokeredHostUnavailableError('Supervised extension sandbox stream closed'), receivedExit || !opened);
+              return;
+            }
             const address = new URL(url(route));
             address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:';
             stream = new WebSocket(address, { headers, followRedirects: false, signal });
@@ -82,6 +103,7 @@ export function extensionSandboxTransport(provider: ResourceProvider, leases = c
         })();
       },
     };
-    return new BrokeredHostRpcTransport({ channel, onCrash: options.onCrash, requestFromChild: options.requestFromExtension });
+    return new BrokeredHostRpcTransport({ channel, onCrash: options.onCrash, requestFromChild: options.requestFromExtension,
+      transfersInvocationScopes: Boolean(relay) });
   };
 }

@@ -1,16 +1,21 @@
 import { watch } from 'node:fs';
-import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt } from '@varin/protocol';
+import type { FollowupEventReceiveParams, FollowupEventReceiveReceipt, FollowupEventSourceIdentity } from '@varin/protocol';
 import type { SupervisorJournal } from './supervisor-journal.js';
 
 export function startSupervisorInbox(
   journal: SupervisorJournal,
   receiveDurably: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>,
   onUnavailable: () => void,
+  onReceiverAvailability: () => void = () => {},
 ) {
   const stop = new AbortController();
   let work: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let dirty = false;
+  let blocked = new Set<string>();
+  const key = ({ principalId, source }: FollowupEventSourceIdentity) => JSON.stringify([
+    principalId, source.extensionId, source.sourceId, source.connectionId, source.accountId, source.host ?? null,
+  ]);
   const scheduleRetry = () => {
     if (timer || stop.signal.aborted) return;
     timer = setTimeout(() => { timer = undefined; wake(); }, 2000);
@@ -24,7 +29,12 @@ export function startSupervisorInbox(
       while (dirty && !stop.signal.aborted) {
         dirty = false;
         try {
-          const result = await journal.replay(receiveDurably, stop.signal);
+          const next = new Set<string>();
+          const result = await journal.replay(receiveDurably, stop.signal, identity => next.add(key(identity)));
+          if (next.size !== blocked.size || [...next].some(item => !blocked.has(item))) {
+            blocked = next;
+            onReceiverAvailability();
+          }
           if (result.retained) scheduleRetry();
         } catch {
           if (!stop.signal.aborted) { onUnavailable(); scheduleRetry(); }
@@ -45,6 +55,7 @@ export function startSupervisorInbox(
   const initialReplay = work!;
   return {
     initialReplay,
+    blocksReceiver: (identity: FollowupEventSourceIdentity) => blocked.has(key(identity)),
     async close() {
       stop.abort();
       watcher.close();

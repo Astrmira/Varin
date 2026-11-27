@@ -153,9 +153,19 @@ scheduled wake and closes its stores before the supervisor treats it as parked. 
 traffic waits for the Host and is forwarded once readiness returns. `/live` probes the
 supervisor and `/health` reports the Host's readiness. Pending event pages submitted to
 the local supervisor journal also wake the Host. After Catalog confirms durable receipt,
-the journal discards new event bodies and keeps their retry identities. Active extension
-receivers and file watches keep the Host running. User sends and attachment uploads wait
-for the Host's normal receipt after wake.
+the journal discards new event bodies and keeps their retry identities. Sandboxed event
+receivers retain their original authenticated stream through parking. The supervisor
+commits pages before returning the cursor and requests a wake for new pages or a stopped
+receiver. A connection-specific credential lease is held in memory for up to 30 minutes
+or until the access token expires, whichever comes first. The Host resumes receivers using
+the reconciled Catalog cursor. Local receivers and active file watches retain the Host.
+
+The offline gateway credential can submit and enqueue new conversation inputs and stage
+uploads while the Host is parked. The supervisor returns an inbox receipt and replays
+the inputs in order before opening foreground traffic. The client follows the receipt
+to final admission, and rejected inputs can be reopened from the conversation. Upload
+bytes are staged by content hash in the private supervisor directory and removed after
+acknowledgement.
 
 ### Resource Node (`docker-compose.resource-node.yml`)
 

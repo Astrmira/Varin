@@ -228,6 +228,8 @@ pub(crate) const KERNEL_CONTROL_METHODS: &[&str] = &[
     "runtime.status",
     "runtime.park.reserve",
     "runtime.park.release",
+    "runtime.inbox.reconcile",
+    "runtime.inbox.rejections",
     "runtime.tools.select",
     "runtime.run.inspect",
     "runtime.run.failure",
@@ -2099,6 +2101,27 @@ pub(crate) struct ModelSelectParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RuntimeStatusParams {
     pub(crate) include_wake_deadline: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InboxReconcileParams {
+    pub(crate) inbox_id: String,
+    pub(crate) principal_id: String,
+    pub(crate) key: String,
+    pub(crate) thread_id: String,
+    pub(crate) branch_id: String,
+    pub(crate) method: String,
+    pub(crate) result: Option<Value>,
+    pub(crate) draft: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InboxRejectionsParams {
+    pub(crate) principal_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) branch_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -5866,6 +5889,14 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
         "runtime.park.release" => serde_json::from_value::<KernelEmptyParams>(params.clone())
             .map(|_| ())
             .map_err(|error| error.to_string()),
+        "runtime.inbox.reconcile" => serde_json::from_value::<InboxReconcileParams>(params.clone())
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        "runtime.inbox.rejections" => {
+            serde_json::from_value::<InboxRejectionsParams>(params.clone())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
         "runtime.material.retention" => {
             serde_json::from_value::<MaterialRetentionParams>(params.clone())
                 .map(|_| ())

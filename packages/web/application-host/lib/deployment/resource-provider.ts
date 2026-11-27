@@ -2,6 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { request } from 'node:http';
 import type { ComputerPlatform, SourceResourceOwner } from '@varin/protocol';
 import { waitWithSignal } from '../cancellation.js';
+import { readDeploymentJson, type DeploymentPolicy } from './policy.js';
+
+export async function deploymentResourceProvider(options: NonNullable<DeploymentPolicy['resourceProvider']>, dataDir: string) {
+  const credentials = await readDeploymentJson(options.credentialFile, dataDir, 'resourceProvider.credentialFile');
+  const bearer = credentials && typeof credentials === 'object' && 'token' in credentials ? credentials.token : null;
+  if (typeof bearer !== 'string' || !bearer || /\s/u.test(bearer)) throw new Error('resourceProvider.credentialFile must contain a token');
+  return createSocketResourceProvider({ ...options, bearer });
+}
 
 export interface ProviderResource {
   id: string;
