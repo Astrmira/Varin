@@ -91,7 +91,7 @@
     "@types/node": "^24.3.1",
     "@types/novnc__novnc": "1.6.0",
     "@types/qrcode": "^1.5.5",
-    "@types/react": "^19.3.0",
+    "@types/react": "^19.3.3",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
     "autoprefixer": "^10.6.2",
