@@ -8,9 +8,8 @@ import { CalendarFailure } from '@/components/session/CalendarTaskStatus';
 import { useI18n } from '@/lib/i18n';
 import { BotFigure } from './BotFigure';
 import { useBotPanel } from './botPanelModel';
+import { occurrenceTime } from './botPresentation';
 import { readCalendarReply, type CalendarReplyItem } from './calendarReply';
-
-export const occurrenceTime = (record: CalendarOccurrence) => record.reason.kind === 'scheduled' ? record.reason.at_ms : record.observed_at_ms;
 
 export function BotScheduleResult({ name, record, locale, open, onClose, finalFocus }: {
   name: string;

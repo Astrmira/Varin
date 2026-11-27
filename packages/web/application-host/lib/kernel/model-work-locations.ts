@@ -13,7 +13,7 @@ import { resourceSource } from './thread-context.js';
 import type { SourceDirectory } from './thread-sources.js';
 import { sourceToolSchemas } from './source-launch.js';
 import { workLocationCapabilities } from './work-location-capabilities.js';
-import { normalizePathIdentity, normalizeWorkspaceRelativePath } from '../workspace/path-safety.js';
+import { normalizeWorkspaceRelativePath } from '../workspace/path-safety.js';
 import { resourceSections } from '../agent-resources/render.js';
 import type { PreparedAgentResources } from '../agent-resources/authority.js';
 import { waitWithSignal } from '../cancellation.js';
@@ -344,7 +344,7 @@ export function createModelWorkLocations(options: {
         return {row,target:description,...await locate(row,description)};
       };
       const operationId = q.operationId;
-      const useLocation = async () => {
+      const prepareLocationOperation = async () => {
         const target = await locateTarget();
         const {key:actual,row,canonicalPath} = target;
         if (q.kind === 'work_location_switch') {
@@ -380,8 +380,8 @@ export function createModelWorkLocations(options: {
         } finally { preparing.delete(key); }
       };
       return await (q.default === true && lazy && options.withSourceUse
-        ? options.withSourceUse(lazy.resource_owner, useLocation, signal)
-        : useLocation());
+        ? options.withSourceUse(lazy.resource_owner, prepareLocationOperation, signal)
+        : prepareLocationOperation());
     } catch(error) {
       // Neither model nor execution transcripts should receive transport URLs,
       // credentials or raw target diagnostics, even on a malformed response.

@@ -17,7 +17,6 @@ vi.mock('@/components/icon/Icon', () => ({ Icon: () => null }));
 vi.mock('./BotScheduleResult', () => ({
   BotScheduleResult: ({ record, open }: { record: CalendarOccurrence; open: boolean }) =>
     open ? <div role="dialog" data-result={record.id}>{record.failure_code}</div> : null,
-  occurrenceTime: (record: CalendarOccurrence) => record.observed_at_ms,
 }));
 
 const entry = { runtime: 'agent' as const, threadId: 'bot-entry', branchId: 'main' };

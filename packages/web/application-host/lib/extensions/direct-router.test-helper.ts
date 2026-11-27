@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type express from 'express';
+import express from 'express';
 import type { Request, Response as ExpressResponse } from 'express';
 
 /** Exercise Express's actual route/middleware stack without opening a listener. */
@@ -24,12 +24,17 @@ export function routerTransport(router: ReturnType<typeof express.Router>) {
       },
     });
     const requestHeaders = new Headers(init.headers);
-    const binary = requestHeaders.get('content-type') === 'application/octet-stream';
+    if (init.body != null && !requestHeaders.has('content-length') && !requestHeaders.has('transfer-encoding')) {
+      requestHeaders.set('transfer-encoding', 'chunked');
+    }
+    const incomingHeaders = Object.fromEntries(requestHeaders);
+    const binary = express.request.is.call({ headers: incomingHeaders }, 'application/octet-stream') === 'application/octet-stream';
     const request = Object.assign(new EventEmitter(), {
       method: init.method ?? 'GET',
       url: target.pathname + target.search,
-      headers: Object.fromEntries(requestHeaders),
+      headers: incomingHeaders,
       header: (name: string) => requestHeaders.get(name) ?? undefined,
+      is: express.request.is,
       body: init.body && !binary ? JSON.parse(String(init.body)) : undefined,
       async *[Symbol.asyncIterator]() {
         if (binary && init.body && typeof (init.body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === 'function')

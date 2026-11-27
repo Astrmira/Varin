@@ -2,7 +2,7 @@ import { closeManagedExternalTransport, openManagedExternalTransport, type Manag
 import { prepareQuoteSelections } from '../kernel/thread-quotes.js';
 import { parseAttachmentImageReferences } from '../kernel/thread-images.js';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';

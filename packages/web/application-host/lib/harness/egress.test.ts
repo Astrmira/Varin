@@ -1,6 +1,5 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import net from "node:net";
-import http from "node:http";
 import { once } from "node:events";
 import { createEgressRuntime, classifyEgressError, resolveEgressPolicy } from "./egress.js";
 import { checkHttpUrl, classifyIp } from "./http-target.js";

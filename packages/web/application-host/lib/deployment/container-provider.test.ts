@@ -98,14 +98,14 @@ it.each(['resources', 'browser', 'computer', 'extensions', 'shared-extensions'])
     throw new Error('Unexpected test engine command');
   });
   const provider = createSocketResourceProvider({ id: 'local', socketPath, bearer: 'control-token' });
-  const use = (leaseId: string, id = extensionId) => provider.acquire({ resourceId, leaseId, ...(role === 'extensions' && { extensionId: id }) });
+  const acquireLease = (leaseId: string, id = extensionId) => provider.acquire({ resourceId, leaseId, ...(role === 'extensions' && { extensionId: id }) });
   const observation = new AbortController();
   try {
     expect(await provider.describe()).toMatchObject([{ id: resourceId, role, ...(role === 'browser' && { browserId: 'configured-cdp' }),
       ...(role === 'computer' && { desktopId }), ...(dedicated && { extensionId }) }]);
     expect(await provider.status(resourceId)).toMatchObject({ state: 'cold' });
     expect(operations).toEqual([]);
-    const [first, second] = await Promise.all([use('one'), use('two')]);
+    const [first, second] = await Promise.all([acquireLease('one'), acquireLease('two')]);
     expect(first.generation).toBe(second.generation);
     expect(operations.filter(operation => operation === 'create')).toHaveLength(1);
     const endpoint = first.endpoint + (role === 'extensions'
@@ -136,9 +136,9 @@ it.each(['resources', 'browser', 'computer', 'extensions', 'shared-extensions'])
     const claim = ({ resourceId, leaseId, generation, extensionId }: typeof first) =>
       ({ resourceId, leaseId, generation, ...(extensionId && { extensionId }) });
     if (role === 'extensions') {
-      if (dedicated) await expect(use('other', otherExtension)).rejects.toThrow('403');
+      if (dedicated) await expect(acquireLease('other', otherExtension)).rejects.toThrow('403');
       else {
-        const other = await use('other', otherExtension);
+        const other = await acquireLease('other', otherExtension);
         expect(other.generation).toBe(first.generation);
         expect(other.bearer).not.toBe(first.bearer);
         expect((await identity(other.bearer)).status).toBe(401);
@@ -176,7 +176,7 @@ it.each(['resources', 'browser', 'computer', 'extensions', 'shared-extensions'])
     expect(await provider.status(resourceId)).toMatchObject({ state: 'unavailable', generation: first.generation });
     failDetach = false;
     expect(await provider.retire(resourceId, first.generation)).toMatchObject({ processExited: true, volumeDetached: true });
-    const replacement = await use('replacement');
+    const replacement = await acquireLease('replacement');
     expect(replacement.generation).not.toBe(first.generation);
     await provider.release(claim(replacement));
     await expect.poll(async () => (await provider.status(resourceId)).state).toBe('cold');

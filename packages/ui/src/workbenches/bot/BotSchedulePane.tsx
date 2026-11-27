@@ -8,9 +8,9 @@ import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { useMobilePages } from '@/contexts/mobile-pages';
 import { useBotPanel } from './botPanelModel';
-import { clockTime, dayLabel } from './botPresentation';
+import { clockTime, dayLabel, occurrenceTime } from './botPresentation';
 import { useFlash, useScrollIntoFocus } from './botFocus';
-import { BotScheduleResult, occurrenceTime } from './BotScheduleResult';
+import { BotScheduleResult } from './BotScheduleResult';
 
 function ScheduleRow({ task, open, onToggle, locale, onEdit, onResult }: {
   task: ScheduledTask;
