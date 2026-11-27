@@ -8,8 +8,9 @@ import { expect, it } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { startContainerResourceProvider } from './container-provider.js';
 import { createSocketResourceProvider } from './resource-provider.js';
+import { extensionBrokerPath } from './extension-sandbox-protocol.js';
 
-it.each(['resources', 'browser', 'computer'])('starts a %s container only on acquire and retires its original generation after release and detach', async role => {
+it.each(['resources', 'browser', 'computer', 'extensions'])('starts a %s container only on acquire and retires its original generation after release and detach', async role => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'varin-provider-helper-'));
   const socketPath = process.platform === 'win32' ? '\\\\.\\pipe\\varin-provider-' + randomUUID() : path.join(root, 'control.sock');
   const workspace = path.join(root, 'workspaces'), state = path.join(root, 'state');
@@ -17,7 +18,8 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
   const hostId = 'resource-host';
   const resourceId = '..';
   const desktopId = 'managed-linux';
-  const mediaPath = `/api/computers/desktops/${desktopId}/vnc`;
+  const extensionId = 'dev.example.sandbox';
+  const mediaPath = role === 'extensions' ? extensionBrokerPath + 'sha256-' + 'a'.repeat(64) : `/api/computers/desktops/${desktopId}/vnc`;
   const streamPath = `/api/computers/desktops/${desktopId}/stream`;
   let observationClosed: Promise<unknown> | undefined;
   let nodeReadyToRetire = false;
@@ -31,7 +33,7 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
       return;
     }
     if (req.url?.endsWith('/retention')) { res.end(JSON.stringify({ retireReady: nodeReadyToRetire })); return; }
-    res.end(JSON.stringify({ hostId, role, requestHostIdentity: true }));
+    res.end(JSON.stringify({ hostId, role, requestHostIdentity: true, ...(role === 'extensions' && { extensionId }) }));
   });
   const media = new WebSocketServer({ noServer: true });
   node.on('upgrade', (req, socket, head) => {
@@ -48,8 +50,9 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
   await writeFile(file, JSON.stringify({ version: 1, id: 'local', socketPath, credentialFile: controlFile,
     leaseDurationMs: 60_000, startupTimeoutMs: 10_000, idleRetentionMs: 500,
     resources: [{ id: resourceId, hostId, label: 'Local work', role,
-      ...(role === 'browser' ? { browserId: 'configured-cdp' } : role === 'computer' ? { desktopId } : { workspace }),
-      state, credentialFile: nodeFile, image: 'varin-node:fixture' }],
+      ...(role === 'extensions' ? { extensionId } : {
+        state, ...(role === 'browser' ? { browserId: 'configured-cdp' } : role === 'computer' ? { desktopId } : { workspace }),
+      }), credentialFile: nodeFile, image: 'varin-node:fixture' }],
   }));
 
   let instance: { Id: string; State: { Running: boolean; StartedAt: string }; Config: { Labels: Record<string, string> };
@@ -66,6 +69,11 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
     if (operation === 'create') {
       expect(instance).toBeUndefined();
       expect(rest.some(arg => arg.includes('dst=/home/varin/workspaces'))).toBe(role === 'resources');
+      if (role === 'extensions') {
+        expect(rest).toContain('--read-only');
+        expect(rest).toContain('VARIN_EXTENSION_ID=' + extensionId);
+        expect(rest.filter(arg => arg.includes('dst='))).toEqual([expect.stringContaining('/run/secrets/varin-extension-node.json,readonly')]);
+      }
       containerName = rest[rest.indexOf('--name') + 1]!;
       const [label, value] = rest[rest.indexOf('--label') + 1]!.split('=');
       instance = { Id: randomUUID(), State: { Running: false, StartedAt: new Date().toISOString() },
@@ -87,7 +95,7 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
   const observation = new AbortController();
   try {
     expect(await provider.describe()).toMatchObject([{ id: resourceId, role, ...(role === 'browser' && { browserId: 'configured-cdp' }),
-      ...(role === 'computer' && { desktopId }) }]);
+      ...(role === 'computer' && { desktopId }), ...(role === 'extensions' && { extensionId }) }]);
     expect(await provider.status(resourceId)).toMatchObject({ state: 'cold' });
     expect(operations).toEqual([]);
     const [first, second] = await Promise.all([use('one'), use('two')]);
@@ -108,6 +116,8 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
       const reader = frames.body!.getReader();
       expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: frame\n\n');
       reader.releaseLock();
+    }
+    if (role === 'computer' || role === 'extensions') {
       viewer = new WebSocket(first.endpoint.replace(/^http/u, 'ws') + mediaPath,
         { headers: { authorization: 'Bearer ' + first.bearer } });
       await once(viewer, 'open');
@@ -118,7 +128,13 @@ it.each(['resources', 'browser', 'computer'])('starts a %s container only on acq
     const claim = (lease: typeof first) => ({ resourceId: lease.resourceId, leaseId: lease.leaseId, generation: lease.generation });
     expect(await provider.renew(claim(first))).toMatchObject(claim(first));
     await expect(provider.retire(resourceId, first.generation)).rejects.toThrow('409');
+    const revoked = role === 'extensions' ? once(viewer!, 'close') : undefined;
     await provider.release(claim(first));
+    if (revoked) {
+      await revoked;
+      await expect.poll(() => media.clients.size).toBe(0);
+      viewer = undefined;
+    }
     expect((await identity(first.bearer)).status).toBe(401);
     expect(await provider.status(resourceId)).toMatchObject({ state: 'ready' });
     await provider.release(claim(second));

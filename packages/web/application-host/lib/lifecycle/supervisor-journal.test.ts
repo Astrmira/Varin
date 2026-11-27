@@ -135,6 +135,22 @@ it('watches foreground inboxes and leaves unverifiable acknowledgements queued',
   } finally { await inbox.close(); }
 }));
 
+it('replays a pending cursor chain in one startup scan when hashed filenames are reversed', async () => inDirectory(async folder => {
+  const journal = await SupervisorJournal.open(folder, owner);
+  const original = catalog();
+  const second = { ...page, expectedCursor: page.nextCursor, nextCursor: 'second-original-cursor',
+    events: [{ ...page.events[0]!, eventId: 'second-event' }] };
+  // SHA-256("two") sorts before SHA-256("one").
+  await journal.accept('one', page);
+  await journal.accept('two', second);
+  const inbox = startSupervisorInbox(journal, original.receive, () => {});
+  try {
+    await inbox.initialReplay;
+    expect(await journal.hasPendingEvents()).toBe(false);
+    expect(original.receive.mock.calls.map(([input]) => input.nextCursor)).toEqual([page.nextCursor, second.nextCursor]);
+  } finally { await inbox.close(); }
+}));
+
 it('rejects a journal directory accessible to another OS user', async () => inDirectory(async folder => {
   await SupervisorJournal.open(folder, owner);
   await chmod(folder, 0o755);

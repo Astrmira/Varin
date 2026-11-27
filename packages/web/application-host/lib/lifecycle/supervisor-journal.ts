@@ -177,14 +177,46 @@ export class SupervisorJournal {
 
   async replay(receive: (page: FollowupEventReceiveParams, signal?: AbortSignal) => Promise<FollowupEventReceiveReceipt>, signal?: AbortSignal) {
     let delivered = 0;
-    let retained = 0;
-    for (const name of (await readdir(this.directory)).filter(value => /^[a-f0-9]{64}\.pending$/.test(value)).sort()) {
+    const load = async (name: string) => {
       signal?.throwIfAborted();
       const record = await this.read(name);
-      if (!record) continue;
+      if (!record) return null;
       const { value } = record;
       if (!object(value) || value.version !== version || value.owner !== this.owner || !identifier(value.eventKey)
         || hash(value.eventKey) + '.pending' !== name || !validPage(value.page)) throw new Error('Invalid supervisor inbox entry');
+      return { raw: record.raw, page: value.page, envelope: value };
+    };
+    const names = (await readdir(this.directory)).filter(value => /^[a-f0-9]{64}\.pending$/.test(value)).sort();
+    // Event keys are content addresses. Their lexical order says nothing
+    // about the receiving Catalog cursor. Index only the edges, not the bodies.
+    const entries = new Map<string, { before: string; after: string }>();
+    const successors = new Map<string, string[]>();
+    const previous = new Set<string>();
+    for (const name of names) {
+      const record = await load(name);
+      if (!record) continue;
+      const { identity, expectedCursor, nextCursor } = record.page;
+      const before = encode([identity, expectedCursor]);
+      const after = encode([identity, nextCursor]);
+      entries.set(name, { before, after });
+      previous.add(after);
+      const later = successors.get(before) ?? [];
+      later.push(name);
+      successors.set(before, later);
+    }
+    const ready = [...entries].filter(([, edge]) => !previous.has(edge.before)).map(([name]) => name);
+    const ordered = new Set<string>();
+    for (const name of ready) {
+      if (ordered.has(name)) continue;
+      ordered.add(name);
+      for (const next of successors.get(entries.get(name)!.after) ?? []) ready.push(next);
+    }
+    // Catalog still decides admission if a receiver reuses a cursor value
+    // and the pending pages alone cannot establish its starting point.
+    for (const name of entries.keys()) ordered.add(name);
+    for (const name of ordered) {
+      const record = await load(name);
+      if (!record) continue;
       const ack = name.slice(0, -8) + '.ack';
       const fingerprint = hash(record.raw);
       const saved = (await this.read(ack))?.value;
@@ -194,21 +226,21 @@ export class SupervisorJournal {
           || saved.digest !== fingerprint || !archived || hash(archived.raw) !== fingerprint) throw new Error('Supervisor acknowledgement mismatch');
       } else {
         try {
-          const result = await receive(value.page, signal);
-          if (!isDeepStrictEqual(result.checkpoint.identity, value.page.identity) || result.checkpoint.cursor !== value.page.nextCursor
-            || result.accepted + result.duplicates !== value.page.events.length) throw new Error('Invalid Catalog acknowledgement');
-        } catch { if (signal?.aborted) throw signal.reason; retained++; continue; }
+          const result = await receive(record.page, signal);
+          if (!isDeepStrictEqual(result.checkpoint.identity, record.page.identity) || result.checkpoint.cursor !== record.page.nextCursor
+            || result.accepted + result.duplicates !== record.page.events.length) throw new Error('Invalid Catalog acknowledgement');
+        } catch { if (signal?.aborted) throw signal.reason; continue; }
         this.faults.afterCatalogReceipt?.();
         // Catalog's normal SQLite WAL acknowledgement does not prove that
         // the commit survived machine power loss. Keep the fsynced payload
         // as a private recovery copy even after it leaves the runnable inbox.
-        await this.put(name.slice(0, -8) + '.archived', value);
+        await this.put(name.slice(0, -8) + '.archived', record.envelope);
         await this.put(ack, { version, owner: this.owner, digest: fingerprint });
       }
       await unlink(path.join(this.directory, name)).catch(error => { if (errorCode(error) !== 'ENOENT') throw error; });
       await this.syncDirectory();
       delivered++;
     }
-    return { delivered, retained };
+    return { delivered, retained: entries.size - delivered };
   }
 }

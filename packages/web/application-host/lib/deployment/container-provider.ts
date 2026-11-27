@@ -9,6 +9,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { isPathWithinRoot } from '../workspace/path-safety.js';
 import type { ProviderResource, ProviderStatus } from './resource-provider.js';
+import { isVarinExtensionId } from '@varin/extension-contract';
+import { extensionBrokerPath, extensionIntegrity, extensionNodeCredential } from './extension-sandbox-protocol.js';
 
 const execute = promisify(execFile);
 const basePath = '/api/harness/managed-execution/v1';
@@ -19,7 +21,8 @@ interface Definition {
   resource: ProviderResource;
   image: string;
   workspace: string | undefined;
-  state: string;
+  state?: string;
+  extension?: { credentialPath: string; network?: string };
   token: string;
   container: string;
   configuration: string;
@@ -94,36 +97,50 @@ async function readConfig(file: string) {
   };
   if (!Array.isArray(input.resources)) throw new Error('resources must be an array');
   const definitions = await Promise.all(input.resources.map(async raw => {
-    const entry = object(raw, 'container resource', ['id', 'hostId', 'label', 'role', 'browserId', 'desktopId', 'image', 'workspace', 'state', 'credentialFile']);
+    const entry = object(raw, 'container resource', ['id', 'hostId', 'label', 'role', 'browserId', 'desktopId', 'extensionId', 'network', 'image', 'workspace', 'state', 'credentialFile']);
     const role = entry.role ?? 'resources';
-    if (role !== 'resources' && role !== 'browser' && role !== 'computer') throw new Error('The local provider supports Resource, Browser and Computer Nodes');
+    if (role !== 'resources' && role !== 'browser' && role !== 'computer' && role !== 'extensions') throw new Error('Unknown local provider role');
     if (role !== 'resources' && entry.workspace !== undefined || role !== 'browser' && entry.browserId !== undefined
-      || role !== 'computer' && entry.desktopId !== undefined) {
-      throw new Error('Workspace, browserId and desktopId are specific to their node roles');
+      || role !== 'computer' && entry.desktopId !== undefined
+      || role === 'extensions' && entry.state !== undefined || role !== 'extensions' && (entry.extensionId !== undefined || entry.network !== undefined)) {
+      throw new Error('Resource configuration contains fields for another node role');
     }
-    const [workspace, state, credentialPath] = await Promise.all([role === 'resources' ? directory(entry.workspace, 'workspace') : undefined, directory(entry.state, 'state'),
+    const [workspace, state, credentialPath] = await Promise.all([role === 'resources' ? directory(entry.workspace, 'workspace') : undefined,
+      role !== 'extensions' ? directory(entry.state, 'state') : undefined,
       realpath(absolute(entry.credentialFile, 'credentialFile'))]);
-    if (workspace && (isPathWithinRoot(state, workspace) || isPathWithinRoot(workspace, state) || isPathWithinRoot(credentialPath, workspace))) {
+    if (workspace && state && (isPathWithinRoot(state, workspace) || isPathWithinRoot(workspace, state) || isPathWithinRoot(credentialPath, workspace))) {
       throw new Error('Resource workspace, node state and provisioning credential must be separated');
     }
     const resourceId = name(entry.id, 'resource id'), hostId = name(entry.hostId, 'node hostId');
     const image = name(entry.image, 'image');
     if (image.startsWith('-')) throw new Error('Invalid image reference');
+    const extensionId = role === 'extensions' ? name(entry.extensionId, 'extensionId') : undefined;
+    if (extensionId && !isVarinExtensionId(extensionId)) throw new Error('Invalid sandbox extension ID');
+    const network = entry.network === undefined ? undefined : name(entry.network, 'network');
+    if (network === 'host' || network?.startsWith('container:') || network?.startsWith('ns:')) throw new Error('Extension sandbox needs a separate network namespace');
     const resource: ProviderResource = { id: resourceId, hostId, label: name(entry.label, 'resource label'), role,
       ...(role === 'browser'
         ? { browserId: name(entry.browserId, 'Browser Node browserId'), capabilities: ['browser', 'tabs', 'open', 'read', 'screenshot', 'act', 'activate'] }
         : role === 'computer' ? { desktopId: name(entry.desktopId, 'Computer Node desktopId'), platform: 'linux', capabilities: ['computer'] }
+        : extensionId ? { extensionId, capabilities: ['extension-broker'] }
         : { capabilities: ['sources', 'work-location-read', 'work-location'] }) };
-    return { resource, image, workspace, state, token: await credential(credentialPath),
+    return { resource, image, workspace, ...(state && { state }), token: await credential(credentialPath),
+      ...(extensionId && { extension: { credentialPath, ...(network && { network }) } }),
       container: 'varin-resource-' + digest([id, resourceId]).slice(0, 24),
-      configuration: digest(role === 'resources' ? [hostId, image, workspace, state] : [role, hostId, image, state, resource.browserId ?? resource.desktopId]) };
+      configuration: digest(extensionId ? [role, hostId, image, extensionId, credentialPath, network]
+        : role === 'resources' ? [hostId, image, workspace, state] : [role, hostId, image, state, resource.browserId ?? resource.desktopId]) };
   }));
   const overlaps = (left: string, right: string) => isPathWithinRoot(left, right) || isPathWithinRoot(right, left);
-  const roots = (entry: Definition) => entry.workspace ? [entry.workspace, entry.state] : [entry.state];
+  const roots = (entry: Definition) => [entry.workspace, entry.state].filter((root): root is string => !!root);
   for (const [index, definition] of definitions.entries()) {
     if (definitions.slice(0, index).some(prior => prior.resource.id === definition.resource.id ||
-      prior.resource.hostId === definition.resource.hostId || roots(prior).some(root => roots(definition).some(other => overlaps(root, other))))) {
+      prior.resource.hostId === definition.resource.hostId || !!definition.resource.extensionId && definition.resource.extensionId === prior.resource.extensionId ||
+      roots(prior).some(root => roots(definition).some(other => overlaps(root, other))))) {
       throw new Error('A provider resource needs its own identity and exclusive workspace and state mounts');
+    }
+    const sandboxCredential = definition.extension?.credentialPath;
+    if (sandboxCredential && definitions.some(candidate => candidate.workspace && isPathWithinRoot(sandboxCredential, candidate.workspace))) {
+      throw new Error('Extension sandbox credentials must be outside resource workspaces');
     }
   }
   const credentialPath = await realpath(absolute(input.credentialFile, 'credentialFile'));
@@ -162,8 +179,15 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
       instance = null;
     }
     if (!instance) {
+      const sandbox = definition.extension;
       const id = await run('create', '--name', definition.container, '--label', 'io.varin.provider.configuration=' + definition.configuration,
-        ...(definition.workspace ? ['--mount', mount(definition.workspace, imageNode.workspace)] : []), '--mount', mount(definition.state, imageNode.state),
+        ...(definition.workspace ? ['--mount', mount(definition.workspace, imageNode.workspace)] : []),
+        ...(definition.state ? ['--mount', mount(definition.state, imageNode.state)] : []),
+        ...(sandbox ? ['--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777',
+          '--security-opt=no-new-privileges', '--cap-drop=ALL', '--cap-add=SETUID', '--cap-add=SETGID', '--cap-add=CHOWN', '--cap-add=KILL', '--cap-add=DAC_OVERRIDE',
+          '--mount', mount(sandbox.credentialPath, extensionNodeCredential) + ',readonly',
+          '--env', 'VARIN_EXTENSION_ID=' + definition.resource.extensionId, '--env', 'VARIN_EXTENSION_HOST_ID=' + definition.resource.hostId,
+          ...(sandbox.network ? ['--network=' + sandbox.network] : [])] : []),
         '--publish', '127.0.0.1::3000', definition.image);
       await run('start', id);
       instance = await inspect(definition);
@@ -179,6 +203,7 @@ function driver(engine: 'docker' | 'podman', startupTimeoutMs: number, invoke: E
       if (response?.ok) {
         const identity = object(await response.json(), 'node identity');
         if (identity.hostId !== definition.resource.hostId || identity.role !== definition.resource.role || identity.requestHostIdentity !== true
+          || definition.extension && identity.extensionId !== definition.resource.extensionId
           || response.headers.get('x-varin-managed-host') !== definition.resource.hostId) throw new Error('Container does not own the declared Node identity');
         return { containerId: instance.Id, generation: digest([instance.Id, instance.State.StartedAt]), nodePort: port };
       }
@@ -274,13 +299,16 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     const slot = slots.get(id);
     if (!match || slot?.state !== 'ready' || !slot.instance) return { status: 404 } as const;
     const api = match[2]!, computer = slot.definition.resource.role === 'computer';
-    const allowed = upgrade ? computer && desktopMediaPath.test(api)
+    const extension = slot.definition.resource.role === 'extensions';
+    const broker = extension && api.startsWith(extensionBrokerPath) && extensionIntegrity.test(api.slice(extensionBrokerPath.length));
+    const allowed = extension ? (upgrade ? broker : broker || api === basePath + '/identity')
+      : upgrade ? computer && desktopMediaPath.test(api)
       : api.startsWith(basePath + '/') || computer && (api === '/api/computers' || api.startsWith('/api/computers/'));
     if (!allowed) return { status: 404 } as const;
     sweep(slot);
     const lease = [...slot.leases.values()].find(candidate => secretMatches(req.headers.authorization, 'Bearer ' + candidate.bearer));
     if (!lease || lease.generation !== slot.instance.generation) return { status: 401 } as const;
-    return { slot, instance: slot.instance, api, path: api + url.search };
+    return { slot, instance: slot.instance, api, path: api + url.search, lease };
   };
   const beginRequest = (slot: ResourceSlot) => {
     // Count upstream lifetime as well as the downstream socket. A pending
@@ -323,19 +351,38 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
     req.pipe(outbound);
   });
   const mediaSockets = new Set<Duplex>();
+  const extensionSockets = new Map<string, Set<Duplex>>();
   data.on('upgrade', (req, downstream, head) => {
     const target = resolveDataRequest(req, true);
     const reject = (status: number) => downstream.end(`HTTP/1.1 ${status} Upgrade refused\r\nConnection: close\r\n\r\n`);
     if ('status' in target) { reject(target.status); return; }
     if (req.headers.upgrade?.toLowerCase() !== 'websocket') { reject(400); return; }
-    const { slot, instance, path } = target;
+    const { slot, instance, path, lease } = target;
     const settle = beginRequest(slot);
     mediaSockets.add(downstream);
     let upstreamSocket: Duplex | undefined;
+    let leaseTimer: ReturnType<typeof setTimeout> | undefined;
+    const checkLease = () => {
+      const current = slot.leases.get(lease.leaseId);
+      if (current?.generation !== lease.generation || current.expiresAt <= Date.now()) { downstream.destroy(); return; }
+      leaseTimer = setTimeout(checkLease, Math.min(2_147_483_647, current.expiresAt - Date.now()));
+      leaseTimer.unref();
+    };
+    if (slot.definition.extension) checkLease();
+    if (slot.definition.extension) {
+      const peers = extensionSockets.get(lease.bearer) ?? new Set<Duplex>();
+      peers.add(downstream);
+      extensionSockets.set(lease.bearer, peers);
+      downstream.once('close', () => {
+        peers.delete(downstream);
+        if (!peers.size) extensionSockets.delete(lease.bearer);
+      });
+    }
     const outbound = request({ hostname: '127.0.0.1', port: instance.nodePort, path, method: 'GET',
       headers: { ...proxyHeaders(req, slot, instance.nodePort), connection: 'Upgrade', upgrade: 'websocket' } });
     downstream.once('error', () => downstream.destroy());
     downstream.once('close', () => {
+      clearTimeout(leaseTimer);
       mediaSockets.delete(downstream);
       if (upstreamSocket) upstreamSocket.destroy();
       else { outbound.destroy(); settle(); }
@@ -381,7 +428,10 @@ export async function startContainerResourceProvider(file: string, invoke: Engin
         const leaseId = name(input.leaseId, 'leaseId');
         const prior = slot.leases.get(leaseId);
         if (action === 'release') {
-          if (prior?.generation === input.generation) slot.leases.delete(leaseId);
+          if (prior && prior.generation === input.generation) {
+            slot.leases.delete(leaseId);
+            for (const peer of extensionSockets.get(prior.bearer) ?? []) peer.destroy();
+          }
           send(res, 204); return;
         }
         if (action === 'renew' && (!prior || prior.generation !== input.generation || slot.state !== 'ready')) { send(res, 409); return; }

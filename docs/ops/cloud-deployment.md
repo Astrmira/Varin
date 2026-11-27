@@ -113,8 +113,9 @@ the operator addresses or file paths.
   `native`, `brokered`, and `surface` entrypoints, and `artifactIntegrities` admits
   specific Varin artifacts. Set any list to `[]` to disallow all entries it controls.
   The distribution's built-in packages stay available. `agentStaging: false` disables
-  Agent staging before workspace capture. Allowed packages still use their ordinary
-  execution mode. For a first-party-only Host, set `sources: []`.
+  Agent staging before workspace capture. `brokeredTransport: "sandbox"` runs
+  third-party Host extensions through the resource provider and admits only the
+  brokered Host realm for those extensions. For a first-party-only Host, set `sources: []`.
 - `externalAgents.profiles` admits external harness profile IDs. Existing settings and
   conversations stay in the catalog. `managedInstalls: false` disables new managed
   installations and update checks. `placement: "managed"` requires a managed resource
@@ -233,6 +234,34 @@ the Browser Node and connects to its CDP endpoint. Page holds keep the node aliv
 and an old page binding stays tied to its original node generation. The CDP
 browser process follows its own deployment lifecycle. Computer Node connections
 use their existing device settings.
+
+### Extension sandboxes
+
+Build the `extension-node` Dockerfile target from the same revision as the
+Application Host. Set `extensions.brokeredTransport` to `sandbox` in the Host
+policy and add one resource per extension to the provider. For example:
+
+```json
+{
+  "id": "sandbox-example",
+  "hostId": "sandbox-example-host",
+  "label": "Example extension",
+  "role": "extensions",
+  "extensionId": "dev.example.integration",
+  "image": "varin-extension-node:local",
+  "credentialFile": "/private/sandbox-example.json"
+}
+```
+
+Give each sandbox its own private credential JSON with a random `token`.
+The provider mounts it inside a protected directory, gives the extension a
+separate unprivileged worker account, and supplies a temporary filesystem.
+The operator can select a dedicated engine `network` with the deployment's
+outbound rules. Direct network calls from the worker follow that network's
+rules. Each resource accepts only artifacts for its declared extension ID.
+Extension storage and capability decisions stay on the Application Host.
+Package asset paths point to the sandbox copy. Extensions that use absolute
+Host paths or private Host URLs need to use the corresponding Host capabilities.
 
 ### Runtime Environment
 

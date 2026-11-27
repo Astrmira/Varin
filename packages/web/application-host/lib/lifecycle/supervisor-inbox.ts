@@ -42,7 +42,9 @@ export function startSupervisorInbox(
   const fallback = setInterval(wake, 5000);
   fallback.unref();
   wake();
+  const initialReplay = work!;
   return {
+    initialReplay,
     async close() {
       stop.abort();
       watcher.close();

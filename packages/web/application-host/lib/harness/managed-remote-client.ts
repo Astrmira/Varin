@@ -108,6 +108,7 @@ export interface ManagedRemoteTargetRegistryOptions {
   readSettings(): Promise<Record<string, unknown>>;
   fetch?: ManagedTransportFetch;
   provider?: ResourceProvider;
+  providerLeases?: ReturnType<typeof createProviderLeaseOwner>;
   /**
    * A managed target that was unreachable (or never probed) answered an
    * identity probe again. Consumers re-attach — never resubmit — durable
@@ -236,7 +237,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
   };
   const report = (error: unknown) => options.onError?.(error instanceof Error ? error : new Error(String(error)));
   const provider = options.provider;
-  const providerLeases = provider ? createProviderLeaseOwner(provider, report) : undefined;
+  const providerLeases = provider ? options.providerLeases ?? createProviderLeaseOwner(provider, report) : undefined;
   const providerBindings = new Map<string, () => void>();
   const describeProvider = async (signal?: AbortSignal, role: ProviderResource['role'] = 'resources') => {
     if (!provider) return [];

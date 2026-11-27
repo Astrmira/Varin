@@ -100,6 +100,7 @@ export interface ApplicationExtensionRuntimeOptions {
   services?: HostServiceRegistry;
   storage?: ExtensionStorageStore;
   transportFactory?: BrokeredHostTransportFactory;
+  sandboxTransportFactory?: BrokeredHostTransportFactory;
   workbench?: WorkbenchProfileStore;
   onObserverError?: (error: unknown) => void;
   /** Trusted application domains delete only after retirement and explicit uninstall deleteData. */
@@ -193,6 +194,7 @@ export class ApplicationExtensionRuntime {
       routing: this.routing,
       prepareBuiltin: (extensionId) => this.#ensureBuiltinArtifact(extensionId),
       ...(options.transportFactory ? { transportFactory: options.transportFactory } : {}),
+      ...(options.sandboxTransportFactory ? { sandboxTransportFactory: options.sandboxTransportFactory } : {}),
     });
     this.#serviceUnsubscribe = this.services.subscribe(() => this.#publish());
   }

@@ -27,6 +27,7 @@ export interface ExtensionDeploymentPolicy {
   readonly realms?: readonly typeof extensionRealms[number][];
   readonly artifactIntegrities?: readonly string[];
   readonly agentStaging?: boolean;
+  readonly brokeredTransport?: 'child' | 'sandbox';
 }
 export interface ExternalAgentDeploymentPolicy {
   readonly profiles?: readonly string[];
@@ -149,7 +150,7 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
   }
   let extensions: ExtensionDeploymentPolicy | undefined;
   if (input.extensions !== undefined) {
-    const rule = fields(input.extensions, 'extensions', ['sources', 'realms', 'artifactIntegrities', 'agentStaging']);
+    const rule = fields(input.extensions, 'extensions', ['sources', 'realms', 'artifactIntegrities', 'agentStaging', 'brokeredTransport']);
     const sources = rule.sources === undefined ? undefined : names(rule.sources, 'extensions.sources');
     const realms = rule.realms === undefined ? undefined : names(rule.realms, 'extensions.realms');
     const artifactIntegrities = rule.artifactIntegrities === undefined ? undefined : names(rule.artifactIntegrities, 'extensions.artifactIntegrities');
@@ -157,11 +158,14 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
     if (realms?.some(realm => !extensionRealms.some(known => known === realm))) throw new Error('Unknown extensions.realms value');
     if (artifactIntegrities?.some(integrity => !/^sha256-[a-f0-9]{64}$/.test(integrity))) throw new Error('extensions.artifactIntegrities must contain Varin SHA-256 artifact identifiers');
     if (rule.agentStaging !== undefined && typeof rule.agentStaging !== 'boolean') throw new Error('extensions.agentStaging must be a boolean');
+    if (rule.brokeredTransport !== undefined && rule.brokeredTransport !== 'child' && rule.brokeredTransport !== 'sandbox')
+      throw new Error('extensions.brokeredTransport must be child or sandbox');
     extensions = {
       ...(sources && { sources: sources as VarinExtensionPackageSourceKind[] }),
       ...(realms && { realms: realms as typeof extensionRealms[number][] }),
       ...(artifactIntegrities && { artifactIntegrities }),
       ...(rule.agentStaging !== undefined && { agentStaging: rule.agentStaging }),
+      ...(rule.brokeredTransport !== undefined && { brokeredTransport: rule.brokeredTransport }),
     };
   }
   let externalAgents: ExternalAgentDeploymentPolicy | undefined;
@@ -184,6 +188,7 @@ export function parseDeploymentPolicy(value: unknown): DeploymentPolicy {
     if (!path.isAbsolute(socketPath) || !path.isAbsolute(credentialFile)) throw new Error('Resource provider socket and credential paths must be absolute');
     resourceProvider = { id: requiredName(rule.id, 'resourceProvider.id'), socketPath, credentialFile };
   }
+  if (extensions?.brokeredTransport === 'sandbox' && !resourceProvider) throw new Error('The extension sandbox requires a resourceProvider');
   let execution: DeploymentPolicy['execution'];
   if (input.execution !== undefined) {
     const rule = fields(input.execution, 'execution', ['defaultWorkspace']);

@@ -54,6 +54,7 @@ jobs:
           node scripts/build-resource-node.mjs --check-lock
           node scripts/build-resource-node.mjs --check-lock --role browser
           node scripts/build-resource-node.mjs --check-lock --role computer
+          node scripts/build-resource-node.mjs --check-lock --role extensions
       - name: Check for Bun workspace changes
         id: bun-changes
         run: |
@@ -129,6 +130,7 @@ jobs:
           node scripts/build-resource-node.mjs --check-lock
           node scripts/build-resource-node.mjs --check-lock --role browser
           node scripts/build-resource-node.mjs --check-lock --role computer
+          node scripts/build-resource-node.mjs --check-lock --role extensions
 
   portable-source:
     name: Portable source checks

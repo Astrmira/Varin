@@ -363,8 +363,9 @@ import { createDrainingAdmission, createHttpObservationDrain, createThreadWriteA
 import { assertDataRootMayStart } from './lib/data-restore-guard.js';
 import { hostEnvironment } from './lib/security/host-environment.js';
 import { DeploymentPolicyDeniedError, readDeploymentJson, readDeploymentPolicy } from './lib/deployment/policy.js';
-import { createSocketResourceProvider, isProviderResourceOwner, providerResourceOwner } from './lib/deployment/resource-provider.js';
+import { createProviderLeaseOwner, createSocketResourceProvider, isProviderResourceOwner, providerResourceOwner } from './lib/deployment/resource-provider.js';
 import { createExtensionAdmission } from './lib/deployment/extension-admission.js';
+import { extensionSandboxTransport } from './lib/deployment/extension-sandbox-transport.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createProjectTextEncodingService } from './lib/projects/text-encoding.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -804,6 +805,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     if (typeof bearer !== 'string' || !bearer || /\s/u.test(bearer)) throw new Error('resourceProvider.credentialFile must contain a token');
     resourceProvider = createSocketResourceProvider({ ...providerOptions, bearer });
   }
+  const providerLeases = resourceProvider && deployment?.extensions?.brokeredTransport === 'sandbox'
+    ? createProviderLeaseOwner(resourceProvider, () => console.warn('[ResourceProvider] A resource lease could not be renewed or released'))
+    : undefined;
   const workspace = deployment?.execution?.defaultWorkspace;
   const providerDefault = resourceProvider && workspace ? { path: workspace.path,
     resourceOwner: providerResourceOwner(resourceProvider.id, { id: workspace.resourceId, hostId: workspace.hostId }) } : undefined;
@@ -1111,6 +1115,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       userDestinations: egress.userDestinations, proxyRequired: Boolean(egress.requiredProxy),
     } }), ...(extensions && { extensions: {
       sources: extensions.sources, realms: extensions.realms, agentStaging: extensions.agentStaging,
+      brokeredTransport: extensions.brokeredTransport ?? 'child',
       requiresApprovedIntegrity: extensions.artifactIntegrities !== undefined,
     } }), ...(background && { background: {
       updateChecks: background.updateChecks !== false,
@@ -1145,6 +1150,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       dataDir: VARIN_DATA_DIR,
       packages: extensionPackages,
       varinVersion: VARIN_VERSION,
+      ...(resourceProvider && providerLeases && { sandboxTransportFactory: extensionSandboxTransport(resourceProvider, providerLeases) }),
     });
   }
   const cacheRoot = deploymentCacheRoot(process.env.VARIN_CACHE_DIR, extensionRuntime.services.hostId);
@@ -1425,6 +1431,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     readSettings: async () => await readSettingsFromDisk() as unknown as Record<string, unknown>,
     ...(constrainedEgress && { fetch: (url, init) => egressRuntime.fetch(String(url), init) }),
     ...(resourceProvider && { provider: resourceProvider }),
+    ...(providerLeases && { providerLeases }),
     // A reconnected target re-attaches to its durable jobs — the attempt
     // records already carry the backend job identity, so the experiment
     // reconcile inspects and re-polls rather than resubmitting.
@@ -3384,6 +3391,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       (page, signal) => agentRuntime.receivePluginEvents(page, signal),
       () => console.warn('[Supervisor] Durable inbox unavailable; accepted pages remain on disk'))
     : undefined;
+  // Reconcile committed input before the listeners and live event receivers
+  // can advance the same Catalog cursors.
+  await supervisorInbox?.initialReplay;
   pluginEventSources.start();
   pluginEventTransport.start();
   botLifecycleRuntime = createBotLifecycleRuntime({

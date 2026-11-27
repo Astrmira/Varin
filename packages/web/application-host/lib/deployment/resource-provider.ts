@@ -13,6 +13,8 @@ export interface ProviderResource {
   browserId?: string;
   /** Desktop identifier advertised by the Computer Node, available before launch. */
   desktopId?: string;
+  /** A dedicated sandbox is bound to this extension for its entire generation. */
+  extensionId?: string;
   platform?: ComputerPlatform;
 }
 
@@ -107,6 +109,7 @@ export function parseProviderResources(value: unknown): ProviderResource[] {
     return { id: text(entry.id), hostId: text(entry.hostId), label: text(entry.label), role, capabilities: entry.capabilities.map(text),
       ...(role === 'browser' && entry.browserId !== undefined && { browserId: text(entry.browserId) }),
       ...(role === 'computer' && entry.desktopId !== undefined && { desktopId: text(entry.desktopId) }),
+      ...(role === 'extensions' && { extensionId: text(entry.extensionId) }),
       ...(role === 'computer' && platform && { platform }) };
   });
   if (new Set(resources.map(resource => resource.id)).size !== resources.length) throw new Error('Duplicate logical resource in provider directory');
