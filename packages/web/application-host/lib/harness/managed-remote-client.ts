@@ -254,7 +254,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
   };
   const report = (error: unknown) => options.onError?.(error instanceof Error ? error : new Error(String(error)));
   const provider = options.provider;
-  const acquireProviderLease = provider ? createProviderLeaseOwner(provider, report) : undefined;
+  const providerLeases = provider ? createProviderLeaseOwner(provider, report) : undefined;
   const providerBindings = new Map<string, () => void>();
   const describeProvider = async (signal?: AbortSignal, role: ProviderResource['role'] = 'resources') => {
     if (!provider) return [];
@@ -271,9 +271,9 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
   };
   /** Keep a multi-request preparation on the same generation until its durable binding takes over. */
   const withSourceUse = async <T>(owner: import('@varin/protocol').SourceResourceOwner, work: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
-    if (!acquireProviderLease || owner.kind !== 'managed_host' || !isProviderResourceOwner(owner)) return work();
+    if (!providerLeases || owner.kind !== 'managed_host' || !isProviderResourceOwner(owner)) return work();
     const entry = await providerEntryFor(owner, 'resources', signal);
-    const use = await acquireProviderLease(entry.resource.id, signal);
+    const use = await providerLeases.acquire(entry.resource.id, signal);
     try { return await work(); } finally { use.release(); }
   };
   const providerConnection = (resource: ProviderResource, lease: ProviderLease): ConfiguredHost => {
@@ -316,7 +316,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
 
   const acquireConnection = async (target: ManagedTarget, signal?: AbortSignal) => {
     const placement = target.connection.provider!;
-    const use = await acquireProviderLease!(placement.resourceId, signal);
+    const use = await providerLeases!.acquire(placement.resourceId, signal);
     try {
       const current = use.lease;
       if (current.generation !== placement.generation || current.endpoint !== target.connection.apiUrl) {
@@ -498,7 +498,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
     signal?.throwIfAborted();
     if (provider && isProviderResourceOwner(owner)) {
       const entry = await providerEntryFor(owner, providerRole, signal);
-      const use = await acquireProviderLease!(entry.resource.id, signal);
+      const use = await providerLeases!.acquire(entry.resource.id, signal);
       try {
         const connection = providerConnection(entry.resource, use.lease);
         const prior = peers.get(owner.connectionId);
@@ -1121,6 +1121,7 @@ export function createManagedRemoteTargetRegistry(options: ManagedRemoteTargetRe
   };
 
   return { refresh, resolveBackend, externalAuthority, targetFor, sourceTargets, describeSourceTargets, browserTargets, providerBrowsers, withSourceUse,
+    providerActivity: () => providerLeases?.activity() ?? null,
     clientFor: makeClient, sourceTarget, forwardTarget, selectForwardTarget, storageTargets, storage, source, shellExec, shellRead, shellWrite, shellKill, setScopeSleeping, releaseScope, ownersForMachine };
 }
 

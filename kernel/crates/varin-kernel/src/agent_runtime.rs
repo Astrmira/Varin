@@ -2625,9 +2625,20 @@ fn dispatch(catalog: &mut Catalog, method: &str, params: Value) -> Result<Value,
                 .map_err(domain)?;
             Ok(json!({}))
         }
-        "runtime.status" => { let _: KernelEmptyParams = serde_json::from_value(params)?; Ok(
-            json!({"epoch":catalog.epoch(),"eventCursor":catalog.event_cursor().map_err(domain)?,"admission":catalog.resource_admission().summary()}),
-        ) },
+        "runtime.status" => {
+            let input: RuntimeStatusParams = serde_json::from_value(params)?;
+            let mut status = json!({"epoch":catalog.epoch(),"eventCursor":catalog.event_cursor().map_err(domain)?,"admission":catalog.resource_admission().summary()});
+            if input.include_wake_deadline.unwrap_or(false) {
+                let mut earliest = None;
+                for (_, deadline) in catalog.continuation_deadlines() {
+                    if let Some(deadline) = deadline.map_err(domain)? {
+                        earliest = Some(earliest.map_or(deadline, |at: u64| at.min(deadline)));
+                    }
+                }
+                status["nextWakeAtMs"] = json!(earliest);
+            }
+            Ok(status)
+        },
         "runtime.admission.inspect" => {
             let p: AdmissionInspectParams = serde_json::from_value(params)?;
             let epoch = u64::try_from(p.owner_generation)

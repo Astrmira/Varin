@@ -50,13 +50,7 @@ pub(crate) fn drive(
             let Ok(mut c) = catalog.lock() else { break };
             // Each owner reads its own deadlines. A malformed record in one domain must
             // not stop the shared waiter or disarm another owner's future deadline.
-            let deadlines = [
-                ("waits", c.nearest_wait_deadline()),
-                ("bot-inactivity", c.nearest_bot_inactivity_deadline()),
-                ("followups", c.nearest_followup_deadline()),
-                ("calendar", c.nearest_calendar_deadline()),
-            ];
-            deadlines
+            c.continuation_deadlines()
                 .into_iter()
                 .filter_map(|(source, result)| {
                     let deadline = record_outcome(

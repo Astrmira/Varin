@@ -169,6 +169,15 @@ pub(super) fn advance(tx: &Transaction<'_>, run: &mut Run) -> Result<()> {
     Ok(())
 }
 impl Catalog {
+    pub fn continuation_deadlines(&self) -> [(&'static str, Result<Option<u64>>); 4] {
+        [
+            ("waits", self.nearest_wait_deadline()),
+            ("bot-inactivity", self.nearest_bot_inactivity_deadline()),
+            ("followups", self.nearest_followup_deadline()),
+            ("calendar", self.nearest_calendar_deadline()),
+        ]
+    }
+
     pub fn pending_observation_wait(&self, run: &str) -> Result<Option<String>> {
         next(&self.db, run)
     }

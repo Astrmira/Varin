@@ -4667,10 +4667,15 @@ export interface ContentCollectionReport {
   reason: string | null;
 }
 
+export interface RuntimeStatusParams {
+  includeWakeDeadline?: boolean;
+}
+
 export interface RuntimeStatus {
   epoch: number;
   eventCursor: number;
   admission: AdmissionSummary;
+  nextWakeAtMs?: number | null;
 }
 
 export interface InputSubmitReceipt {
@@ -7885,7 +7890,7 @@ export type KernelMethodParams = {
   "runtime.driver.cancel": DriverCancelParams;
   "runtime.model.select": ModelSelectParams;
   "runtime.model.inspect": RunParams;
-  "runtime.status": KernelEmptyParams;
+  "runtime.status": RuntimeStatusParams;
   "runtime.material.retention": MaterialRetentionParams;
   "runtime.source.retirement": SourceRetirementParams;
   "runtime.source.preparation": SourcePreparationRetentionParams;
@@ -10396,7 +10401,7 @@ export type KernelRequest =
       kind: "request";
       id: string;
       method: "runtime.status";
-      params: KernelEmptyParams;
+      params: RuntimeStatusParams;
       epoch?: string;
       grantId?: string;
     }

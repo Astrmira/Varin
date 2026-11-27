@@ -1514,7 +1514,7 @@
 
     "runtime.model.select": "ModelSelectParams",
     "runtime.model.inspect": "RunParams",
-    "runtime.status": "KernelEmptyParams",
+    "runtime.status": "RuntimeStatusParams",
     "runtime.material.retention": "MaterialRetentionParams",
     "runtime.source.retirement": "SourceRetirementParams",
     "runtime.source.preparation": "SourcePreparationRetentionParams",
@@ -2622,7 +2622,8 @@
     "ContentCollectionStatus": {"raw":"export type ContentCollectionStatus = \"completed\" | \"deferred\" | \"cancelled\" | \"failed\";"},
     "ContentCollectionPhase": {"raw":"export type ContentCollectionPhase = \"admission\" | \"roots\" | \"verify\" | \"sweep\" | \"staging\";"},
     "ContentCollectionReport": {"fields":{"status":{"type":"ContentCollectionStatus"},"phase":{"type":"ContentCollectionPhase"},"removedObjects":{"type":"number"},"removedBytes":{"type":"number"},"removedStagingFiles":{"type":"number"},"pendingDeletedThreads":{"type":"number","optional":true},"reason":{"type":"string | null"}}},
-    "RuntimeStatus": {"fields": {"epoch": {"type": "number"},"eventCursor":{"type":"number"},"admission":{"type":"AdmissionSummary"}}},
+    "RuntimeStatusParams": {"fields":{"includeWakeDeadline":{"type":"boolean","optional":true}}},
+    "RuntimeStatus": {"fields": {"epoch": {"type": "number"},"eventCursor":{"type":"number"},"admission":{"type":"AdmissionSummary"},"nextWakeAtMs":{"type":"number | null","optional":true}}},
     "InputSubmitReceipt": {"fields": {"thread_id": {"type": "string"}, "branch_id": {"type": "string"}, "run_id": {"type": "string"}, "input_id": {"type": "string"}, "cursor": {"type": "number"}}},
     "RunFailure": {"fields": {"runId": {"type": "string"}, "cursor": {"type": "number"}, "code": {"type": "string"}, "message": {"type": "string"}, "toolName": {"type": "string | null", "optional": true}}, "rustType": "varin_runtime::RunFailure"},
     "Run": {"fields": {"principal_id":{"type":"string | null","optional":true},"waiting_on": {"type": "string | null"}, "id": {"type": "string"}, "thread_id": {"type": "string"}, "branch_id": {"type": "string"}, "state": {"type": "RunState"}, "revision": {"type": "number"}, "epoch": {"type": "number"}, "configuration": {"type": "unknown"}, "cancel_requested": {"type": "boolean"}}},

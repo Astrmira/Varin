@@ -7,7 +7,7 @@ import { HOST_ACTIVITY_PATH, projectHostActivity, registerHostActivityRoute } fr
 it('serves authenticated, content-free owner activity even while shutting down', async () => {
   const app = express();
   app.use(createDrainingAdmission(() => true));
-  const admission = vi.fn(async () => ({ localComputeActive: 3, queued: 2, privateBody: 'do not publish' }));
+  const admission = vi.fn(async () => ({ localComputeActive: 3, queued: 2, nextWakeAtMs: 8_000, privateBody: 'do not publish' }));
   const calendar = vi.fn(async () => ({
     nextWakeAtMs: 12_000, activeOccurrences: 4, pendingDelivery: 1, pendingPreparation: 1,
     unresolvedSchedules: 0, watchingAssets: true, privatePrompt: 'do not publish',
@@ -23,6 +23,7 @@ it('serves authenticated, content-free owner activity even while shutting down',
       computerOperations: () => 1,
       dictation: () => ({state:'retiring',pendingRequests:0,sessions:0,warm:false,privateTranscript:'do not publish'}),
       execution: async () => ({authorities:3,activeProcess:true,activeFileOperations:false,activeComputation:false,privatePath:'do not publish'}),
+      provider: () => ({preparing:0,active:0,releasing:1,privateEndpoint:'do not publish'}),
       terminal: () => ({ sessions:1, preparing:0, stopping:0 }),
       externalAgents: () => ({ sessions:0, opening:1, running:0, stopping:0, installations:0 }),
       mcp: () => ({ preparations:0, requests:0, retainedHolders:0, closing:0, tasks:1, subscriptions:0 }),
@@ -43,14 +44,14 @@ it('serves authenticated, content-free owner activity even while shutting down',
   const result = await request(app).get(HOST_ACTIVITY_PATH).set('Authorization', 'Bearer owner').expect(200);
   expect(result.get('Cache-Control')).toBe('no-store');
   expect(result.body).toEqual({
-    version: 1, lifecycle: 'draining', catalog: { active: 3, queued: 2 },
+    version: 1, lifecycle: 'draining', catalog: { active: 3, queued: 2, nextWakeAtMs: 8_000 },
     calendar: { nextWakeAtMs: 12_000, activeOccurrences: 4, pendingDelivery: 1, pendingPreparation: 1, unresolvedSchedules: 0, watchingAssets: true },
     retention: {
       observationStreams: 2, threadWrites: 1, externalIngressActive: true,
-      reasons: ['host-draining', 'catalog-local-compute', 'catalog-queued-work', 'calendar-active-occurrence',
-        'calendar-pending-delivery', 'calendar-reconciliation', 'calendar-asset-watch', 'calendar-wake-not-transferred',
+      reasons: ['host-draining', 'catalog-local-compute', 'catalog-queued-work', 'catalog-wake-not-transferred', 'calendar-active-occurrence',
+        'calendar-pending-delivery', 'calendar-reconciliation', 'calendar-asset-watch',
         'http-observation-streams', 'http-thread-writes', 'external-ingress-active', 'browser-owner-activity', 'computer-owner-activity', 'dictation-owner-activity',
-        'execution-owner-activity', 'terminal-owner-activity', 'external-agent-owner-activity', 'mcp-owner-activity',
+        'execution-owner-activity', 'provider-execution-leases', 'terminal-owner-activity', 'external-agent-owner-activity', 'mcp-owner-activity',
         'event-receivers-not-transferred', 'event-transport-active', 'language-owner-activity', 'preview-owner-activity',
         'relay-owner-activity', 'knowledge-owner-activity', 'local-component-installing',
         'owner-coverage-incomplete', 'durable-supervisor-handoff-unavailable'],
@@ -58,6 +59,7 @@ it('serves authenticated, content-free owner activity even while shutting down',
     owners: {browser:{preparing:1,activePageWrites:0,waitingPageWrites:0,outstandingStopConfirmations:0},
       computerOperations:1,dictation:{state:'retiring',pendingRequests:0,sessions:0,warm:false},
       execution:{authorities:3,activeProcess:true,activeFileOperations:false,activeComputation:false},
+      provider:{preparing:0,active:0,releasing:1},
       terminal:{sessions:1,preparing:0,stopping:0},
       externalAgents:{sessions:0,opening:1,running:0,stopping:0,installations:0},
       mcp:{preparations:0,requests:0,retainedHolders:0,closing:0,tasks:1,subscriptions:0},

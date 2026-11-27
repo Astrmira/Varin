@@ -3486,12 +3486,16 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     observationStreams: httpObservationDrain.count,
     threadWrites: threadWriteAdmission.count,
     externalIngressActive: () => Boolean(tunnelService.getPublicUrl() || externalIngress?.enabled || selfHosted.getIngress()?.enabled),
-    admission: async (ownerSignal) => (await agentRuntime.status(ownerSignal)).admission,
+    admission: async (ownerSignal) => {
+      const { admission, nextWakeAtMs } = await agentRuntime.status(ownerSignal, { includeWakeDeadline: true });
+      return { ...admission, ...(nextWakeAtMs !== undefined ? { nextWakeAtMs } : {}) };
+    },
     calendar: scheduledTasksRuntime.getActivity,
     browser: () => browserResources.activity(),
     computerOperations: () => computerService.activities().filter(row => row.activity.status === 'running').length,
     dictation: () => dictationRuntime?.activity() ?? null,
     execution: signal => kernelClient.sourceRequest('source.retention', {}, signal),
+    provider: managedRemoteTargets.providerActivity,
     terminal: () => terminalRuntime?.activity() ?? null,
     externalAgents: () => externalAgents.activity(),
     mcp: () => ({ ...mcpAuthority.activity(),

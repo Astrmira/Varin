@@ -1003,8 +1003,8 @@ export class AgentRuntimeClient {
       signal,
     );
   }
-  status(signal?: AbortSignal): Promise<RuntimeStatus> {
-    return this.kernel.agentRuntimeRequest('runtime.status', {}, signal);
+  status(signal?: AbortSignal, options: import('./protocol.generated.js').RuntimeStatusParams = {}): Promise<RuntimeStatus> {
+    return this.kernel.agentRuntimeRequest('runtime.status', options, signal);
   }
   /** Explicit Host maintenance, independent of Run/input admission and Storage's own GC. */
   collectContent(signal?: AbortSignal): Promise<ContentCollectionReport> {

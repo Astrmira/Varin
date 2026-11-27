@@ -2094,6 +2094,12 @@ pub(crate) struct ModelSelectParams {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RuntimeStatusParams {
+    pub(crate) include_wake_deadline: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MaterialRetentionParams {
     pub(crate) child_thread_id: Option<String>,
     pub(crate) include_ui_references: Option<bool>,
@@ -5843,7 +5849,7 @@ pub(crate) fn validate_generated_method_params(method: &str, params: &Value) -> 
         "runtime.model.inspect" => serde_json::from_value::<RunParams>(params.clone())
             .map(|_| ())
             .map_err(|error| error.to_string()),
-        "runtime.status" => serde_json::from_value::<KernelEmptyParams>(params.clone())
+        "runtime.status" => serde_json::from_value::<RuntimeStatusParams>(params.clone())
             .map(|_| ())
             .map_err(|error| error.to_string()),
         "runtime.material.retention" => {

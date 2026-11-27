@@ -177,7 +177,7 @@ export function createProviderLeaseOwner(provider: ResourceProvider, onError: (e
       if (allocations.get(resourceId) === allocation) allocations.delete(resourceId);
     });
   };
-  return async function acquire(resourceId: string, signal?: AbortSignal) {
+  const acquire = async (resourceId: string, signal?: AbortSignal) => {
     signal?.throwIfAborted();
     let allocation = allocations.get(resourceId);
     while (allocation?.retiring) {
@@ -200,5 +200,17 @@ export function createProviderLeaseOwner(provider: ResourceProvider, onError: (e
       if (!current.lease || current.lease.expiresAt <= Date.now()) throw new Error('Resource provider lease expired');
       return { lease: current.lease, release };
     } catch (error) { release(); throw error; }
+  };
+  return {
+    acquire,
+    activity() {
+      const counts = { preparing: 0, active: 0, releasing: 0 };
+      for (const allocation of allocations.values()) {
+        if (allocation.retiring) counts.releasing++;
+        else if (allocation.lease) counts.active++;
+        else counts.preparing++;
+      }
+      return counts;
+    },
   };
 }

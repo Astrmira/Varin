@@ -347,6 +347,15 @@ scope. Historical tokenizer references can still resolve by content digest.
 Keep the cache mount when rolling between hosts if offline tokenizer availability
 matters. An operator-supplied model-directory snapshot can be mounted read-only.
 
+### Host lifecycle diagnostics
+
+The owner-authenticated `GET /api/system/lifecycle` reports the next Catalog
+wake as `catalog.nextWakeAtMs`, a UTC timestamp in milliseconds or `null` when
+there is no scheduled wake. It comes from the same Catalog deadlines as the
+native continuation worker, including timed waits, follow-ups, Bot inactivity
+and Calendar. The `owners.provider` field counts allocations being prepared,
+used or released. The endpoint is a read-only activity report.
+
 ### Dedicated Computer control plane
 
 The Linux `computer-node` build target packages the existing platform driver alongside

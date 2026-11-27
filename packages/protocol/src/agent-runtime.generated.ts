@@ -3097,6 +3097,7 @@ export interface RuntimeStatus {
   epoch: number;
   eventCursor: number;
   admission: AdmissionSummary;
+  nextWakeAtMs?: number | null;
 }
 
 export interface InputSubmitReceipt {
