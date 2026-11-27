@@ -29,8 +29,8 @@ export class ModelTokenizers {
   #requested = false;
   #obsolete = false;
   constructor(directory: string, private readonly network: () => Network | undefined, private readonly changed: () => void,
-    private readonly policy?: LocalInferencePolicy) {
-    this.#root = join(directory, 'cache', 'tokenizers');
+    private readonly policy?: LocalInferencePolicy, cacheDirectory?: string) {
+    this.#root = cacheDirectory ?? join(directory, 'cache', 'tokenizers');
   }
   #key(source: ModelTokenizer) {
     return digest(JSON.stringify(source.kind === 'encoding' ? [source.kind, normalizeEncodingName(source.name)]

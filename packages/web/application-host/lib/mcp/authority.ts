@@ -82,6 +82,7 @@ export type McpErrorInteractionReceiver = (error: McpErrorInteraction) => void;
 
 export interface McpAuthorityOptions {
   deployment?: McpDeploymentPolicy;
+  cacheRoot?: string;
   reportDirectoryError?: (error: unknown) => void;
   providerCredentialFiles?: (scope: McpAuthorityScope, providers: readonly string[]) => readonly string[];
   fetch?: typeof globalThis.fetch;
@@ -547,7 +548,10 @@ export class McpAuthority {
   #directory(scope: McpAuthorityScope) {
     let directory = this.#directories.get(scope.agentDir);
     if (!directory) {
-      directory = new McpDirectory(join(scope.agentDir, 'mcp-directory.json'), error => this.#options.reportDirectoryError?.(error));
+      const original = join(scope.agentDir, 'mcp-directory.json');
+      const target = this.#options.cacheRoot
+        ? join(this.#options.cacheRoot, createHash('sha256').update(scope.agentDir).digest('hex') + '.json') : original;
+      directory = new McpDirectory(target, error => this.#options.reportDirectoryError?.(error), target === original ? undefined : original);
       this.#directories.set(scope.agentDir, directory);
     }
     return directory;

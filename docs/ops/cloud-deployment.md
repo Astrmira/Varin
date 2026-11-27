@@ -231,6 +231,7 @@ use their existing device settings.
 | `VARIN_UI_PASSWORD` | Required when reachable beyond loopback |
 | `VARIN_HOST` | Bind address (Compose default: `0.0.0.0`) |
 | `VARIN_DATA_DIR` | Persistent Varin data root |
+| `VARIN_CACHE_DIR` | Optional absolute root for rebuildable model and MCP metadata and tokenizer files. Each Host uses its own subdirectory. |
 | `VARIN_WORKSPACE_ROOT` | Default directory for mounted projects |
 | `VARIN_WORKSPACE_LOCKDOWN` | Defaults to `false` in application images. Live file tools follow the container user's filesystem permissions. Set `true` in the service environment to limit access to `VARIN_WORKSPACE_ROOT`. |
 | `VARIN_SHUTDOWN_TIMEOUT_MS` | Host shutdown budget in ms (default `10000`) |
@@ -336,6 +337,13 @@ use. Snapshot the stopped data volume before allowing that build to start.
 `blocked` returns a nonzero exit status and gives the affected format or reason.
 The command never opens a writer. A SQLite journal that still needs recovery
 must be checkpointed by the current build or examined on a recovered copy.
+
+Mount `VARIN_CACHE_DIR` separately when the deployment snapshots only durable
+data. On first start, Varin moves existing model metadata and tokenizers into
+the configured root. Existing MCP discovery data follows on first use of its
+scope. Historical tokenizer references can still resolve by content digest.
+Keep the cache mount when rolling between hosts if offline tokenizer availability
+matters. An operator-supplied model-directory snapshot can be mounted read-only.
 
 ### Dedicated Computer control plane
 

@@ -99,7 +99,7 @@ export class ModelsService {
   readonly #managedDirectory: boolean;
   readonly #localInference: LocalInferencePolicy | undefined;
   constructor(readonly directory: string, options: { projectTrusted(cwd: string): boolean; credentials?: CredentialService; fetch?: typeof fetch;
-    credentialPolicy?: ModelCredentialPolicy; directorySnapshot?: unknown; localInference?: LocalInferencePolicy }) {
+    credentialPolicy?: ModelCredentialPolicy; directorySnapshot?: unknown; localInference?: LocalInferencePolicy; cacheRoot?: string }) {
     this.#credentialPolicy = options.credentialPolicy;
     this.#managedDirectory = options.directorySnapshot !== undefined;
     this.#localInference = options.localInference;
@@ -112,8 +112,9 @@ export class ModelsService {
       if (document.channels !== undefined && !Array.isArray(document.channels)) return fail('models-config-invalid', 'channels must be an array');
       return { ...document, channels: (document.channels ?? []) as ModelChannel[] };
     });
-    this.modelDirectory = new ModelDirectory(directory, this.types, () => this.#changed('channels'), options.directorySnapshot);
-    this.tokenizers = new ModelTokenizers(directory, () => this.#directoryNetwork, () => this.#changed('channels'), options.localInference);
+    this.modelDirectory = new ModelDirectory(options.cacheRoot ?? directory, this.types, () => this.#changed('channels'), options.directorySnapshot);
+    this.tokenizers = new ModelTokenizers(directory, () => this.#directoryNetwork, () => this.#changed('channels'), options.localInference,
+      options.cacheRoot ? join(options.cacheRoot, 'tokenizers') : undefined);
   }
   prepareContributions(types: readonly ChannelType[], providers: readonly ModelOAuthProvider[]): () => void {
     for (const type of types) compileToolJsonSchema(type.parametersSchema);

@@ -23,6 +23,7 @@ import { permissionService } from './lib/kernel/permission-service.js';
 import { createPermissionJudge } from './lib/kernel/permission-judge.js';
 import { createPermissionPersistence } from './lib/kernel/permission-persistence.js';
 import { createLocalSemanticComponentManager } from './lib/knowledge/semantic/local-component.js';
+import { deploymentCacheRoot, relocateModelCaches } from './lib/deployment/derived-cache.js';
 import { activeKnowledgeStorageRequests } from './lib/knowledge/store-process.js';
 import { registerLocalSemanticComponentRoutes } from './lib/knowledge/semantic/local-component-routes.js';
 import { createKnowledgeEmbeddingOwner } from './lib/knowledge/vectors/embedding-owner.js';
@@ -1145,15 +1146,23 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
       varinVersion: VARIN_VERSION,
     });
   }
+  const cacheRoot = deploymentCacheRoot(process.env.VARIN_CACHE_DIR, extensionRuntime.services.hostId);
   kernelClient = createKernelClient({
     hostId: extensionRuntime.services.hostId,
     storageRoot: path.join(VARIN_DATA_DIR, 'kernel', extensionRuntime.services.hostId),
     buildVersion: VARIN_VERSION,
     kernelBuildIdentity: VARIN_VERSION,
-    ...(deployment?.egress && { env: { VARIN_KERNEL_DEPLOYMENT_EGRESS: JSON.stringify(deployment.egress) } }),
+    env: {
+      ...(deployment?.egress && { VARIN_KERNEL_DEPLOYMENT_EGRESS: JSON.stringify(deployment.egress) }),
+      ...(cacheRoot && { VARIN_KERNEL_TOKENIZER_CACHE_DIR: path.join(cacheRoot, 'tokenizers') }),
+    },
     onExit: (error) => console.error('[VarinKernel] Kernel process exited:', error.message),
   });
   await kernelClient.start();
+  if (cacheRoot) {
+    try { await relocateModelCaches(VARIN_DATA_DIR, cacheRoot); }
+    catch (error) { await kernelClient.close(); throw error; }
+  }
   await kernelClient.agentRuntimeRequest('runtime.principals.initialize', {
     ownerPrincipalId: await hostPrincipals().ownerId(), claimLegacy: gatewayOnly || uiAuthController.enabled,
   });
@@ -1908,6 +1917,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   registerProjectTrustRoutes(app, projectTrust, uiAuthController.requireAuth);
   const modelsService = new ModelsService(VARIN_DATA_DIR, { projectTrusted: cwd => projectTrust.trusted(cwd), fetch: egressRuntime.fetch as typeof globalThis.fetch,
     directorySnapshot: modelDirectorySnapshot,
+    ...(cacheRoot && { cacheRoot }),
     ...(deployment?.localInference && { localInference: deployment.localInference }),
     ...(deployment?.modelCredentials && { credentialPolicy: deployment.modelCredentials }) });
   if (modelDirectorySnapshot !== undefined) await modelsService.modelDirectory.ready;
@@ -1999,6 +2009,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   });
   const mcpAuthority = new McpAuthority({
     ...(deployment?.mcp && { deployment: deployment.mcp }),
+    ...(cacheRoot && { cacheRoot: path.join(cacheRoot, 'mcp') }),
     reportDirectoryError: () => console.error('[MCP] Capability directory could not be persisted'),
     providerCredentialFiles: (_scope, providers) => providers.length ? [modelsService.credentialPath] : [],
     fetch: egressRuntime.fetch as typeof globalThis.fetch,
