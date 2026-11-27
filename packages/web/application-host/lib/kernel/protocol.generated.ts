@@ -2113,15 +2113,18 @@ export interface CalendarOccurrence {
   revision: number;
   reason: CalendarOccurrenceReason;
   observed_at_ms: number;
+  target_kind?: 'new_work' | 'existing_work';
   thread_id: string;
   branch_id: string;
   input_id: string | null;
+  history_item_id?: string | null;
   run_id: string | null;
   execution_id: string | null;
   goal_id: string | null;
   state: CalendarOccurrenceState;
   hold_reason: string | null;
   failure_code: string | null;
+  failure_message?: string;
 }
 
 export interface CalendarProject {
@@ -6903,6 +6906,8 @@ export interface FamilyHistoryEntry {
   runId: string;
   source: string;
   kind: string;
+  assistantPhase?: 'commentary' | 'final_answer';
+  assistantResponse?: string;
   body: unknown | null;
   preview?: string;
   bodyBytes: number;
