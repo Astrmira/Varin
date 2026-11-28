@@ -82,20 +82,22 @@ async function fixture(reply: (body: Record<string, unknown>, response: ServerRe
   return { workspace, documents, workingStates, close, kernel, api: createThreadsHttpAPI(), runtime: adapter.runtime, hostUrl, secret, requests, launchErrors, root, closeKernel: () => kernel.close() };
 }
 
-function tool(response: ServerResponse, name: string, args: Record<string, unknown>, serial: number) {
+function respond(response: ServerResponse, ...output: Record<string, unknown>[]) {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
-  response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { output: [{ id: `item-${serial}`, type: 'function_call', call_id: `${name}-${serial}`, name, arguments: JSON.stringify(args) }] } })}\n\n`);
+  response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { output } })}\n\n`);
+}
+function tool(name: string, args: Record<string, unknown>, serial: number) {
+  return { id: `item-${serial}`, type: 'function_call', call_id: `${name}-${serial}`, name, arguments: JSON.stringify(args) };
 }
 function done(response: ServerResponse) {
-  response.writeHead(200, { 'content-type': 'text/event-stream' });
-  response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { output: [{ id: 'answer', type: 'message', content: [{ type: 'output_text', text: 'source check completed' }] }] } })}\n\n`);
+  respond(response, { id: 'answer', type: 'message', content: [{ type: 'output_text', text: 'source check completed' }] });
 }
 const model = { providerId: 'fixture-provider', modelId: 'fixture-model' };
 it('prepares saved disk through real Documents and capture; concurrent and reopened retries keep its read-only baseline', async () => {
   let read = '';
   const reply = (body: Record<string, unknown>, response: ServerResponse) => {
     const output = (body.input as Array<Record<string, unknown>>).findLast(item => item.type === 'function_call_output');
-    if (!output) tool(response, 'file_read', { path: 'source.txt' }, 1);
+    if (!output) respond(response, tool('file_read', { path: 'source.txt' }, 1));
     else { read = responsesMetadataText(output.output); done(response); }
   };
   const f = await fixture(reply);
@@ -130,17 +132,23 @@ it('prepares saved disk through real Documents and capture; concurrent and reope
   expect(reopened.launchErrors).toEqual([]);
 }, 45_000);
 
+const editableCopyBudgetMs = 45_000;
 it('prepared editable copy runs a real process without modifying the source folder, and cannot accept invented workspace IDs', async () => {
-  let serial = 0; let processId = ''; let read = ''; let discovered = ''; let matched = '';
+  const write = tool('process_spawn', { cwd: '', command: process.execPath, args: ['-e',
+    'require("node:fs").writeFileSync("source.txt", "isolated process edit"); require("node:fs").writeFileSync("generated.txt", "new process file")'],
+    mode: 'pipe', waitMs: editableCopyBudgetMs }, 1);
+  const list = tool('file_list', {}, 2);
+  const search = tool('file_search', { query: 'isolated process edit' }, 3);
+  const read = tool('file_read', { path: 'source.txt' }, 4);
+  const turns = [[write], [list, search, read]];
+  const receipts = new Map<string, string>();
   const f = await fixture((body, response) => {
-    const output = (body.input as Array<Record<string, unknown>>).findLast(item => item.type === 'function_call_output');
-    const result = output ? JSON.parse(responsesMetadataText(output.output)) as { operation_id?: string; content?: { writerActive?: boolean } } : undefined;
-    if (!output) tool(response, 'process_spawn', { cwd: '', command: process.execPath, args: ['-e', 'require("node:fs").writeFileSync("source.txt", "isolated process edit"); require("node:fs").writeFileSync("generated.txt", "new process file")'], mode: 'pipe' }, ++serial);
-    else if (String(output.call_id).startsWith('process_spawn-')) { processId = result!.operation_id!; tool(response, 'process_inspect', { processId }, ++serial); }
-    else if (String(output.call_id).startsWith('process_inspect-')) { if (result!.content!.writerActive) tool(response, 'process_inspect', { processId }, ++serial); else tool(response, 'file_list', {}, ++serial); }
-    else if (String(output.call_id).startsWith('file_list-')) { discovered = responsesMetadataText(output.output); tool(response, 'file_search', { query: 'isolated process edit' }, ++serial); }
-    else if (String(output.call_id).startsWith('file_search-')) { matched = responsesMetadataText(output.output); tool(response, 'file_read', { path: 'source.txt' }, ++serial); }
-    else { read = responsesMetadataText(output.output); done(response); }
+    for (const item of body.input as Array<Record<string, unknown>>) {
+      if (item.type === 'function_call_output') receipts.set(String(item.call_id), responsesMetadataText(item.output));
+    }
+    const calls = turns.shift();
+    if (calls) respond(response, ...calls);
+    else done(response);
   });
   await fs.writeFile(path.join(f.workspace, 'source.txt'), 'unmodified source folder');
   const identity = await f.api.create('editable-prepared-source');
@@ -149,13 +157,16 @@ it('prepared editable copy runs a real process without modifying the source fold
   await expect(f.api.submit({ ...input, source: { ...prepared.source, workspaceId: 'invented-workspace' } })).rejects.toMatchObject({ status: 404, code: 'source_registration_missing' });
   expect((await f.api.snapshot(identity)).history).toEqual([]);
   const receipt = await f.api.submit(input);
-  await expect.poll(async () => (await f.api.run(receipt.run_id)).state, { timeout: 15_000 }).toBe('completed');
-  expect(read).toContain('isolated process edit');
-  expect(discovered).toContain('generated.txt');
-  expect(matched).toContain('isolated process edit');
+  await expect.poll(async () => (await f.api.run(receipt.run_id)).state, { timeout: editableCopyBudgetMs, interval: 250 }).toBe('completed');
+  expect(JSON.parse(receipts.get(write.call_id)!)).toMatchObject({ kind: 'job_accepted', content: { status: 'exited', exitCode: 0, writerActive: false } });
+  expect(receipts.get(read.call_id)).toContain('isolated process edit');
+  expect(receipts.get(list.call_id)).toContain('generated.txt');
+  expect(receipts.get(search.call_id)).toContain('source.txt');
+  expect(receipts.get(search.call_id)).toContain('isolated process edit');
   expect(await fs.readFile(path.join(f.workspace, 'source.txt'), 'utf8')).toBe('unmodified source folder');
+  await expect(fs.stat(path.join(f.workspace, 'generated.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(f.launchErrors).toEqual([]);
-}, 45_000);
+}, editableCopyBudgetMs);
 
 it('list and search discover the prepared fixed snapshot rather than later disk paths or contents', async () => {
   let turn = 0;
@@ -164,8 +175,8 @@ it('list and search discover the prepared fixed snapshot rather than later disk 
     const output = (body.input as Array<Record<string, unknown>>).findLast(item => item.type === 'function_call_output');
     if (output) returned.push(responsesMetadataText(output.output));
     turn++;
-    if (turn === 1) tool(response, 'file_list', { paths: ['src'], recursive: true }, turn);
-    else if (turn === 2) tool(response, 'file_search', { paths: ['src'], query: 'needle', fixedStrings: true }, turn);
+    if (turn === 1) respond(response, tool('file_list', { paths: ['src'], recursive: true }, turn));
+    else if (turn === 2) respond(response, tool('file_search', { paths: ['src'], query: 'needle', fixedStrings: true }, turn));
     else done(response);
   });
   await fs.mkdir(path.join(f.workspace, 'src'));
