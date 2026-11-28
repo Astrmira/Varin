@@ -318,7 +318,7 @@
         "@konbakuyomu/smart-search": "^0.1.32",
         "@modelcontextprotocol/client": "2.4.0",
         "@mozilla/readability": "0.6.0",
-        "@napi-rs/canvas": "1.2.0",
+        "@napi-rs/canvas": "1.2.1",
         "@octokit/rest": "^22.0.1",
         "@simplewebauthn/server": "14.1.0",
         "@smithy/signature-v4": "^5.7.4",
