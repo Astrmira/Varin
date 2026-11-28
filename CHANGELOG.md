@@ -3,6 +3,42 @@
 All notable changes to Varin are recorded here. The project is pre-1.0; the
 private runtime protocol and product surfaces still move together.
 
+## 0.9.56 - 2026-11-29
+
+### English
+
+#### Thinking controls and Bot conversations
+
+- Set the thinking level with a slider in the composer for supported models and external agents. Drag the thumb, select a level by name, or use the arrow keys. In a Bot group chat, you can choose a thinking level for a message addressed to one Bot.
+- Open **New conversation** or **Manage conversations** from a Bot's menu. A new conversation stays a draft until you send the first message. The management view and the sidebar now use the same visibility rules, so deleted conversations and unsent drafts stay out of both lists.
+- Turn quick retrieval on or off in **Settings → Model roles → Quick retrieval model**. Turning it off removes the background retrieval tools from new runs and saves your model selection for when you turn it back on.
+
+#### Resource use and offline setup
+
+- Idle knowledge stores close automatically and release the storage process once the last store closes. They reopen on demand with their saved memory revisions.
+- Repeated input to the same terminal reuses its interaction worker. Conversation observers wake for relevant changes, and directory listings reuse Git status within a repository.
+- Document and attachment bytes can travel directly between the Host and its kernel, reducing Base64 encoding and copying during file operations. Upgrade the Host and its bundled kernel together when deploying from source.
+- Language settings now let you import a supported language server package and verify it against the official download checksum. This lets a Host install it even when it cannot reach the download site.
+
+[Full changelog](https://github.com/Astrmira/Varin/compare/v0.9.55...v0.9.56)
+
+### 中文
+
+#### 思考程度与 Bot 会话
+
+- 支持多档思考程度的模型和外部 Agent，可以在输入框里拖动滑条、点击档名或用方向键选档。群聊里只发给一位 Bot 时，也可以单独设置该条消息的思考程度。
+- 从 Bot 的「…」菜单可以新建或管理会话。新建会话会先保留为草稿，发出第一条消息时才创建。管理页与侧栏按同一套规则显示会话，已删除的会话和没发过消息的草稿都不会出现在列表里。
+- 「设置 → 模型分工」新增「快速检索模型」开关。关闭后，新轮次会隐藏后台快速检索工具，已选模型保留，重新打开即可继续使用。
+
+#### 资源占用与离线配置
+
+- 知识库空闲后会自动关闭，最后一个库关闭时释放存储进程。下次需要时重新打开，仍可使用原来保存的记忆。
+- 向同一个终端反复输入时会复用交互工作进程。会话观察流只在相关状态发生变化时唤醒，浏览文件时也能复用同一仓库的 Git 状态。
+- Host 和内核可以直接传输文档与附件的二进制数据，减少文件操作中的 Base64 编码和数据拷贝。从源码部署时，请一起升级 Host 和配套内核。
+- 语言设置新增语言服务器安装包导入。安装前会核对官方校验值，Host 访问不到下载站时也可以从客户端导入。
+
+[完整更新记录](https://github.com/Astrmira/Varin/compare/v0.9.55...v0.9.56)
+
 ## 0.9.55 - 2026-11-27
 
 ### English
