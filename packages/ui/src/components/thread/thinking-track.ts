@@ -23,6 +23,11 @@ export function mountThinkingTrack(track: HTMLDivElement, count: number, hasOff:
   let drawnX: number | undefined;
   const inset = thinkingInset(hasOff);
   const center = () => height / 2 + inset + position * (width - height - inset);
+  // Pointer coordinates follow the animated popup; the track is drawn in layout pixels.
+  function trackX(clientX: number) {
+    const rect = track.getBoundingClientRect();
+    return (clientX - rect.left) * (rect.width ? width / rect.width : 1);
+  }
   function arrive(target: number, now: number) {
     position = target;
     if (arrived !== target && motion === 'full') { waveAt = now; waveX = center(); }
@@ -67,12 +72,12 @@ export function mountThinkingTrack(track: HTMLDivElement, count: number, hasOff:
   theme(); resize();
   return {
     grab(clientX: number) {
-      const offset = center() - (clientX - track.getBoundingClientRect().left);
+      const offset = center() - trackX(clientX);
       return Math.abs(offset) <= height / 2 ? offset : 0;
     },
     drag(clientX: number, offset: number) {
       glide = undefined;
-      position = clamp((clientX - track.getBoundingClientRect().left + offset - height/2 - inset) / Math.max(1,width-height-inset));
+      position = clamp((trackX(clientX) + offset - height/2 - inset) / Math.max(1,width-height-inset));
       paint(performance.now());
       return Math.round(position * (count-1));
     },

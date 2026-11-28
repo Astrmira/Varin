@@ -111,7 +111,7 @@ export function ThinkingControl<T extends string>(props: SliderProps<T> & { onOp
       {props.badge && <small>{props.badge}</small>}
     </Popover.Trigger>
     <Popover.Portal><Popover.Positioner side="top" align="end" sideOffset={7} collisionPadding={8} className="z-50">
-      <Popover.Popup aria-label={props.label} className="thinking-slider-popup" initialFocus={kind => kind === 'keyboard'}>
+      <Popover.Popup aria-label={props.label} className="thinking-slider-popup motion-popover" initialFocus={kind => kind === 'keyboard'}>
         <ThinkingSlider key={JSON.stringify(props.stops.map(item => item.id))} {...props} />
       </Popover.Popup>
     </Popover.Positioner></Popover.Portal>
