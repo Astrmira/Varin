@@ -250,10 +250,10 @@ const CATALOG_ENTRIES: readonly SettingsCatalogEntry[] = [
   {
     id: 'harness.models.explore', category: 'retrieval', owner: 'agent-settings',
     fields: [
-      { path: 'harness.models.explore', kind: 'json', scope: 'user', note: '{enabled?: boolean, providerId?: string, modelId?: string}; set replaces this binding: include retained model fields, or use agents.catalog enable/disable' },
+      { path: 'harness.models.explore', kind: 'json', scope: 'user', note: 'Quick retrieval defaults to the session model. Set enabled: false to hide its tools. Setting this object replaces the binding, so include any retained model and reasoning settings.' },
     ],
     apply: 'next-run',
-    ui: { page: 'code-intel', titleKey: 'settings.harness.role.explore', keywords: ["explore", "agent", "model", "enable", "disable"] },
+    ui: { page: 'model-roles', titleKey: 'settings.harness.role.explore', keywords: ['explore', 'agent', 'model', 'enable', 'disable', 'code_retrieval', 'quick retrieval', '快速检索', '代码检索'] },
   },
   {
     id: 'harness.models.execution', category: 'agents', owner: 'agent-settings',

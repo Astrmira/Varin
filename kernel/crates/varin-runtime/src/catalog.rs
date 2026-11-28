@@ -613,6 +613,7 @@ impl Catalog {
                 }
                 if selection.child_dispatch_ref.is_none() {
                     selection.child_dispatch_ref = previous.selection.child_dispatch_ref;
+                    selection.quick_retrieval_unavailable = previous.selection.quick_retrieval_unavailable;
                 }
                 // A Host may supply its default device directory for a source-less
                 // conversation. An existing source (including a remote or isolated

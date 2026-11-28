@@ -121,9 +121,8 @@ impl PolicyGraphSchemaPreparation {
         }
         let tools_ref = if let Some(launch) = &self.launch {
             let tools: Vec<ToolSchema> = serde_json::from_value(self.content.load(&launch.selection.tools_ref)?)?;
-            let allowed = launch.selection.agent.as_ref().and_then(|agent| agent.tools.as_deref());
             let focus = launch.selection.agent.as_ref().map(|agent| agent.work_focus.as_str()).unwrap_or("general");
-            if body.tools != crate::tool_disclosure::request_tools(&tools, self.has_goal, allowed)
+            if !crate::tool_disclosure::launch_request_tools(&tools, self.has_goal, Some(&launch.selection)).eq(body.tools.iter())
                 || body.direct_tools.is_some() && body.direct_tools != crate::tool_disclosure::direct_tools(&body.tools, focus) {
                 return Err(RuntimeError::Conflict("graph differs from the admitted capability selection".into()));
             }

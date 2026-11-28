@@ -530,6 +530,43 @@ fn absent_source_defaults_derive_from_frozen_declarations_but_explicit_domain_to
 }
 
 #[test]
+fn unavailable_quick_retrieval_is_absent_from_the_request_and_legacy_dispatch_guidance() {
+    use std::sync::{Arc, Mutex};
+    use varin_runtime::catalog::dispatch::ChildCapabilityFailure;
+    let mut f = fixture::Fixture::new_internal_retrieval();
+    f.accept();
+    f.settle_exchange();
+    let run = f.context.run_id.clone();
+    let epoch = f.db.epoch();
+    let snapshot: RequestSnapshot = serde_json::from_value(
+        f.db.capture_model_step_read("parent-request").unwrap().load_request().unwrap(),
+    ).unwrap();
+    let mut binding = snapshot.view.binding;
+    let mut selection = f.db.launch_intent(&run).unwrap().unwrap().selection;
+    let mut catalog = selection.child_dispatch.take().unwrap();
+    catalog.presets.iter_mut().find(|preset| preset.id == "code_retrieval").unwrap().unavailable =
+        Some(ChildCapabilityFailure { code: "child-profile-disabled".into(), capabilities: Vec::new() });
+    let prepared = f.db.prepare_child_catalog(Some(catalog)).load().unwrap();
+    let model = f.db.run(&run).unwrap().configuration;
+    let choice = f.db.select_model_prepared(&run, "new-model-binding", serde_json::from_value(model).unwrap(),
+        selection.credential_scope, Some(prepared)).unwrap();
+    f.db.prepare_model_selection(&choice, epoch, None).unwrap();
+    f.db.activate_model_selection(&choice, epoch, &binding).unwrap();
+    binding.direct_tools = Some(binding.tools.iter().map(|tool| tool.name.clone()).collect());
+    let hook = BindingPreparation { inner: Arc::new(NoopContextPreparation), catalog: Arc::new(Mutex::new(f.db)) };
+    let context = hook.prepare_binding(&run, epoch, &mut binding, &CancellationToken::default()).unwrap();
+    assert!(binding.tools.iter().any(|tool| tool.name == "file_read"));
+    assert!(binding.tools.iter().all(|tool| !varin_runtime::tool_disclosure::is_quick_retrieval_tool(&tool.name)));
+    assert!(binding.direct_tools.iter().flatten().all(|name| !varin_runtime::tool_disclosure::is_quick_retrieval_tool(name)));
+    let selected = hook.catalog.lock().unwrap().capture_child_dispatch(binding.child_dispatch.as_ref().unwrap()).load().unwrap();
+    assert!(!discovery(&selected).to_string().contains("code_retrieval"));
+    assert!(!serde_json::to_string(&context).unwrap().contains("retrieval_control"));
+    drop(selected);
+    drop(hook);
+    std::fs::remove_dir_all(f.root).unwrap();
+}
+
+#[test]
 fn durable_tree_cancel_reaches_original_binding_token_before_physical_notification() {
     let directory = schemas();
     let read = directory.iter().find(|tool| tool.name == "file_read").unwrap().clone();

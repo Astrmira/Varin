@@ -98,6 +98,36 @@ fn input() -> DispatchInput {
 }
 
 #[test]
+fn model_selection_updates_quick_retrieval_disclosure_without_changing_the_source_tools() {
+    let mut f = Fixture::new_internal_retrieval();
+    f.accept();
+    f.settle_exchange();
+    let parent = model(&f);
+    let intent = f.db.launch_intent(&f.context.run_id).unwrap().unwrap();
+    let tools = intent.selection.tools;
+    let mut catalog = intent.selection.child_dispatch.unwrap();
+    let visible = |f: &Fixture| {
+        let launch = f.db.launch_metadata(&f.context.run_id).unwrap().unwrap();
+        varin_runtime::tool_disclosure::launch_request_tools(&tools, false, Some(&launch.selection))
+            .map(|tool| tool.name.clone()).collect::<Vec<_>>()
+    };
+    let enabled = visible(&f);
+    assert!(enabled.contains(&"code_retrieval".into()) && enabled.contains(&"retrieval_control".into()));
+    let preset = catalog.presets.iter_mut().find(|p| p.id == "code_retrieval").unwrap();
+    preset.unavailable = Some(ChildCapabilityFailure { code: "child-profile-disabled".into(), capabilities: vec![] });
+    install(&mut f, parent.clone(), catalog.clone(), "disable-quick-retrieval");
+    let disabled = visible(&f);
+    assert!(disabled.contains(&"file_read".into()));
+    assert!(!disabled.iter().any(|name| varin_runtime::tool_disclosure::is_quick_retrieval_tool(name)));
+    catalog.presets.iter_mut().find(|p| p.id == "code_retrieval").unwrap().unavailable = None;
+    install(&mut f, parent, catalog, "enable-quick-retrieval");
+    assert_eq!(visible(&f), enabled);
+    let root = f.root.clone();
+    drop(f);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn selected_presets_freeze_real_model_and_instructions_normal_disabled_is_independent() {
     let mut f = Fixture::new();
     f.accept();

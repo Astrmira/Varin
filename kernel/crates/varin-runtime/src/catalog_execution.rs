@@ -1010,10 +1010,14 @@ impl ExecutionBodyPreparation {
                 if let Some(launch) = &self.launch {
                     let tools: Vec<crate::execution::ToolSchema> =
                         serde_json::from_value(self.content.load(&launch.selection.tools_ref)?)?;
-                    let allowed = launch.selection.agent.as_ref().and_then(|agent| agent.tools.as_deref());
-                    let available = crate::tool_disclosure::request_tools(&tools, self.has_goal, allowed);
+                    let available = crate::tool_disclosure::launch_request_tools(&tools, self.has_goal, Some(&launch.selection));
                     let driver = matches!(snapshot.view.origin, RequestOrigin::Driver { .. });
-                    if if driver { snapshot.view.binding.tools.iter().any(|tool| !available.contains(tool)) } else { snapshot.view.binding.tools != available } {
+                    let permitted = if driver {
+                        snapshot.view.binding.tools.iter().all(|tool| available.clone().any(|granted| granted == tool))
+                    } else {
+                        available.eq(snapshot.view.binding.tools.iter())
+                    };
+                    if !permitted {
                         return Err(RuntimeError::Conflict("request differs from the admitted capability selection".into()));
                     }
                     if !driver && snapshot.view.binding.direct_tools.is_some()

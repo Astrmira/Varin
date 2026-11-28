@@ -1035,6 +1035,9 @@ impl Catalog {
         let previous: Option<LaunchMetadata> = optional_record(&tx, "run_launches", run_id)?;
         let intent = match previous {
             Some(mut intent) => {
+                if selection.child_dispatch_ref == intent.selection.child_dispatch_ref {
+                    selection.quick_retrieval_unavailable = intent.selection.quick_retrieval_unavailable;
+                }
                 if bound && !current_tools && intent.extension_admission.as_ref().is_some_and(ExtensionAdmission::pending) {
                     return Err(RuntimeError::Conflict("current extension directory is not prepared".into()));
                 }

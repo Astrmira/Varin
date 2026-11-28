@@ -15,6 +15,8 @@ pub enum RunModelSelectionStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunModelSelection {
     #[serde(skip)]
+    quick_retrieval_unavailable: bool,
+    #[serde(skip)]
     pub child_dispatch_ref: Option<Value>,
     pub id: String,
     pub run_id: String,
@@ -36,14 +38,18 @@ struct ModelSelectionRecord {
     #[serde(flatten)]
     selection: RunModelSelection,
     child_dispatch_ref: Option<Value>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    quick_retrieval_unavailable: bool,
 }
 fn encode_selection(selection: &RunModelSelection) -> Result<String> {
-    encode(&ModelSelectionRecord { selection: selection.clone(), child_dispatch_ref: selection.child_dispatch_ref.clone() })
+    encode(&ModelSelectionRecord { selection: selection.clone(), child_dispatch_ref: selection.child_dispatch_ref.clone(),
+        quick_retrieval_unavailable: selection.quick_retrieval_unavailable })
 }
 fn decode_selection(body: &str) -> Result<RunModelSelection> {
     let record: ModelSelectionRecord = serde_json::from_str(body)?;
     let mut selection = record.selection;
     selection.child_dispatch_ref = record.child_dispatch_ref;
+    selection.quick_retrieval_unavailable = record.quick_retrieval_unavailable;
     Ok(selection)
 }
 fn selection_record(db: &Connection, id: &str) -> Result<RunModelSelection> {
@@ -140,6 +146,8 @@ impl Catalog {
         }
         let launch: launch_content::LaunchMetadata = record(&tx, "run_launches", run_id)?;
         let selection = RunModelSelection {
+            quick_retrieval_unavailable: prepared.as_ref().filter(|catalog| catalog.reference.is_some())
+                .map_or(launch.selection.quick_retrieval_unavailable, |catalog| !catalog.quick_retrieval_available),
             child_dispatch_ref: prepared.as_ref().and_then(|prepared| prepared.reference.clone()).or(launch.selection.child_dispatch_ref),
             id: key.into(),
             run_id: run_id.into(),
@@ -302,6 +310,7 @@ impl Catalog {
         launch.selection.configuration_generation = binding.configuration_generation;
         launch.selection.credential_scope = stored.credential_scope;
         launch.selection.child_dispatch_ref = stored.child_dispatch_ref;
+        launch.selection.quick_retrieval_unavailable = stored.quick_retrieval_unavailable;
         launch.dispatch_context_ref = None;
         launch.revision += 1;
         put(&tx, "run_launches", &run.id, &launch)?;

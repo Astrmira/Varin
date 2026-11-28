@@ -19,7 +19,7 @@ export const SETTINGS_SLUG_ALIASES: Readonly<Record<string, string>> = {
   images: 'model-roles',
   'harness-embeddings': 'agent-memory',
   commands: 'skills',
-  'harness-retrieval': 'code-intel',
+  'harness-retrieval': 'model-roles',
   'language-support': 'code-intel',
   'work-connections': 'devices',
   'remote-instances': 'devices',

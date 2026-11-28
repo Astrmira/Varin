@@ -299,6 +299,10 @@ pub struct ChildDispatchCatalog {
 #[serde(deny_unknown_fields)]
 pub struct ChildProjectSource { #[serde(default,skip_serializing_if="Option::is_none")] pub selection:Option<super::organization::ProjectSourceSelection>, pub id:String, pub name:String, pub path:String, pub resource_owner:launches::SourceResourceOwner }
 impl ChildDispatchCatalog {
+    pub fn quick_retrieval_available(&self) -> bool {
+        self.presets.iter().any(|preset| preset.id == "code_retrieval" && preset.unavailable.is_none())
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_names(&self.executors.iter().map(|executor|executor.reference.clone()).collect::<Vec<_>>())?;
         if self.executors.iter().any(|executor| !executor.reference.starts_with("exec:") || executor.name.trim().is_empty()
@@ -1169,7 +1173,16 @@ impl ChildInvocationRead {
     }
 }
 impl ChildDispatchPreparation {
-    pub fn load(self) -> Result<PreparedChildDispatch> {
+    pub fn load(mut self) -> Result<PreparedChildDispatch> {
+        let delegation = std::mem::take(&mut self.allowed_delegation);
+        self.load_from_directory(|_, _| delegation)
+    }
+
+    /// Derive a new request and its delegation from the same immutable launch directory.
+    pub fn load_from_directory(
+        self,
+        delegate: impl FnOnce(&super::launch_content::LaunchSelectionMetadata, &[ToolSchema]) -> Vec<ToolSchema>,
+    ) -> Result<PreparedChildDispatch> {
         let connection_identity = self.model.connection_identity()?;
         if self.selection.connection_identity != connection_identity
             || self.selection.credential_scope != self.model.credential_scope
@@ -1180,8 +1193,8 @@ impl ChildDispatchPreparation {
         }
         let tools: Vec<ToolSchema> =
             serde_json::from_value(self.content.load(&self.selection.tools_ref)?)?;
-        if self
-            .allowed_delegation
+        let allowed_delegation = delegate(&self.selection, &tools);
+        if allowed_delegation
             .iter()
             .any(|tool| !tools.contains(tool))
         {
@@ -1211,7 +1224,7 @@ impl ChildDispatchPreparation {
                         lazy_work_location: self.selection.lazy_work_location.clone().filter(|_| self.allow_lazy),
                         catalog_ref,
                         parent_model: self.model.clone(),
-                        allowed_delegation: self.allowed_delegation,
+                        allowed_delegation,
                         tool_schema_generation: self.selection.tool_schema_generation,
                         tools_ref: self.selection.tools_ref.clone(),
                         mcp_binding_ref: self.selection.mcp_binding_ref.clone(),
@@ -1321,6 +1334,13 @@ impl Catalog {
         tool_schema_generation: u64,
         allowed_delegation: Vec<ToolSchema>,
     ) -> Result<ChildDispatchPreparation> {
+        let mut read = self.capture_child_dispatch_directory(run_id, model, tool_schema_generation)?;
+        read.allowed_delegation = allowed_delegation;
+        Ok(read)
+    }
+    pub fn capture_child_dispatch_directory(
+        &self, run_id: &str, model: ChildModelBinding, tool_schema_generation: u64,
+    ) -> Result<ChildDispatchPreparation> {
         let launch = self
             .launch_metadata(run_id)?
             .ok_or_else(|| RuntimeError::NotFound("Run launch".into()))?;
@@ -1337,7 +1357,7 @@ impl Catalog {
             allow_lazy,
             selection: launch.selection,
             model,
-            allowed_delegation,
+            allowed_delegation: Vec::new(),
             content: self.content.clone(),
             publication: self.content.begin_publication(),
         })
@@ -1380,10 +1400,12 @@ pub struct ChildCatalogPreparation {
 }
 pub struct PreparedChildCatalog {
     pub(super) reference: Option<Value>,
+    pub(super) quick_retrieval_available: bool,
     _publication: crate::content::ContentPublication,
 }
 impl ChildCatalogPreparation {
     pub fn load(self) -> Result<PreparedChildCatalog> {
+        let quick_retrieval_available = self.catalog.as_ref().is_some_and(ChildDispatchCatalog::quick_retrieval_available);
         let reference = self
             .catalog
             .map(|catalog| {
@@ -1393,6 +1415,7 @@ impl ChildCatalogPreparation {
             .transpose()?;
         Ok(PreparedChildCatalog {
             reference,
+            quick_retrieval_available,
             _publication: self.publication,
         })
     }

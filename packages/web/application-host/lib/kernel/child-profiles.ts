@@ -122,7 +122,12 @@ export function createChildProfilePreparer(owners: {
       return profile;
     }));
     signal?.throwIfAborted();
+    const quickRetrieval = presets.some(preset => preset.id === 'code_retrieval' && !preset.unavailable);
+    const availableTool = (name: string) => name !== 'code_retrieval' && name !== 'retrieval_control';
+    // A delegated worker can select tools on another project from this catalog as well.
+    if (!quickRetrieval) for (const preset of presets) preset.tools = preset.tools.filter(availableTool);
     return freeze(presets, settings.models.worker?.enabled === false && settings.models.verifier?.enabled === false
-      && !presets.some(preset => !preset.unavailable) ? unavailable('child-roles-disabled') : null, descriptors, projects, executors);
+      && !presets.some(preset => !preset.unavailable) ? unavailable('child-roles-disabled') : null,
+      quickRetrieval ? descriptors : descriptors.filter(tool => availableTool(tool.name)), projects, executors);
   };
 }

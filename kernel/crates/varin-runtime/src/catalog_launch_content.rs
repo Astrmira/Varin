@@ -23,6 +23,9 @@ pub struct LaunchSelectionMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<launches::AgentSelection>,
     pub child_dispatch_ref: Option<Value>,
+    /// Frozen with the model catalog. Older launches keep their original disclosure on replay.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quick_retrieval_unavailable: bool,
     pub credential_scope: Option<crate::providers::auth::CredentialScope>,
     pub connection_identity: String,
     pub provider_family: String,
@@ -143,6 +146,7 @@ impl LaunchSelectionMetadata {
             driver: selection.driver,
             driver_models,
             agent: selection.agent,
+            quick_retrieval_unavailable: !selection.child_dispatch.as_ref().is_some_and(dispatch::ChildDispatchCatalog::quick_retrieval_available),
             child_dispatch_ref: selection
                 .child_dispatch
                 .as_ref()

@@ -189,14 +189,21 @@ impl varin_runtime::execution::ContextPreparation for BindingPreparation {
             .catalog
             .lock()
             .map_err(|e| error(e.to_string()))?
-            .prepare_child_dispatch_binding(
-                run_id,
-                model,
-                binding.tool_schema_generation,
-                delegated(&binding.tools),
-            )
+            .capture_child_dispatch_directory(run_id, model, binding.tool_schema_generation)
             .map_err(|e| error(e.to_string()))?;
-        let prepared = prepared.load().map_err(|e| error(e.to_string()))?;
+        let prepared = prepared.load_from_directory(|selection, directory| {
+            use varin_runtime::tool_disclosure::{direct_tools, launch_request_tools};
+            let goal_granted = binding.tools.iter().any(|tool| tool.name == "goal_report");
+            let visible = launch_request_tools(directory, goal_granted, Some(selection));
+            if !visible.clone().map(|tool| &tool.name).eq(binding.tools.iter().map(|tool| &tool.name)) {
+                binding.tools = visible.cloned().collect();
+                if binding.direct_tools.is_some() {
+                    let focus = selection.agent.as_ref().map_or("general", |agent| agent.work_focus.as_str());
+                    binding.direct_tools = direct_tools(&binding.tools, focus);
+                }
+            }
+            delegated(&binding.tools)
+        }).map_err(|e| error(e.to_string()))?;
         if cancel.is_cancelled() {
             return Err(error("Run cancelled".into()));
         }
@@ -330,7 +337,8 @@ pub(crate) fn discovery(
             },
         )
     });
-    let presets = selected.catalog.presets.iter().map(|preset| {
+    // The quick retrieval profile belongs to its tool and cannot be selected via dispatch.
+    let presets = selected.catalog.presets.iter().filter(|preset| preset.id != "code_retrieval").map(|preset| {
         if let Some(external)=&preset.external {
             return json!({"id":preset.id,"name":preset.name,"description":preset.description,"backend":external.harness,
                 "tools_source":"external_harness","work_modes":["shared","isolated_write"],"work_focus":preset.work_focus,"unavailable":preset.unavailable,

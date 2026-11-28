@@ -12,7 +12,10 @@ async function fixture() {
     baseUrl: 'https://model.invalid/v1', maxTokens: 32768, reasoning: true,
     thinking: { mode: 'levels' as const, levels: ['low', 'high'] as ('low' | 'high')[], allowOff: true },
     samplingParams: { top_p: defaults }, samplingParamsByThinkingLevel: { high: { temperature: 0.5 } } });
-  const models = createModelAuthority({ selectedModel: async () => descriptor(), listModels: async () => [descriptor()],
+  const models = createModelAuthority({ selectedModel: async (providerId, modelId) => {
+    if (providerId !== 'provider' || modelId !== 'model') throw new Error('Model is not configured');
+    return descriptor();
+  }, listModels: async () => [descriptor()],
     currentScope: async () => scope, currentProviderAccount: async () => undefined, routingEnvironment: async () => ({}),
     getAuth: async () => ({ auth: { apiKey: 'fixture-unused' } }) });
   const resolved = await models.resolveModel({ providerId: 'provider', modelId: 'model', thinkingLevel: 'high' });
@@ -28,16 +31,37 @@ async function fixture() {
 const agent = (overrides: Record<string, unknown> = {}) => ({ name: 'Configured worker', description: 'User choice', instructions: 'Keep the original result.',
   enabled: true, tools: ['file_read'], worktree: 'none', workFocus: [], ...overrides });
 
-it('requires an explicit ordinary model for old decision-only retrieval while preserving disabled and inherited choices',async()=>{
-  const f=await fixture();
-  let settings:unknown={};
-  const prepare=createChildProfilePreparer({models:f.models,capabilities:async()=>f.capabilities,settings:async()=>settings});
-  const quick=async()=>(await prepare({parent:f.parent})).presets.find(profile=>profile.id==='code_retrieval')!;
-  expect(await quick()).toMatchObject({model_source:'inherit',unavailable:null});
-  const old={codeRetrieval:{decision:'auto'},fastDecision:{default:{protocol:'typed-classifier',providerId:'provider',modelId:'decision'}}};
-  settings={harness:old};expect((await quick()).unavailable?.code).toBe('retrieval-model-selection-required');
-  settings={harness:{...old,models:{explore:{inherit:true}}}};expect((await quick()).unavailable).toBeNull();
-  settings={harness:{...old,models:{explore:{enabled:false}}}};expect((await quick()).unavailable?.code).toBe('child-profile-disabled');
+it('publishes quick retrieval tools to child profiles only with an enabled usable model', async () => {
+  const f = await fixture();
+  const names = ['code_retrieval', 'retrieval_control'];
+  const retrievalTools: ChildCapabilityDescriptor[] = names.map(name => ({
+    name, version: '1', source_requirement: 'source', default_presets: ['worker'],
+  }));
+  const capabilities = [...f.capabilities, ...retrievalTools];
+  const old = { codeRetrieval: { decision: 'auto' }, fastDecision: { default: { protocol: 'typed-classifier', providerId: 'provider', modelId: 'decision' } } };
+  const cases: [unknown, string | null][] = [
+    [{}, null],
+    [old, 'retrieval-model-selection-required'],
+    [{ ...old, models: { explore: { inherit: true } } }, null],
+    [{ models: { explore: { enabled: false, providerId: 'provider', modelId: 'model' } } }, 'child-profile-disabled'],
+    [{ models: { explore: { enabled: true, providerId: 'provider', modelId: 'model' } } }, null],
+    [{ models: { explore: { providerId: 'missing', modelId: 'missing' } } }, 'child-model-unavailable'],
+  ];
+  for (const [harness, reason] of cases) {
+    const prepare = createChildProfilePreparer({ models: f.models, capabilities: async () => capabilities, settings: async () => ({ harness }) });
+    const catalog = await prepare({ parent: f.parent });
+    expect(catalog.presets.find(profile => profile.id === 'code_retrieval')?.unavailable?.code ?? null).toBe(reason);
+    const worker = catalog.presets.find(profile => profile.id === 'worker')!;
+    expect(worker.tools).toContain('file_read');
+    expect(worker.tools.filter(name => names.includes(name))).toEqual(reason ? [] : names);
+    expect(catalog.native_capabilities.map(tool => tool.name).filter(name => names.includes(name))).toEqual(reason ? [] : names);
+  }
+  const prepare = createChildProfilePreparer({ models: f.models, capabilities: async () => capabilities, settings: async () => ({}) });
+  const configuration = { ...f.parent.configuration };
+  delete configuration.providerId;
+  const catalog = await prepare({ parent: { ...f.parent, configuration } });
+  expect(catalog.presets.find(profile => profile.id === 'code_retrieval')?.unavailable?.code).toBe('child-profile-unconfigured');
+  expect(catalog.native_capabilities.some(tool => names.includes(tool.name))).toBe(false);
 });
 
 it('compiles original configured profiles without losing unavailable choices, scope or inheritance provenance', async () => {

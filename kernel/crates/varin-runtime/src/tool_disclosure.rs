@@ -251,14 +251,33 @@ pub fn deferred_namespace(tool: &ToolSchema) -> Option<&'static str> {
     if is_declared(tool) { None } else { namespace(&tool.name) }
 }
 
-/// The executable request cut of a frozen launch. Keep this distinct from the
-/// smaller provider interface, and use the same cut when validating persistence.
+pub fn is_quick_retrieval_tool(name: &str) -> bool {
+    matches!(name, "code_retrieval" | "retrieval_control")
+}
+
+fn selected_tools<'a>(
+    tools: &'a [ToolSchema], has_goal: bool, allowed: Option<&'a [String]>, hide_retrieval: bool,
+) -> impl Iterator<Item = &'a ToolSchema> + Clone {
+    let disclosure = enabled(tools);
+    tools.iter().filter(move |tool| {
+        !(hide_retrieval && is_quick_retrieval_tool(&tool.name))
+            && (!disclosure || (tool.name != "goal_report" || has_goal)
+                && (is_gateway(tool) || allowed.is_none_or(|names| names.contains(&tool.name))))
+    })
+}
+
 pub fn request_tools(tools: &[ToolSchema], has_goal: bool, allowed: Option<&[String]>) -> Vec<ToolSchema> {
-    if !enabled(tools) { return tools.to_vec(); }
-    tools.iter()
-        .filter(|tool| tool.name != "goal_report" || has_goal)
-        .filter(|tool| is_gateway(tool) || allowed.is_none_or(|names| names.contains(&tool.name)))
-        .cloned().collect()
+    selected_tools(tools, has_goal, allowed, false).cloned().collect()
+}
+
+/// The executable request directory used for model disclosure, delegation and replay validation.
+pub fn launch_request_tools<'a>(
+    tools: &'a [ToolSchema],
+    has_goal: bool,
+    launch: Option<&'a crate::catalog::launch_content::LaunchSelectionMetadata>,
+) -> impl Iterator<Item = &'a ToolSchema> + Clone {
+    selected_tools(tools, has_goal, launch.and_then(|selection| selection.agent.as_ref()?.tools.as_deref()),
+        launch.is_some_and(|selection| selection.quick_retrieval_unavailable))
 }
 
 /// This is an explicit API classification, not keyword matching of user requests.

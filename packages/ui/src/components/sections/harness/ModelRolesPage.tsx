@@ -57,7 +57,7 @@ export function ModelRolesPage() {
         <Disclosure label={t('settings.page.harness.section.fastDecision')} item="harness.fastDecision">
           <FastDecisionSettings {...props} embedded />
         </Disclosure>
-        <HarnessModelField {...props} slot="explore" enableControl={false} />
+        <HarnessModelField {...props} slot="explore" />
         <AssistanceModel {...props} purpose="web-selection" slot="webSelection" item="harness.models.webSelection"
           status={status(parseHarnessWebSearchSettings(props.harness.web?.search)?.smartSelection === true, t('settings.page.harness.page.web.title'), () => shell.openPage('harness-web', { item: 'harness.web.assistance' }))} />
         <AssistanceModel {...props} purpose="web-reading" slot="reader" item="harness.models.reader"

@@ -11,6 +11,8 @@ Two retrieval paths share the same native `ExecutionEngine`, `ToolDirectory`, an
 | `code_retrieval` (fast background) | `models.explore` (default: inherit session model) | Starts an internal Thread/Run owned by the tool's Operation; returns immediately as a Thread-lifetime Job; delivers final answer once into parent's input queue. Hidden from normal conversation/collaboration lists. Controlled via `retrieval_control` (`status` / `wait` / `stop`). |
 | Research Agent (formal) | `models.retrievalAgent` | Standard delegated agent with collaboration presence, reports, and continuation. |
 
+Settings → Model roles → Quick retrieval model controls the background tool. Turning it off keeps the model choice for later. New runs omit both retrieval tools and their guidance when the switch is off or the effective model is unavailable. Following the session model counts as a model selection.
+
 - **Internal execution boundaries**: `code_retrieval` freezes model/source/tools (intersection of role and delegatable parent grants) at admission, cannot recursively spawn retrievals or teammates, and bills usage to the parent Thread. Failed preparation before Catalog admission returns `retrieval_preparation_failed` with stage/cause.
 - **Source execution views**: `LiveRoot` / `Materialized` / `Native workspace` run directly on their real directories; `FixedBranch` reads immutably and materializes on first command via Storage's journal (`execution_views.rs`).
 - **No LSP tools for agents**: `language_*` tools are not exposed to Agent/Bot directories (IDE keeps its own LSP consumers); Tree-sitter runs on-demand per requested file only.

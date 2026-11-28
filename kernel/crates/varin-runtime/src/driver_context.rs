@@ -132,26 +132,24 @@ impl DriverContext {
             input.binding.resource_checkpoint_id = projected.resource_checkpoint_id;
         }
         input.history.extend(binding_context);
-        let (goal, agent) = {
+        let (goal, launch) = {
             let catalog = self.catalog.lock().map_err(error)?;
             (
                 catalog.goal_binding(&self.run_id).map_err(error)?,
                 catalog
                     .launch_metadata(&self.run_id)
-                    .map_err(error)?
-                    .and_then(|launch| launch.selection.agent),
+                    .map_err(error)?,
             )
         };
         input.binding.goal = goal;
-        input.binding.tools = crate::tool_disclosure::request_tools(
+        input.binding.tools = crate::tool_disclosure::launch_request_tools(
             &input.binding.tools,
             input.binding.goal.is_some(),
-            agent.as_ref().and_then(|agent| agent.tools.as_deref()),
-        );
+            launch.as_ref().map(|launch| &launch.selection),
+        ).cloned().collect();
         input.binding.direct_tools = crate::tool_disclosure::direct_tools(
             &input.binding.tools,
-            agent
-                .as_ref()
+            launch.as_ref().and_then(|launch| launch.selection.agent.as_ref())
                 .map(|agent| agent.work_focus.as_str())
                 .unwrap_or("general"),
         );
@@ -745,26 +743,24 @@ impl DriverContext {
         input.history.extend(binding_context);
         input.binding.resource_activations =
             crate::catalog::resources::retained_activations(&input.history);
-        let (goal, agent) = {
+        let (goal, launch) = {
             let owner = self.catalog.lock().map_err(error)?;
             (
                 owner.goal_binding(&self.run_id).map_err(error)?,
                 owner
                     .launch_metadata(&self.run_id)
-                    .map_err(error)?
-                    .and_then(|launch| launch.selection.agent),
+                    .map_err(error)?,
             )
         };
         input.binding.goal = goal;
-        input.binding.tools = crate::tool_disclosure::request_tools(
+        input.binding.tools = crate::tool_disclosure::launch_request_tools(
             &self.start.binding.tools,
             input.binding.goal.is_some(),
-            agent.as_ref().and_then(|agent| agent.tools.as_deref()),
-        );
+            launch.as_ref().map(|launch| &launch.selection),
+        ).cloned().collect();
         input.binding.direct_tools = crate::tool_disclosure::direct_tools(
             &input.binding.tools,
-            agent
-                .as_ref()
+            launch.as_ref().and_then(|launch| launch.selection.agent.as_ref())
                 .map(|agent| agent.work_focus.as_str())
                 .unwrap_or("general"),
         );

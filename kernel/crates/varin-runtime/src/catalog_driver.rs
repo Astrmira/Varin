@@ -491,13 +491,12 @@ impl DriverContentPreparation {
         let tools: Vec<crate::execution::ToolSchema> =
             serde_json::from_value(self.content.load(&authority.launch.selection.tools_ref)?)?;
         let agent = authority.launch.selection.agent.as_ref();
-        let allowed = agent.and_then(|agent| agent.tools.as_deref());
         let focus = agent
             .map(|agent| agent.work_focus.as_str())
             .unwrap_or("general");
         if frozen.run_id != authority.launch.run_id
-            || *frozen.tools
-                != crate::tool_disclosure::request_tools(&tools, authority.has_goal, allowed)
+            || !crate::tool_disclosure::launch_request_tools(&tools, authority.has_goal, Some(&authority.launch.selection))
+                .eq(frozen.tools.iter())
             || frozen.direct_tools.is_some()
                 && frozen.direct_tools != crate::tool_disclosure::direct_tools(&frozen.tools, focus)
         {
