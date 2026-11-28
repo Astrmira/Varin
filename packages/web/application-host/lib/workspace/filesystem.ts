@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { availableParallelism } from 'node:os';
 import path from 'path';
 import { ensureWorkspaceRoot } from './workspace-config.js';
 import { WorkspacePathError, normalizeWorkspaceRelativePath, resolveWorkspacePath } from './path-safety.js';
@@ -60,6 +61,7 @@ export interface CreateWorkspaceEntryContext {
 export interface CreateWorkspaceEntryOptions {
   rootListing?: boolean | undefined;
   includeGit?: boolean | undefined;
+  gitSummary?: (directory: string, device: number) => Promise<GitSummary | null>;
 }
 
 export interface CreateWorkspaceFileDependencies extends WorkspaceDependencies {
@@ -167,17 +169,7 @@ const safeTrashName = (name: string): string => {
 async function readGitSummary(absolutePath: string): Promise<GitSummary | null> {
   try {
     const git = await import('../git/index.js');
-    if (!await git.isGitRepository(absolutePath)) {
-      return null;
-    }
-    const status = await git.getStatus(absolutePath, { mode: 'light' });
-    return {
-      branch: status?.current || null,
-      remote: status?.tracking || null,
-      dirty: Array.isArray(status?.files) ? status.files.length > 0 : !status?.isClean,
-      ahead: Number.isFinite(status?.ahead) ? status.ahead : 0,
-      behind: Number.isFinite(status?.behind) ? status.behind : 0,
-    };
+    return await git.getDirectoryGitSummary(absolutePath);
   } catch {
     return null;
   }
@@ -205,7 +197,7 @@ export const createWorkspaceEntry = async (
   const type: WorkspaceEntry['type'] = isSymlink ? 'symlink' : (isDirectory ? 'directory' : 'file');
   const relativePath = toRelativePath(rootPath, absolutePath, pathModule);
   const isProject = rootListing && isDirectory && name !== '.trash';
-  const git = includeGit && isProject ? await readGitSummary(absolutePath) : null;
+  const git = includeGit && isProject ? await (options.gitSummary ?? readGitSummary)(absolutePath, lstat.dev) : null;
 
   return {
     name,
@@ -281,17 +273,36 @@ export const listWorkspaceDirectory = async (
 
   const dirents = await fsPromises.readdir(resolved.absolutePath, { withFileTypes: true });
   const rootListing = resolved.relativePath === '';
-  const entries: WorkspaceEntry[] = [];
-  for (const dirent of dirents) {
-    if (rootListing && dirent.name === '.trash') {
-      continue;
+  let inherited: Promise<GitSummary | null> | undefined;
+  const hasMarker = (file: string) => fsPromises.lstat(file).then(() => true, (err: NodeJS.ErrnoException) => err.code !== 'ENOENT');
+  const inheritedSummary = async () => {
+    if (process.env.GIT_DIR || process.env.GIT_WORK_TREE) return readGitSummary(resolved.absolutePath);
+    for (let base = resolved.realPath; ; base = pathModule.dirname(base)) {
+      if (await hasMarker(pathModule.join(base, '.git')) || await hasMarker(pathModule.join(base, 'HEAD'))) {
+        return readGitSummary(resolved.absolutePath);
+      }
+      if (base === pathModule.dirname(base)) return null;
     }
-    entries.push(await createWorkspaceEntry(pathModule.join(resolved.absolutePath, dirent.name), {
-      rootPath: resolved.rootPath,
-      fsPromises,
-      pathModule,
-    }, { rootListing }));
-  }
+  };
+  const gitSummary = async (directory: string, device: number) => {
+    // A worktree marker can be a directory or a gitfile. Mount boundaries,
+    // Git administration directories and explicit discovery rules belong to Git.
+    if (device !== stat.dev || pathModule.basename(directory) === '.git' || process.env.GIT_CEILING_DIRECTORIES
+      || await hasMarker(pathModule.join(directory, '.git')) || await hasMarker(pathModule.join(directory, 'HEAD'))) {
+      return readGitSummary(directory);
+    }
+    return inherited ??= inheritedSummary();
+  };
+  const visible = rootListing ? dirents.filter(entry => entry.name !== '.trash') : dirents;
+  const remaining = visible.entries();
+  const entries: WorkspaceEntry[] = new Array(visible.length);
+  await Promise.all(Array.from({ length: Math.min(visible.length, availableParallelism()) }, async () => {
+    for (const [index, dirent] of remaining) {
+      entries[index] = await createWorkspaceEntry(pathModule.join(resolved.absolutePath, dirent.name), {
+        rootPath: resolved.rootPath, fsPromises, pathModule,
+      }, { rootListing, gitSummary });
+    }
+  }));
   entries.sort((a, b) => {
     if (a.type !== b.type) {
       if (a.type === 'directory') return -1;

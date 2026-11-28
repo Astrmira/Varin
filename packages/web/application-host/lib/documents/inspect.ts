@@ -1,11 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { VarinTextFormat } from '@varin/application-client';
 import { DocumentAuthorityError } from './errors.js';
-
-// Keep the exact view range and do not copy a native Buffer just to serialize it.
-const bytesToBase64 = (input: Uint8Array): string => (Buffer.isBuffer(input)
-  ? input
-  : Buffer.from(input.buffer, input.byteOffset, input.byteLength)).toString('base64');
+import { kernelResultBytes } from '../kernel/binary-result.js';
 
 export const revisionFromBytes = (bytes: Buffer | Uint8Array): string => (
   `d1_${createHash('sha256').update(bytes).digest('base64url')}`
@@ -14,10 +10,10 @@ export const revisionFromBytes = (bytes: Buffer | Uint8Array): string => (
 /** Transport adapter only. Rust is the sole file codec and strict serializer. */
 export interface DocumentTextCodec {
   textEncodings?(): Promise<import('@varin/application-client').VarinTextCodec[]>;
-  textDecode(input: { bytesBase64: string; encoding?: string; defaultEncoding?: string; includeContent?: boolean }): Promise<
+  textDecode(input: { bytes: Uint8Array; encoding?: string; defaultEncoding?: string; includeContent?: boolean }): Promise<
     | { kind: 'text'; content?: string; format: VarinTextFormat; byteLength: number }
     | { kind: 'binary' | 'unsupported-encoding'; byteLength: number; message?: string; candidates?: string[] }>;
-  textSerialize(input: { content: string; sourceBytesBase64?: string; sourceFormat?: VarinTextFormat;
+  textSerialize(input: { content: string; sourceBytes?: Uint8Array; sourceFormat?: VarinTextFormat;
     targetFormat?: { encoding?: string; bom?: boolean; lineEnding?: 'lf' | 'crlf' | 'cr' | 'mixed' }; normalizeLineEndings?: boolean;
     edits?: Array<{ start: number; end: number; text: string }> }): Promise<
     | { kind: 'serialized'; bytesBase64: string; format: VarinTextFormat; byteLength: number }
@@ -79,7 +75,7 @@ export interface InspectDocumentOptions { encoding?: string; defaultEncoding?: s
 export function inspectDocumentBytes(input: Buffer | Uint8Array, includeContent?: true, options?: InspectDocumentOptions): Promise<InspectedDocument>;
 export function inspectDocumentBytes(input: Buffer | Uint8Array, includeContent: false, options?: InspectDocumentOptions): Promise<InspectedDocumentMetadata>;
 export async function inspectDocumentBytes(input: Buffer | Uint8Array, includeContent = true, options: InspectDocumentOptions = {}): Promise<InspectedDocument | InspectedDocumentMetadata> {
-  const result = await codec().textDecode({ bytesBase64: bytesToBase64(input), includeContent, ...options });
+  const result = await codec().textDecode({ bytes: input, includeContent, ...options });
   if (result.kind !== 'text') return result;
   if (includeContent && typeof result.content !== 'string') throw new Error('Native text read returned no content');
   return { kind: 'text', encoding: result.format.encoding, bom: result.format.bom, format: result.format,
@@ -95,7 +91,7 @@ export const serializeDocumentText = async (options: EncodeDocumentTextOptions) 
   // JSON would replace lone surrogates before Rust can inspect a string. Reject them at this boundary.
   if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(options.content)) throw new DocumentAuthorityError('The document contains an unpaired Unicode surrogate', { code: 'invalid-text', statusCode: 400 });
   const result = await codec().textSerialize({ content: options.content,
-    ...(options.sourceBytes ? { sourceBytesBase64: bytesToBase64(options.sourceBytes) } : {}),
+    ...(options.sourceBytes ? { sourceBytes: options.sourceBytes } : {}),
     ...(options.sourceFormat ? { sourceFormat: options.sourceFormat } : {}),
     targetFormat: { encoding: options.encoding, bom: options.bom, ...(options.lineEnding ? { lineEnding: options.lineEnding } : {}) },
     ...(options.normalizeLineEndings === undefined ? {} : { normalizeLineEndings: options.normalizeLineEndings }),
@@ -103,6 +99,6 @@ export const serializeDocumentText = async (options: EncodeDocumentTextOptions) 
   });
   if (result.kind !== 'serialized') throw new DocumentAuthorityError(result.message,
     { code: result.kind === 'unrepresentable' ? 'unrepresentable' : 'invalid-text', statusCode: 400 });
-  return { bytes: Buffer.from(result.bytesBase64, 'base64'), format: result.format, byteLength: result.byteLength };
+  return { bytes: kernelResultBytes(result), format: result.format, byteLength: result.byteLength };
 };
 export const encodeDocumentText = async (options: EncodeDocumentTextOptions): Promise<Buffer> => (await serializeDocumentText(options)).bytes;

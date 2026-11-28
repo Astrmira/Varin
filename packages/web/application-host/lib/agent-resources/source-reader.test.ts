@@ -19,12 +19,16 @@ it('passes a copied per-file policy for the canonical admitted asset and preserv
   const decode = codec();
   const root = await mkdtemp(path.join(os.tmpdir(), 'varin-resource-codec-'));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
-  await writeFile(path.join(root, 'AGENTS.md'), '\ufeff中文\r\n');
-  await symlink('AGENTS.md', path.join(root, 'alias.md'));
-  const policy = { root, files: { 'AGENTS.md': 'utf-8', 'alias.md': 'gbk' }, defaultEncoding: 'gbk' };
+  await mkdir(path.join(root, 'instructions'));
+  const canonical = 'instructions/AGENTS.md';
+  const alias = process.platform === 'win32' ? 'alias/AGENTS.md' : 'alias.md';
+  await writeFile(path.join(root, canonical), '\ufeff中文\r\n');
+  if (process.platform === 'win32') await symlink(path.join(root, 'instructions'), path.join(root, 'alias'), 'junction');
+  else await symlink(canonical, path.join(root, alias));
+  const policy = { root, files: { [canonical]: 'utf-8', [alias]: 'gbk' }, defaultEncoding: 'gbk' };
   const reader = await createAdmittedDirectoryReader({ domainId: 'asset', viewId: 'captured', root, textEncoding: policy });
-  policy.files['AGENTS.md'] = 'gbk';
-  expect(await reader.read('alias.md')).toMatchObject({ status: 'ready', content: '\ufeff中文\r\n' });
+  policy.files[canonical] = 'gbk';
+  expect(await reader.read(alias)).toMatchObject({ status: 'ready', content: '\ufeff中文\r\n' });
   expect(decode).toHaveBeenCalledWith(expect.objectContaining({ encoding: 'utf-8', defaultEncoding: 'gbk' }));
 });
 

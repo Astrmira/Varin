@@ -2,6 +2,12 @@
 use super::*;
 use std::sync::mpsc::SyncSender;
 
+pub struct EventDispatch {
+    pub cursor: u64,
+    pub reconcile_continuations: bool,
+    pub check_managed_processes: bool,
+}
+
 /// A notification carries no authority or payload; callers inspect committed state
 /// after taking Catalog's lock. Dropping a worker removes its observer immediately.
 pub struct EventSubscription {
@@ -43,6 +49,28 @@ impl Catalog {
                 read_number(row, 0)
             })
             .map_err(Into::into)
+    }
+    /// Called under the Catalog owner lock after a coalesced wake. Unknown events
+    /// wake every applicable owner. Selection/preparation alone changes neither
+    /// execution state nor deadlines, but can satisfy an explicitly registered Wait.
+    pub fn event_dispatch_since(&self, previous: Option<u64>) -> Result<EventDispatch> {
+        let cursor = self.event_cursor()?;
+        let reconcile = match previous {
+            None => true, // restart includes work committed before subscription
+            Some(after) if after == cursor => false,
+            Some(after) => self.db.prepare_cached(&format!(
+                "SELECT EXISTS(SELECT 1 FROM events e WHERE e.cursor>?1 AND (
+                e.kind NOT IN ('run.driver_prepared','run.extensions_prepared','run.mcp_prepared',
+                  'run.policy_prepared','run.model_selected','run.model_prepared','model.prepared')
+                OR EXISTS(SELECT 1 FROM waits INDEXED BY pending_waits_by_event WHERE {PENDING_WAIT}
+                  AND json_extract(body,'$.subject')=e.subject AND json_extract(body,'$.kind')=e.kind)))"
+            ))?.query_row([sql_number(after)?], |r| r.get(0))?,
+        };
+        let managed = reconcile && self.db.prepare_cached(&format!(
+            "SELECT EXISTS(SELECT 1 FROM operations INDEXED BY unsettled_managed_processes WHERE {})",
+            managed_process::UNSETTLED_MANAGED_PROCESS
+        ))?.query_row([], |r| r.get::<_,bool>(0))?;
+        Ok(EventDispatch { cursor, reconcile_continuations: reconcile, check_managed_processes: managed })
     }
     pub fn inspect_thread(&self, thread_id: &str) -> Result<Value> {
         threads::inspect(&self.db, thread_id)

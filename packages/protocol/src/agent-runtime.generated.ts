@@ -1859,7 +1859,7 @@ export interface ThreadSummary {
   avatar?: string;
 }
 
-export type AgentRuntimeStreamEvent = ({v: 96; kind: 'runtime-event'; kernelEpoch: string} & ({stream: 'durable'; cursor: number} | {stream: 'progress'; runId: string; threadId: string; branchId: string; requestId: string; streamId: string; sequence: number; event: unknown})) | {v: 96; kind: 'runtime-event'; stream: 'resync'; cursor: number; kernelEpoch?: string; reason: string};
+export type AgentRuntimeStreamEvent = ({v: 97; kind: 'runtime-event'; kernelEpoch: string} & ({stream: 'durable'; cursor: number} | {stream: 'progress'; runId: string; threadId: string; branchId: string; requestId: string; streamId: string; sequence: number; event: unknown})) | {v: 97; kind: 'runtime-event'; stream: 'resync'; cursor: number; kernelEpoch?: string; reason: string};
 
 export type SourceMode = 'fixed_branch' | 'materialized' | 'live_root' | 'native_workspace';
 

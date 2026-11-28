@@ -100,7 +100,8 @@ impl Fixture {
         storage.dispatch(method, &params, Some("original"), &grant)
     }
     fn spawn(&self, id: &str, script: &str, mode: &str) -> Result<Value, KernelError> {
-        self.dispatch("process.spawn",json!({"resourceOwner":{"kind":"local"},"workspaceId":"workspace","rootId":self.root_id,"processId":id,"cwd":"","command":"/bin/sh","args":["-c",script],"env":[],"mode":mode,"cols":80,"rows":24}))
+        let shell = std::env::var("VARIN_TEST_POSIX_SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        self.dispatch("process.spawn",json!({"resourceOwner":{"kind":"local"},"workspaceId":"workspace","rootId":self.root_id,"processId":id,"cwd":"","command":shell,"args":["-c",script],"env":[],"mode":mode,"cols":80,"rows":24}))
     }
     fn write(&self, id: &str, operation: &str, bytes: Vec<u8>, eof: bool) -> Receipt {
         self.client
@@ -310,12 +311,26 @@ fn blocked_input_cancel_keeps_process_and_storage_live_then_reports_actual_parti
 #[ignore = "requires a freshly built kernel executable and a real PTY"]
 fn real_pty_resize_ack_input_and_eof_rejection() {
     let f = Fixture::new();
+    #[cfg(not(windows))]
     f.spawn(
         "pty",
         "IFS= read -r line; stty size; printf '%s' \"$line\"",
         "pty",
     )
     .unwrap();
+    #[cfg(windows)]
+    {
+        let node = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join("node.exe")).find(|path| path.is_file()).expect("Node.js required for the Windows PTY fixture");
+        let env: Vec<_> = ["SystemRoot", "SystemDrive", "ComSpec", "PATH", "TEMP", "TMP"]
+            .iter().filter_map(|name| std::env::var(name).ok().map(|value| json!({"name":name,"value":value}))).collect();
+        f.dispatch("process.spawn", json!({
+            "resourceOwner":{"kind":"local"}, "workspaceId":"workspace", "rootId":f.root_id,
+            "processId":"pty", "cwd":"", "command":node,
+            "args":["-e","process.stdin.resume(); process.stdin.once('data', input => { const [cols,rows]=new (require('tty').WriteStream)(1).getWindowSize(); console.log(rows,cols,input.toString()); process.exit(0) })"],
+            "env":env, "mode":"pty", "cols":80, "rows":24
+        })).unwrap();
+    }
     // Start the later worker first after both real reservations. It must not
     // resize ahead of the earlier accepted operation and leave the PTY stale.
     let (larger, resized) = std::thread::scope(|scope| {
@@ -378,7 +393,8 @@ fn real_pty_resize_ack_input_and_eof_rejection() {
         let larger = first_run.join().unwrap();
         assert!(
             premature.is_err(),
-            "later resize bypassed original accepted order"
+            "later resize completed before its predecessor: {premature:?}; process: {:?}",
+            f.dispatch("process.inspect", json!({"workspaceId":"workspace","rootId":f.root_id,"processId":"pty"}))
         );
         (larger, result.recv_timeout(Duration::from_secs(5)).unwrap())
     });
@@ -398,7 +414,7 @@ fn real_pty_resize_ack_input_and_eof_rejection() {
             CancellationToken::default()
         )
         .is_err());
-    let written = f.write("pty", "pty-input", b"hello\n".to_vec(), false);
+    let written = f.write("pty", "pty-input", if cfg!(windows) { b"hello\r" } else { b"hello\n" }.to_vec(), false);
     assert_eq!(written.identity().state, State::Applied);
     assert_eq!(written.identity().sequence, resized.identity().sequence + 1);
     f.wait("pty");
@@ -482,10 +498,10 @@ fn original_guardian_receipt_recovers_after_storage_reopen_without_replaying_byt
         State::Unknown
     );
     let mut observed = None;
-    task.run(input, CancellationToken::default(), |receipt, finished| {
+    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(task.run(input, CancellationToken::default(), |receipt, finished| {
         assert!(finished);
         observed = Some(receipt);
-    });
+    }));
     let actual = observed.unwrap();
     assert_eq!(actual.identity().state, State::Applied);
     f.wait("reopen");

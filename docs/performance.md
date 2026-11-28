@@ -81,3 +81,18 @@ worker shared across concurrent requests; the last physically settled request st
 based on observed reload cost and estimated process RSS growth. Reacquisition keeps the same model
 and tokenizer. For deployment measurements separate the Host-wide RSS estimate from model weights
 and sample the first inference again after worker exit.
+
+### Windows resource-lifecycle spot checks
+
+These samples used a development kernel and isolated data on one Windows x64 machine.
+
+| Workload | Observed |
+| --- | --- |
+| Two consecutive submissions through the HTTP client, default tools, one conversation, local model endpoint | 2,556 ms and 1,551 ms from submit to the provider receiving request headers. Both rounds started zero forwarding brokers. |
+| A 20-entry unchanged history window with one pre-index entry | First access loaded that one body in an 8.45 ms view read. The next read took 6.64 ms and loaded zero bodies. |
+| List a non-repository root containing 17 ordinary directories | Three listings took 14, 4 and 3 ms. An isolated run of the previous 17 serial Git probes took 1,201 ms. Git tracing counted zero launches across the new listings, including the 200-directory case (14–17 ms). |
+| Read a small authoritative knowledge store from a source Host | Initial open took 340 ms. Ten warm reads averaged 0.36 ms. The last idle store released a worker with 37.4 MiB private committed memory. Reopening and reading took 355 ms and returned the original revision and contents. |
+
+The HTTP measurement ends before generation of the first token. Set `VARIN_MEASURE_RESOURCE_COSTS=1`
+and run the two-submission context-composition native test with Vitest `--silent=false`, or the
+`thread_view_preserves_window` Rust test with `--nocapture`, to repeat the first two samples.

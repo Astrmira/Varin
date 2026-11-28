@@ -985,6 +985,7 @@ export const settingsDict = {
   'settings.languageSupport.actions.cancel': 'Cancel',
   'settings.languageSupport.actions.refresh': 'Refresh',
   'settings.languageSupport.actions.import': 'Import .wasm',
+  'settings.languageSupport.actions.importServer': 'Import server package',
   'settings.languageSupport.field.abi': 'ABI {abi}',
   'settings.languageSupport.capability.outline': 'Outline',
   'settings.languageSupport.capability.classifyHits': 'Hit classification',

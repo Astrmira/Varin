@@ -985,6 +985,7 @@ export const settingsDict = {
   'settings.languageSupport.actions.cancel': '取消',
   'settings.languageSupport.actions.refresh': '刷新',
   'settings.languageSupport.actions.import': '导入 .wasm',
+  'settings.languageSupport.actions.importServer': '导入语言服务器安装包',
   'settings.languageSupport.field.abi': 'ABI {abi}',
   'settings.languageSupport.capability.outline': '代码大纲',
   'settings.languageSupport.capability.classifyHits': '命中分类',

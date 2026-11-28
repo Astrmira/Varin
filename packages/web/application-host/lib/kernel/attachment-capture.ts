@@ -1,3 +1,4 @@
+import { kernelResultBytes } from './binary-result.js';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { stripWindowsNamespacePrefix } from '../workspace/path-safety.js';
@@ -70,7 +71,7 @@ export async function captureOwnedAttachment(kernel: KernelClient, conversation:
       do {
         signal?.throwIfAborted();
         const page = await actor.getBlob(objectHash, { recordId, slot: 'source' }, { offset, length: Math.min(256 * 1024, byteLength - offset), ...(signal ? { signal } : {}) });
-        const bytes = Buffer.from(page.bytesBase64, 'base64');
+        const bytes = kernelResultBytes(page);
         if (page.hash !== objectHash || page.byteLength !== byteLength || page.offset !== offset || page.nextOffset !== offset + bytes.length || page.eof !== (page.nextOffset === byteLength) || !page.eof && !bytes.length)
           throw new AttachmentCaptureError('attachment_incomplete', 'The original file transfer is incomplete');
         offset = page.nextOffset;

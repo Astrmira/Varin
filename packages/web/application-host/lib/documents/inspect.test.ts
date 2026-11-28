@@ -73,9 +73,9 @@ it('passes only the bytes in a typed-array subview to decode and serialize', asy
   bind(port);
   const view = Uint8Array.from([0xff, 0x78, 0x00]).subarray(1, 2);
   await inspectDocumentBytes(view, false);
-  expect(port.textDecode).toHaveBeenCalledExactlyOnceWith({ bytesBase64: 'eA==', includeContent: false });
+  expect(port.textDecode).toHaveBeenCalledExactlyOnceWith({ bytes: Uint8Array.of(0x78), includeContent: false });
   await serializeDocumentText({ content: 'x', encoding: 'utf-8', bom: false, sourceBytes: view });
   expect(port.textSerialize).toHaveBeenCalledExactlyOnceWith({
-    content: 'x', sourceBytesBase64: 'eA==', targetFormat: { encoding: 'utf-8', bom: false },
+    content: 'x', sourceBytes: Uint8Array.of(0x78), targetFormat: { encoding: 'utf-8', bom: false },
   });
 });

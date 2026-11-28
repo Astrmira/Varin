@@ -1104,18 +1104,26 @@ struct SerializeParams {
     normalize_line_endings: Option<bool>,
     edits: Option<Vec<Edit>>,
 }
+#[cfg(test)]
 pub(crate) fn request(method: &str, params: Value) -> Result<Value, KernelError> {
+    request_with_bytes(method, params, None, &mut None)
+}
+pub(crate) fn request_with_bytes(method: &str, params: Value, binary: Option<&[u8]>, reply: &mut Option<Vec<u8>>) -> Result<Value, KernelError> {
     if method == "text.encodings" {
         return Ok(registry());
     }
     if method == "text.decode" {
         let p: DecodeParams = serde_json::from_value(params)?;
-        let bytes = STANDARD
+        let decoded;
+        let bytes = if let Some(raw) = binary { raw } else {
+            decoded = STANDARD
             .decode(p.bytes_base64)
             .map_err(|_| KernelError::Protocol("Invalid text bytes base64".into()))?;
+            &decoded
+        };
         return Ok(
             match decode_with_content(
-                &bytes,
+                bytes,
                 p.encoding.as_deref(),
                 p.default_encoding.as_deref(),
                 p.include_content != Some(false),
@@ -1146,22 +1154,27 @@ pub(crate) fn request(method: &str, params: Value) -> Result<Value, KernelError>
         );
     }
     let p: SerializeParams = serde_json::from_value(params)?;
-    let bytes = p
-        .source_bytes_base64
-        .map(|b| STANDARD.decode(b))
-        .transpose()
-        .map_err(|_| KernelError::Protocol("Invalid source bytes base64".into()))?;
+    let decoded;
+    let source = if let Some(raw) = binary {
+        p.source_bytes_base64.as_ref().map(|_| raw)
+    } else {
+        decoded = p.source_bytes_base64.map(|b| STANDARD.decode(b)).transpose()
+            .map_err(|_| KernelError::Protocol("Invalid source bytes base64".into()))?;
+        decoded.as_deref()
+    };
     Ok(
         match serialize(
             &p.content,
-            bytes.as_deref(),
+            source,
             p.source_format.as_ref(),
             p.target_format.as_ref(),
             p.normalize_line_endings.unwrap_or(false),
             p.edits.as_deref(),
         ) {
             Ok((bytes, format)) => {
-                json!({"kind":"serialized","byteLength":bytes.len(),"bytesBase64":STANDARD.encode(bytes),"format":format})
+                let size = bytes.len();
+                let encoded = if binary.is_some() { *reply = Some(bytes); String::new() } else { STANDARD.encode(bytes) };
+                json!({"kind":"serialized","byteLength":size,"bytesBase64":encoded,"format":format})
             }
             Err(e) => e.value(),
         },

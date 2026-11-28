@@ -217,6 +217,7 @@ export const settingsDict = {
   'settings.languageSupport.actions.cancel': 'Annuler',
   'settings.languageSupport.actions.refresh': 'Actualiser',
   'settings.languageSupport.actions.import': 'Importer un .wasm',
+  'settings.languageSupport.actions.importServer': 'Importer le paquet du serveur de langage',
   'settings.languageSupport.field.abi': 'ABI {abi}',
   'settings.languageSupport.capability.outline': 'Plan',
   'settings.languageSupport.capability.classifyHits': 'Classification des occurrences',

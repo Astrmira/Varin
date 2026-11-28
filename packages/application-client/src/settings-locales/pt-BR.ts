@@ -427,6 +427,7 @@ export const settingsDict = {
   "settings.languageSupport.actions.cancel": "Cancelar",
   "settings.languageSupport.actions.refresh": "Atualizar",
   "settings.languageSupport.actions.import": "Importar .wasm",
+  'settings.languageSupport.actions.importServer': 'Importar pacote do servidor de linguagem',
   "settings.languageSupport.field.abi": "ABI {abi}",
   "settings.languageSupport.capability.outline": "Estrutura",
   "settings.languageSupport.capability.classifyHits": "Classificação de ocorrências",

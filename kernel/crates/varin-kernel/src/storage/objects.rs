@@ -282,6 +282,7 @@ impl Storage {
         &mut self,
         params: &Value,
         grant_id: &str,
+        binary: Option<&[u8]>,
     ) -> Result<(), KernelError> {
         self.check_cancelled()?;
         let stream_id = params
@@ -296,15 +297,19 @@ impl Storage {
             .get("bytesBase64")
             .and_then(Value::as_str)
             .ok_or_else(|| KernelError::Operation("bytesBase64 is required".to_string()))?;
-        let decoded = BASE64
+        let decoded;
+        let body = if let Some(raw) = binary { raw } else {
+            decoded = BASE64
             .decode(bytes)
             .map_err(|error| KernelError::Operation(format!("invalid bytesBase64: {error}")))?;
-        if decoded.len() > 65536 {
+            &decoded
+        };
+        if body.len() > 65536 {
             return Err(KernelError::Protocol(
                 "Upload chunk exceeds transport bound".into(),
             ));
         }
-        self.stream_blob_bytes(stream_id, sequence, &decoded, grant_id)
+        self.stream_blob_bytes(stream_id, sequence, body, grant_id)
     }
 
     pub(super) fn stream_blob_bytes(

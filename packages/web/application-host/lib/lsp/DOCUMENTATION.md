@@ -133,6 +133,13 @@ Host source views keep their own lifetime. Electron reuses this Web host.
 
 ## Managed native servers
 
+In language settings, expand the server details to get the official package link for the executing
+Host. **Import server package** uploads that file from the client and uses the same pinned SHA-256
+and staging path as a download. A headless Host or Resource Node can also read a prepositioned
+package from `<dataDir>/language-servers/archives/<server>/<version>/<official filename>` on first
+use. A mismatched package reports the verification error. Go uses an installed `gopls` on PATH
+for offline operation. Its upstream installation recipe builds from Go modules.
+
 `createManagedLanguageServers({ directory, spawn, ... })` owns the private user-data
 cache for the native providers. `inspect(languageId)` is side-effect free: it checks
 the private cache and PATH and never downloads or runs a process. The application host

@@ -10,6 +10,16 @@ vi.mock('@varin/application-client', async (importOriginal) => ({
 describe('createWebLanguageSupportAPI', () => {
   beforeEach(() => runtimeFetchMock.mockReset());
 
+  it('uploads the selected client file to the connected Host for offline preparation', async () => {
+    runtimeFetchMock.mockResolvedValueOnce(Response.json({ status: 'installed' }));
+    const archive = new Blob([Uint8Array.of(0, 255, 1)]);
+    const { createWebLanguageSupportAPI } = await import('./language-support');
+    await expect(createWebLanguageSupportAPI().prepareServer({ workspaceId: 'ws/a', languageId: 'cpp', archive })).resolves.toEqual({ status: 'installed' });
+    expect(runtimeFetchMock).toHaveBeenCalledExactlyOnceWith('/api/language-support/server/import?workspaceId=ws%2Fa&languageId=cpp', {
+      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream' }, body: archive,
+    });
+  });
+
   it('posts getStatus to the host language-support route', async () => {
     runtimeFetchMock.mockResolvedValueOnce(Response.json({
       workspaceId: 'ws-1',

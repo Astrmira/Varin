@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import fs from "node:fs";
-import { chmod, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SpawnOptions } from "node:child_process";
 import { terminateManagedProcess, waitForManagedExit, type ManagedProcessHandle, type ManagedSpawn } from "../process/types.js";
@@ -300,9 +300,9 @@ function managedCommandPath(installRoot: string, serverName: ManagedLanguageServ
 }
 
 async function writeDownload(url: string, bytes: Uint8Array, expectedSha256: string): Promise<Buffer> {
-  const buffer = Buffer.from(bytes);
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const digest = createHash("sha256").update(buffer).digest("hex");
-  if (digest !== expectedSha256) throw new Error(`Downloaded ${url} failed SHA-256 verification`);
+  if (digest !== expectedSha256) throw new Error(`Artifact for ${url} failed SHA-256 verification`);
   return buffer;
 }
 
@@ -487,8 +487,8 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
     const current = state.get(spec.name)!;
     if (current.preparing) return null;
     const installRoot = managedInstallRoot(spec);
-    const managed = managedCommandPath(installRoot, spec.name, platform);
     try {
+      const managed = managedCommandPath(installRoot, spec.name, platform);
       await ensureExecutable(managed);
       current.status = "installed";
       current.command = managed;
@@ -561,6 +561,23 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
     return { languageId, name: spec.name, status: current.status, message: current.message };
   };
 
+  const publishPrepared = async (spec: ServerSpec, staging: string, executable: string, signal: AbortSignal): Promise<ManagedLanguageServerCommand> => {
+    const installRoot = managedInstallRoot(spec);
+    const relative = path.relative(staging, executable);
+    await ensureExecutable(executable);
+    await writeFile(path.join(staging, '.command'), `${relative}\n`, { mode: 0o600 });
+    throwIfAborted(signal);
+    // The staging directory is already alongside the target. Keep an old
+    // installation recoverable until the verified replacement is in place.
+    const previous = `${staging}.previous`;
+    let moved = false;
+    try { await rename(installRoot, previous); moved = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    try { await rename(staging, installRoot); }
+    catch (error) { if (moved) await rename(previous, installRoot); throw error; }
+    if (moved) await rm(previous, { recursive: true, force: true });
+    return { command: path.join(installRoot, relative), args: serverArgs(spec), ...(spec.initializationOptions ? { initializationOptions: spec.initializationOptions } : {}) };
+  };
   const prepareGo = async (spec: ServerSpec, goCommand: string, signal: AbortSignal): Promise<ManagedLanguageServerCommand> => {
     const installRoot = managedInstallRoot(spec);
     const finalBin = path.join(installRoot, platform === "win32" ? "gopls.exe" : "gopls");
@@ -575,22 +592,21 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
         env: { ...env, GOBIN: staging, GOMODCACHE: path.join(privateCache, "mod"), GOCACHE: path.join(privateCache, "build") },
         stdio: ["ignore", "pipe", "pipe"],
       }, signal);
-      await ensureExecutable(finalBin.replace(installRoot, staging));
-      throwIfAborted(signal);
-      await writeFile(path.join(staging, ".command"), `${path.basename(finalBin)}\n`, { mode: 0o600 });
-      throwIfAborted(signal);
-      await mkdir(path.dirname(finalBin), { recursive: true });
-      await rm(installRoot, { recursive: true, force: true });
-      throwIfAborted(signal);
-      await rename(staging, installRoot);
-      return { command: finalBin, args: serverArgs(spec) };
+      return await publishPrepared(spec, staging, path.join(staging, path.basename(finalBin)), signal);
     } catch (error) {
       await rm(staging, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
   };
 
-  const prepareArchive = async (spec: ServerSpec, signal: AbortSignal): Promise<ManagedLanguageServerCommand> => {
+  const readPreparedArchive = async (spec: ServerSpec, archive: ArchiveSpec, signal: AbortSignal) => {
+    const filename = path.posix.basename(new URL(archive.url).pathname);
+    const offline = path.join(options.directory, 'language-servers', 'archives', spec.name, spec.version, filename);
+    try { return await readFile(offline, { signal }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    return options.download ? options.download(archive.url, signal) : downloadWithFetch(options.fetch ?? fetch, archive.url, signal);
+  };
+  const prepareArchive = async (spec: ServerSpec, signal: AbortSignal, readArchive?: (signal: AbortSignal) => Promise<Uint8Array>): Promise<ManagedLanguageServerCommand> => {
     const archive = spec.archive?.(platform, arch);
     if (!archive) throw new ManagedLanguageServerError("unsupported-platform", spec.languageIds[0]!, `${spec.name} has no official ${platformName(platform)} ${arch} release`);
     const installRoot = managedInstallRoot(spec);
@@ -598,7 +614,7 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
     await mkdir(staging, { recursive: true });
     try {
       throwIfAborted(signal);
-      const bytes = await (options.download ? options.download(archive.url, signal) : downloadWithFetch(options.fetch ?? fetch, archive.url, signal));
+      const bytes = await (readArchive ? readArchive(signal) : readPreparedArchive(spec, archive, signal));
       throwIfAborted(signal);
       const verified = await writeDownload(archive.url, bytes, archive.sha256);
       if (archive.format === "gzip") {
@@ -615,32 +631,23 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
       }
       const executable = await findFile(staging, archive.executableName);
       if (!executable) throw new Error(`Verified ${spec.name} archive does not contain ${archive.executableName}`);
-      await ensureExecutable(executable);
-      throwIfAborted(signal);
-      await writeFile(path.join(staging, ".command"), `${path.relative(staging, executable)}\n`, { mode: 0o600 });
-      throwIfAborted(signal);
-      await mkdir(path.dirname(installRoot), { recursive: true });
-      await rm(installRoot, { recursive: true, force: true });
-      throwIfAborted(signal);
-      await rename(staging, installRoot);
-      const final = path.join(installRoot, path.relative(staging, executable));
-      return { command: final, args: serverArgs(spec), ...(spec.initializationOptions ? { initializationOptions: spec.initializationOptions } : {}) };
+      return await publishPrepared(spec, staging, executable, signal);
     } catch (error) {
       await rm(staging, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
   };
 
-  const startPreparation = (spec: ServerSpec): Preparation => {
+  const startPreparation = (spec: ServerSpec, readArchive?: (signal: AbortSignal) => Promise<Uint8Array>): Preparation => {
     const controller = new AbortController();
     const current = state.get(spec.name)!;
+    const previous = readArchive ? inspect(spec.languageIds[0]!) : undefined;
     current.status = "preparing";
     current.command = undefined;
     current.message = `Preparing ${spec.name} ${spec.version} in Varin user data…`;
     const preparation: Preparation = { controller, waiters: 0, settled: false, promise: Promise.resolve({ command: "", args: [] }) };
     preparation.promise = (async () => {
-      const local = await findLocal(spec, controller.signal);
-      if (local) return { command: local, args: serverArgs(spec), ...(spec.initializationOptions ? { initializationOptions: spec.initializationOptions } : {}) };
+      if (readArchive) return prepareArchive(spec, controller.signal, readArchive);
       if (spec.name === "gopls") {
         const runtime = await resolve(platform === "win32" ? "go.exe" : "go");
         if (!runtime) throw new ManagedLanguageServerError("needs-runtime", spec.languageIds[0]!, "gopls requires an existing Go toolchain (`go`) on PATH; Varin does not install Go.");
@@ -653,7 +660,11 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
       current.command = command.command;
       current.message = undefined;
     }, (error: unknown) => {
-      if (isAbortError(error) || controller.signal.aborted) {
+      if (previous?.command && (previous.status === 'installed' || previous.status === 'available')) {
+        current.status = previous.status;
+        current.command = previous.command;
+        current.message = previous.message;
+      } else if (isAbortError(error) || controller.signal.aborted) {
         current.status = "available";
         current.command = undefined;
         current.message = "Preparation was cancelled before an executable was installed.";
@@ -667,14 +678,15 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
     return preparation;
   };
 
-  async function ensure(languageId: string, root: string, signal?: AbortSignal): Promise<ManagedLanguageServerCommand> {
+  async function ensure(languageId: string, root: string, signal?: AbortSignal, readArchive?: (signal: AbortSignal) => Promise<Uint8Array>): Promise<ManagedLanguageServerCommand> {
     const spec = specFor(languageId);
     if (!spec) throw new ManagedLanguageServerError("unknown-language", languageId, `No managed language server is registered for ${languageId}`);
     if (disposed) throw new ManagedLanguageServerError("disposed", languageId, "Managed language server preparation has been disposed");
     if (!path.isAbsolute(root)) throw new Error("Managed language server root must be absolute");
+    if (readArchive && !spec.archive?.(platform, arch)) throw new ManagedLanguageServerError("unsupported-platform", languageId, `No pinned offline archive for ${spec.name} on ${platform}-${arch}`);
     const callerSignal = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
     throwIfAborted(callerSignal);
-    const local = await findLocal(spec, callerSignal);
+    const local = readArchive ? null : await findLocal(spec, callerSignal);
     throwIfAborted(callerSignal);
     if (local) {
       const current = state.get(spec.name)!;
@@ -683,7 +695,7 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
       current.message = undefined;
       return { command: local, args: serverArgs(spec), ...(spec.initializationOptions ? { initializationOptions: spec.initializationOptions } : {}) };
     }
-    if (await updateInstalledState(spec)) {
+    if (!readArchive && await updateInstalledState(spec)) {
       throwIfAborted(callerSignal);
       const current = state.get(spec.name)!;
       return { command: current.command!, args: serverArgs(spec), ...(spec.initializationOptions ? { initializationOptions: spec.initializationOptions } : {}) };
@@ -701,7 +713,8 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
       if (state.get(spec.name)!.preparing === preparation) delete state.get(spec.name)!.preparing;
       preparation = undefined;
     }
-    if (!preparation) preparation = startPreparation(spec);
+    if (preparation && readArchive) throw new Error(`Another preparation of ${spec.name} is in progress`);
+    if (!preparation) preparation = startPreparation(spec, readArchive);
     preparation.waiters += 1;
     let released = false;
     const release = async (): Promise<void> => {
@@ -730,7 +743,8 @@ export function createManagedLanguageServers(options: ManagedLanguageServersOpti
     await Promise.allSettled(pending.map((preparation) => preparation.promise));
   }
 
-  return { inspect, ensure, dispose, languageIds: [...languageAliases.keys()] as readonly string[] };
+  const archiveUrl = (languageId: string) => specFor(languageId)?.archive?.(platform, arch)?.url;
+  return { inspect, ensure, archiveUrl, dispose, languageIds: [...languageAliases.keys()] as readonly string[] };
 }
 
 function candidatesForRuntime(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {

@@ -1,4 +1,7 @@
 import type { Express, Request, RequestHandler, Response } from "express";
+import { buffer } from "node:stream/consumers";
+import { addAbortSignal } from "node:stream";
+import type { LanguageSupportRuntime } from "./runtime.js";
 import type { LanguageSupportAPI } from "@varin/application-client";
 import { LanguageSupportError } from "@varin/application-client";
 
@@ -22,7 +25,7 @@ export const registerLanguageSupportRoutes = (app: Express, {
   languageSupport,
   uiAuthController,
 }: {
-  languageSupport: LanguageSupportAPI;
+  languageSupport: LanguageSupportAPI & Pick<LanguageSupportRuntime, 'prepareServer'>;
   uiAuthController?: { requireAuth?: RequestHandler };
 }): void => {
   const requireAuth = uiAuthController?.requireAuth ?? ((_req, _res, next) => next());
@@ -45,6 +48,11 @@ export const registerLanguageSupportRoutes = (app: Express, {
 
   app.post('/api/language-support/server/:action', requireAuth, async (req, res) => {
     try {
+      if (req.params.action === 'import') {
+        if (!req.is('application/octet-stream')) return res.status(415).json({ error: 'Expected a language server archive' });
+        const request = { workspaceId: stringField(req.query.workspaceId), languageId: stringField(req.query.languageId) };
+        return res.json(await languageSupport.prepareServer(request, signal => buffer(addAbortSignal(signal, req))));
+      }
       const body = readBody(req);
       const request = { workspaceId: stringField(body.workspaceId), languageId: stringField(body.languageId) };
       if (req.params.action === 'prepare') return res.json(await languageSupport.prepareServer(request));

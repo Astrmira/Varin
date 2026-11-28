@@ -2173,6 +2173,23 @@ export async function isGitRepository(directory: string) {
   return result.success;
 }
 
+/** The directory browser needs branch counters and a dirty bit, never a diff or file inventory. */
+export async function getDirectoryGitSummary(directory: string) {
+  const result = await runGitCommand(directory, ['--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--untracked-files=normal']);
+  if (!result.success) return null;
+  let branch: string | null = null, remote: string | null = null;
+  let ahead = 0, behind = 0, dirty = false;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith('# branch.head ')) branch = line.slice(14);
+    else if (line.startsWith('# branch.upstream ')) remote = line.slice(18);
+    else if (line.startsWith('# branch.ab ')) {
+      const counts = /^# branch\.ab \+(\d+) -(\d+)$/.exec(line);
+      if (counts) { ahead = Number(counts[1]); behind = Number(counts[2]); }
+    } else if (line && !line.startsWith('#')) dirty = true;
+  }
+  return { branch: branch === '(detached)' ? 'HEAD' : branch, remote, ahead, behind, dirty };
+}
+
 export async function getGlobalIdentity() {
   const git = await createGitForGlobalConfig();
 

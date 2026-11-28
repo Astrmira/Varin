@@ -27,9 +27,9 @@ export class TransportFixture {
     });
     this.transport = transport;
     const send = transport.send.bind(transport);
-    transport.send = (value, lane) => {
+    transport.send = (value, lane, tail) => {
       this.sent.push(value);
-      const result = send(value, lane);
+      const result = send(value, lane, tail);
       this.onSend?.(value);
       return result;
     };

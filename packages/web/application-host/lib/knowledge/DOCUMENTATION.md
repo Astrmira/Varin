@@ -19,6 +19,13 @@ This module owns **plans**, **symbol indexes**, and **Bot/user long-term knowled
 
 ## Storage engine, upgrades and checkpoints
 
+Authority facades keep their logical identity between calls. After the final read, mutation or
+multi-step operation, a store has a 60-second reuse window. Closing checkpoints the store and
+releases its handle. The last handle releases the private process. Concurrent callers during
+retirement share the successor open. Memory changes publish a revision in the same database
+transaction, so a client can edit against the same revision after an idle close and reopen.
+Stores containing only file indexes acquire the revision record on their first memory write.
+
 - **Format & backup**: TriviumDB 0.9.3 writes format 15 with WAL 7. Stop all writers and [back up the complete data directory](../../../../../docs/ops/cold-backup.md) before upgrading. Later writes to a migrated store live in `<name>.store/current/database.tdb` and its sidecars.
 - **First writable open**: The private storage worker migrates older checkpoints with the bundled, revision-matched upstream tool. It replays the source on a copy, verifies the converted database and publishes a directory beside the flat file group. Interrupted publication resumes against the same source and destination. Subsequent opens use that directory. A TriviumDB 0.8 store containing only a v3 WAL reports its path and the [Varin 0.9.53 recovery steps](../../../../../docs/ops/cold-backup.md#legacy-triviumdb-08-knowledge-stores). Read-only opens never start a conversion.
 - **Durability (`persistence.ts`)**: Authoritative user writes (plans, memories) use `syncMode: "full"` and fsync incremental WAL before acknowledging; derived symbol callbacks temporarily use `normal` WAL mode and restore `full` before another op enters. Full snapshots run on a 30s deadline and at close (closing an unchanged current-format store skips an extra checkpoint). Failed checkpoints retain dirty state, schedule bounded-backoff retry, and must recover before subsequent admitted ops (including reads).

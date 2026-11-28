@@ -597,6 +597,8 @@ export interface KnowledgeStore {
 }
 
 export interface OpenWorkspaceKnowledgeDeps {
+  /** Grace after the last operation before checkpointing and releasing its native handle. */
+  idleDelayMs?: number;
   dataDir: string;
   hostId: string;
   /**

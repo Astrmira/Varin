@@ -24,11 +24,11 @@ const readPlan = async (store: KnowledgeStore) => {
 
 const roots: string[] = [];
 const stores: KnowledgeStore[] = [];
-async function fixture() {
+async function fixture(idleDelayMs?: number) {
   const root = await mkdtemp(join(tmpdir(), "varin-knowledge-process-"));
   roots.push(root);
   const options = { dataDir: root, hostId: "host", workspaceId: "workspace", embedding: null } as const;
-  const store = await openWorkspaceKnowledge(options);
+  const store = await openWorkspaceKnowledge({ ...options, ...(idleDelayMs === undefined ? {} : { idleDelayMs }) });
   stores.push(store);
   return { root, options, store };
 }
@@ -38,6 +38,19 @@ afterEach(async () => {
 });
 
 describe("knowledge storage process", () => {
+  it("releases its last native process and reopens one store for concurrent calls on the same facade", async () => {
+    const { store } = await fixture(15);
+    const first = knowledgeStoreProcess();
+    const id = await store.putKnowledge({ scope: 'workspace', status: 'accepted', content: 'before idle', trigger: 'lifecycle test' });
+    const revision = store.knowledgeRevision();
+    await first.exited;
+    expect(first.child.exitCode).toBe(0);
+    expect(store.knowledgeRevision()).toBe(revision);
+    const [one, two] = await Promise.all([store.getKnowledge(id), store.getKnowledge(id)]);
+    expect(one?.content).toBe('before idle');
+    expect(two).toEqual(one);
+    expect(store.knowledgeRevision()).toBe(revision);
+  });
   it("drains already admitted requests before retiring a storage process", async () => {
     const root = await mkdtemp(join(tmpdir(), "varin-semantic-retirement-"));
     roots.push(root);

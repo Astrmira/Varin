@@ -615,11 +615,15 @@ mod tests {
             )
             .unwrap();
         for expected in [1, 0] {
+            let started = std::time::Instant::now();
             assert_eq!(
                 db.thread_view("thread", "main", 20, Some(&head)).unwrap()["history"],
                 json!([])
             );
             assert_eq!(reads.swap(0, Ordering::Relaxed), expected);
+            if std::env::var_os("VARIN_MEASURE_RESOURCE_COSTS").is_some() {
+                eprintln!("Legacy window: {expected} prior bodies loaded in {:?}", started.elapsed());
+            }
         }
         db.content.set_history_read_hook(None);
         let reset = db

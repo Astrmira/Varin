@@ -38,6 +38,9 @@ impl Storage {
         grant_id: Option<&str>,
         authorized_grant: &Grant,
     ) -> Result<Value, KernelError> {
+        self.dispatch_body(method, authorized_params, grant_id, authorized_grant, None)
+    }
+    pub(crate) fn dispatch_body(&mut self, method: &str, authorized_params: &Value, grant_id: Option<&str>, authorized_grant: &Grant, binary: Option<&[u8]>) -> Result<Value, KernelError> {
         self.admit_workspace_branch_request(method, authorized_params)?;
         self.sweep_compute_readers()?;
         // Ownership is rechecked before idempotent dispatch can return a stored receipt.
@@ -80,7 +83,7 @@ impl Storage {
                 storage.begin_blob_stream(authorized_params, grant_id.unwrap_or(""))
             }
             "storage.putBlob.chunk" => {
-                storage.stream_blob_chunk(authorized_params, grant_id.unwrap_or(""))?;
+                storage.stream_blob_chunk(authorized_params, grant_id.unwrap_or(""), binary)?;
                 Ok(json!({"sequence": authorized_params["sequence"]}))
             }
             "storage.putBlob.finish" => idempotent(storage, method, authorized_params, |storage| {

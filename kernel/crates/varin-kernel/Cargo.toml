@@ -23,7 +23,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-tokio = { version = "1", features = ["rt", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 
 portable-pty.workspace = true
 encoding_rs.workspace = true

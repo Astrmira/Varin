@@ -5,7 +5,7 @@ import { detectLineEnding } from './line-ending.js';
 /** UTF-8-only coordination seam. It proves Host routing/CAS, never native codec behavior. */
 export const utf8CoordinationCodec: DocumentTextCodec = {
   async textDecode(input) {
-    const bytes = Buffer.from(input.bytesBase64, 'base64');
+    const bytes = Buffer.from(input.bytes);
     const bom = bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
     const body = bom ? bytes.subarray(3) : bytes;
     if (body.includes(0)) return { kind: 'binary', byteLength: bytes.length };

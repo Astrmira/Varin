@@ -1,3 +1,4 @@
+import { kernelResultBytes } from './binary-result.js';
 /** One source-owned capture serves both local compilation and cross-Host staging.
  * Object addresses stay behind the original reader; only bytes reach the compiler tree. */
 import { createHash, randomUUID } from 'node:crypto';
@@ -194,7 +195,7 @@ export async function materializeExtensionSource(directory: string, snapshot: Ex
       while (offset < state.byteLength) {
         signal.throwIfAborted();
         const page = await read(entry.path, offset, Math.min(64 * 1024, state.byteLength - offset), signal);
-        const bytes = Buffer.from(page.bytesBase64, 'base64');
+        const bytes = kernelResultBytes(page);
         if (page.hash !== state.objectHash || page.byteLength !== state.byteLength || page.offset !== offset
           || !bytes.length || page.nextOffset !== offset + bytes.length || page.nextOffset > state.byteLength
           || page.eof !== (page.nextOffset === state.byteLength)) throw new Error('extension_package_capture_page_invalid');

@@ -1,3 +1,4 @@
+import { kernelResultBytes } from '../kernel/binary-result.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BotGroupMember, BotGroupPost, BotGroupSummary, GroupChange, GroupChatFile, GroupDelivery, GroupPostInput, ThreadIdentity, ThreadModel, ThreadModelInfo } from '@varin/application-client';
 import { attachmentMimeType } from '@varin/protocol';
@@ -173,7 +174,7 @@ export function createBotGroupChats(options: Options) {
       const page = await client.getBlob(file.hash, { ownerId: file.ownerId }, { offset, signal });
       if (page.nextOffset <= offset) throw new Error('Incomplete group file transfer');
       offset = page.nextOffset;
-      yield Buffer.from(page.bytesBase64, 'base64');
+      yield kernelResultBytes(page);
     }
   }
   async function importFile(room: Room, identity: ThreadIdentity, fileId: string, signal?: AbortSignal) {
@@ -622,7 +623,7 @@ export function createBotGroupChats(options: Options) {
         const bytes = async function* () {
           let page = first;
           for (;;) {
-            const body = Buffer.from(page.bytesBase64, 'base64');
+            const body = kernelResultBytes(page);
             if (body.length) yield body;
             if (page.eof) return;
             page = await reader.readChunk(identity, reference, page.nextOffset, undefined, signal);

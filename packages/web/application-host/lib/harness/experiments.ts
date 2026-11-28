@@ -1,3 +1,4 @@
+import { kernelResultBytes } from '../kernel/binary-result.js';
 /**
  * Experiment execution on durable kernel records (7C/7D-1, D-300).
  *
@@ -887,7 +888,7 @@ export function createExperimentService(deps: ExperimentServiceDeps) {
         if (rangeStart !== covered) throw new HarnessServiceError("unavailable", `${stream} has a missing or overlapping durable page at byte ${covered}`);
         const blob = await ctx.scoped.getBlob(objectHash, { recordId: record.recordId, slot: "content" },
           { offset: rangeStart - chunkOffset, length: rangeEnd - rangeStart, ...(signal ? { signal } : {}) });
-        const bytes = Buffer.from(blob.bytesBase64, "base64");
+        const bytes = kernelResultBytes(blob);
         if (bytes.byteLength !== rangeEnd - rangeStart) throw new HarnessServiceError("unavailable", `${stream} durable page is incomplete at byte ${rangeStart}`);
         parts.push(bytes); covered = rangeEnd;
         if (covered >= end) break;
@@ -920,7 +921,7 @@ export function createExperimentService(deps: ExperimentServiceDeps) {
       { recordId: record.recordId, slot: "content" },
       { offset, length, ...(signal ? { signal } : {}) },
     );
-    const bytes = Buffer.from(page.bytesBase64, "base64");
+    const bytes = kernelResultBytes(page);
     const total = artifact.byteLength ?? (page.eof ? offset + bytes.byteLength : page.nextOffset);
     return { bytes, total, nextOffset: page.nextOffset, eof: page.eof };
   };

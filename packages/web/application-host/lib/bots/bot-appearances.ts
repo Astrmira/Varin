@@ -1,3 +1,4 @@
+import { kernelResultBytes } from '../kernel/binary-result.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, extname } from 'node:path';
 import AdmZip from 'adm-zip';
@@ -129,7 +130,7 @@ export function createBotAppearances(options: { client(): Promise<KernelScopedCl
       let offset = 0;
       for (;;) {
         const chunk = await client.getBlob(`sha256-${hash}`, { recordId: recordId(id), slot: hash }, { offset });
-        chunks.push(Buffer.from(chunk.bytesBase64, 'base64'));
+        chunks.push(kernelResultBytes(chunk));
         if (chunk.eof) break;
         if (chunk.nextOffset <= offset) throw new Error('Appearance image read did not advance');
         offset = chunk.nextOffset;

@@ -314,6 +314,7 @@ export const settingsDict = {
   "settings.languageSupport.actions.cancel": "Cancelar",
   "settings.languageSupport.actions.refresh": "Actualizar",
   "settings.languageSupport.actions.import": "Importar .wasm",
+  'settings.languageSupport.actions.importServer': 'Importar paquete del servidor de lenguaje',
   "settings.languageSupport.field.abi": "ABI {abi}",
   "settings.languageSupport.capability.outline": "Esquema",
   "settings.languageSupport.capability.classifyHits": "Clasificación de coincidencias",

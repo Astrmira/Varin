@@ -136,6 +136,19 @@ describe('workspace routes', () => {
     expect(onGitStatus).toHaveBeenCalledWith(workspaceRoot, expect.objectContaining({ files: expect.any(Array) }));
   });
 
+  it('distinguishes inherited repository status from a nested project in the file list', async () => {
+    fs.mkdirSync(path.join(workspaceRoot, 'ordinary'), { recursive: true });
+    fs.mkdirSync(path.join(workspaceRoot, 'nested'));
+    execFileSync('git', ['init', '-b', 'outer'], { cwd: workspaceRoot, stdio: 'ignore' });
+    execFileSync('git', ['init', '-b', 'inner'], { cwd: path.join(workspaceRoot, 'nested'), stdio: 'ignore' });
+    fs.writeFileSync(path.join(workspaceRoot, 'ordinary', 'changed'), 'edit');
+    const response = await request(await createApp()).get('/api/workspace/list').expect(200);
+    expect(response.body.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'ordinary', git: expect.objectContaining({ branch: 'outer', dirty: true }) }),
+      expect.objectContaining({ name: 'nested', git: expect.objectContaining({ branch: 'inner', dirty: false }) }),
+    ]));
+  });
+
   it('creates folders, lists them as projects, and soft-deletes entries into trash', async () => {
     const app = await createApp();
 

@@ -29,8 +29,42 @@ pub(crate) enum Lane {
 pub(crate) enum Incoming {
     Open(Value),
     Frame(Value, Lane),
+    Binary(Value, BinaryBody),
     Abort(Value),
     Disconnected,
+}
+
+pub(crate) struct BinaryBody {
+    frame: Vec<u8>,
+    start: usize,
+}
+impl AsRef<[u8]> for BinaryBody {
+    fn as_ref(&self) -> &[u8] { &self.frame[self.start..] }
+}
+
+fn decode_data_body(frame: Vec<u8>, start: usize) -> io::Result<(Value, Option<BinaryBody>)> {
+    let body = &frame[start..];
+    if body.first() != Some(&0) {
+        return serde_json::from_slice(body).map(|meta| (meta, None)).map_err(|_| protocol_error("invalid content JSON"));
+    }
+    let header = body.get(1..5).ok_or_else(|| protocol_error("missing binary metadata length"))?;
+    let length = u32::from_be_bytes(header.try_into().unwrap()) as usize;
+    let json = body[5..].get(..length).ok_or_else(|| protocol_error("truncated binary metadata"))?;
+    let meta: Value = serde_json::from_slice(json).map_err(|_| protocol_error("invalid binary metadata"))?;
+    let field_ok = match meta["method"].as_str() {
+        Some("storage.putBlob.chunk" | "text.decode") => meta["params"]["bytesBase64"] == "",
+        Some("text.serialize") => meta["params"]["sourceBytesBase64"] == "" ||
+            (meta["params"].get("sourceBytesBase64").is_none() && body.len() == 5 + length),
+        _ => false,
+    };
+    if meta["kind"] != "request" || !field_ok {
+        return Err(protocol_error("unexpected binary attachment"));
+    }
+    Ok((meta, Some(BinaryBody { frame, start: start + 5 + length })))
+}
+
+fn data_request(meta: Value, body: Option<BinaryBody>) -> Incoming {
+    match body { Some(bytes) => Incoming::Binary(meta, bytes), None => Incoming::Frame(meta, Lane::Data) }
 }
 
 /// Bounded control contracts remain independent of all content backpressure. Other messages
@@ -238,6 +272,7 @@ fn connect(endpoint: &str) -> io::Result<Connection> {
 }
 
 struct Outgoing {
+    binary: Option<Vec<u8>>,
     stream_id: Uuid,
     bytes: Option<Vec<u8>>,
     offset: usize,
@@ -268,7 +303,7 @@ struct Scheduler {
     next_arrival: u64,
 }
 enum BodyJob {
-    Encode(Uuid, Value),
+    Encode(Uuid, Value, Option<Vec<u8>>),
     Decode(Uuid, Received),
 }
 #[derive(Default)]
@@ -450,7 +485,7 @@ impl Shared {
             used[stream.group] += 1;
             if let Some(value) = stream.value.take() {
                 stream.encoding = true;
-                self.submit_body(BodyJob::Encode(id, value))?;
+                self.submit_body(BodyJob::Encode(id, value, stream.binary.take()))?;
             }
         }
         Ok(())
@@ -512,13 +547,26 @@ impl Sender {
         if self.lane(&value) == Lane::Control {
             return shared.enqueue_control(value);
         }
-        self.send_data(value).map(|_| ())
+        self.send_data(value, None).map(|_| ())
     }
-    fn send_data(&self, value: Value) -> Result<Option<Uuid>, mpsc::SendError<Value>> {
+    pub(crate) fn send_binary(&self, value: Value, bytes: Vec<u8>) -> Result<(), mpsc::SendError<Value>> {
+        #[cfg(test)]
+        if let Some(fixture) = &self.fixture {
+            use base64::Engine;
+            let mut json = value;
+            json["result"]["bytesBase64"] = base64::engine::general_purpose::STANDARD.encode(bytes).into();
+            return fixture.send(json);
+        }
+        let lane = self.lane(&value);
+        debug_assert_eq!(lane, Lane::Data);
+        self.send_data(value, Some(bytes)).map(|_| ())
+    }
+    fn send_data(&self, value: Value, binary: Option<Vec<u8>>) -> Result<Option<Uuid>, mpsc::SendError<Value>> {
         let shared = self.shared.as_ref().unwrap();
         // Stop serializing as soon as the inline budget is exhausted. Large content is
         // encoded by the CPU-sized body pool, never in the reader or Catalog actor.
-        if let Some(bytes) = inline_bytes(&value) {
+        if let Some(bytes) = inline_bytes(&value).filter(|json| binary.as_ref().is_none_or(|raw| json.len() + 5 + raw.len() <= KERNEL_INLINE_MAX_BYTES)) {
+            let bytes = encode_body(bytes, binary);
             let mut scheduler = shared.scheduled.lock().unwrap();
             while !shared.stopped.load(Ordering::Acquire)
                 && (scheduler.inline_bytes + INLINE_HEADER_BYTES + bytes.len() > INLINE_QUEUE_BYTES
@@ -551,6 +599,7 @@ impl Sender {
         scheduler.streams.insert(
             id,
             Outgoing {
+                binary,
                 stream_id: id,
                 bytes: None,
                 offset: 0,
@@ -591,7 +640,7 @@ impl Sender {
             return fixture.send(value);
         }
         let shared = self.shared.as_ref().unwrap();
-        let Some(id) = self.send_data(value)? else {
+        let Some(id) = self.send_data(value, None)? else {
             return Ok(());
         };
         let mut scheduler = shared.scheduled.lock().unwrap();
@@ -775,9 +824,19 @@ impl Transport {
     }
 }
 
+fn encode_body(json: Vec<u8>, binary: Option<Vec<u8>>) -> Vec<u8> {
+    let Some(bytes) = binary else { return json };
+    let mut encoded = Vec::with_capacity(5 + json.len() + bytes.len());
+    encoded.push(0);
+    encoded.extend_from_slice(&(json.len() as u32).to_be_bytes());
+    encoded.extend_from_slice(&json);
+    encoded.extend_from_slice(&bytes);
+    encoded
+}
+
 fn run_body_job(job: BodyJob, shared: &Arc<Shared>) -> io::Result<()> {
     match job {
-        BodyJob::Encode(id, value) => {
+        BodyJob::Encode(id, value, binary) => {
             let cancelled = shared
                 .scheduled
                 .lock()
@@ -789,8 +848,8 @@ fn run_body_job(job: BodyJob, shared: &Arc<Shared>) -> io::Result<()> {
                 None
             } else {
                 Some(
-                    serde_json::to_vec(&value)
-                        .map_err(|_| protocol_error("body encoding failed"))?,
+                    encode_body(serde_json::to_vec(&value)
+                        .map_err(|_| protocol_error("body encoding failed"))?, binary),
                 )
             };
             // Cancellation may settle the wire while the worker still owns the original
@@ -815,14 +874,13 @@ fn run_body_job(job: BodyJob, shared: &Arc<Shared>) -> io::Result<()> {
             shared.start_streams()?;
         }
         BodyJob::Decode(id, received) => {
-            let value: Value = serde_json::from_slice(&received.bytes)
-                .map_err(|_| protocol_error("invalid content JSON"))?;
+            let (value, binary) = decode_data_body(received.bytes, 0)?;
             if identity(&value) != received.meta {
                 return Err(protocol_error("content identity mismatch"));
             }
             shared
                 .incoming
-                .send(Incoming::Frame(value, Lane::Data))
+                .send(data_request(value, binary))
                 .map_err(|_| io::ErrorKind::BrokenPipe)?;
             // Credit includes hydration lifetime, not just the last socket read.
             shared.command(
@@ -1028,6 +1086,7 @@ fn read_control(mut input: impl io::Read, shared: &Arc<Shared>) -> io::Result<()
                 stream.aborting = true;
                 stream.bytes = None;
                 stream.value = None;
+                stream.binary = None;
                 let sequence = stream.sequence;
                 scheduler.order.retain(|queued| *queued != id);
                 shared.command("transport-stream-abort", id, json!({"sequence":sequence}))?;
@@ -1069,8 +1128,7 @@ fn read_data(mut input: impl io::Read, shared: &Arc<Shared>) -> io::Result<()> {
                 return Err(protocol_error("invalid inline frame length"));
             }
             let sequence = u64::from_be_bytes(payload[1..INLINE_HEADER_BYTES].try_into().unwrap());
-            let value: Value = serde_json::from_slice(&payload[INLINE_HEADER_BYTES..])
-                .map_err(|_| protocol_error("invalid inline JSON"))?;
+            let (value, binary) = decode_data_body(payload, INLINE_HEADER_BYTES)?;
             let mut events = Vec::new();
             if value["kind"] == "request" {
                 let id = value["id"]
@@ -1082,7 +1140,7 @@ fn read_data(mut input: impl io::Read, shared: &Arc<Shared>) -> io::Result<()> {
                 );
                 events.push(Incoming::Open(identity(&value)));
             }
-            events.push(Incoming::Frame(value, Lane::Data));
+            events.push(data_request(value, binary));
             shared.arrive(sequence, events)?;
             continue;
         }

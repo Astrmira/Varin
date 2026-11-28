@@ -266,6 +266,27 @@ fn foreground_must_settle_but_explicit_thread_job_can_outlive_run() {
     .unwrap();
 }
 #[test]
+fn preparation_wakes_registered_waits_without_reconciling_unrelated_work() {
+    let f = Fixture::new();
+    let mut db = f.open();
+    let receipt = submit(&mut db);
+    let publish = |db: &mut Catalog| {
+        let tx = db.db.transaction().unwrap();
+        event(&tx, &receipt.run_id, 1, "run.model_prepared", Value::Null).unwrap();
+        tx.commit().unwrap();
+    };
+    let cursor = db.event_cursor().unwrap();
+    publish(&mut db);
+    let work = db.event_dispatch_since(Some(cursor)).unwrap();
+    assert!(!work.reconcile_continuations && !work.check_managed_processes);
+    db.register_wait("wait-for-model", &receipt.run_id, &receipt.run_id, "run.model_prepared", work.cursor).unwrap();
+    let cursor = db.event_cursor().unwrap();
+    publish(&mut db);
+    assert!(db.event_dispatch_since(Some(cursor)).unwrap().reconcile_continuations);
+    assert_eq!(db.reconcile_waits().unwrap(), 1);
+    assert!(db.event_dispatch_since(None).unwrap().reconcile_continuations);
+}
+#[test]
 fn wait_registration_checks_past_events_and_claims_once() {
     let f = Fixture::new();
     let mut db = f.open();

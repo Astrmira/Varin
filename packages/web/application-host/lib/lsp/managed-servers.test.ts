@@ -92,6 +92,25 @@ describe("managed native language servers", () => {
     await f.cleanup();
   });
 
+  it("installs an uploaded official archive offline after rejecting a mismatched package", async () => {
+    const f = await fixture();
+    const { artifact, bytes } = zipArtifact();
+    const manager = createManagedLanguageServers({
+      directory: f.directory, platform: "win32", arch: "x64", env: { PATH: "" },
+      resolveExecutable: async () => null, artifacts: { clangd: artifact },
+      spawn: async () => { throw new Error("unexpected process"); },
+      download: async () => { throw new Error("unexpected download"); },
+    });
+    try {
+      await expect(manager.ensure("cpp", f.directory, undefined, async () => Uint8Array.of(0))).rejects.toThrow("SHA-256");
+      const installed = await manager.ensure("cpp", f.directory, undefined, async () => bytes);
+      await expect(manager.ensure("cpp", f.directory, undefined, async () => Uint8Array.of(1))).rejects.toThrow("SHA-256");
+      expect(manager.inspect("cpp").status).toBe("installed");
+      expect(await manager.ensure("c", f.directory)).toEqual(installed);
+      expect(manager.inspect("cpp").status).toBe("installed");
+    } finally { await manager.dispose(); await f.cleanup(); }
+  });
+
   it("keeps preparation on the executing Host and reuses a preinstalled binary offline", async () => {
     const searchOwner = await fixture();
     const executionOwner = await fixture();

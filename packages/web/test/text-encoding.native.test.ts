@@ -223,6 +223,6 @@ it('uses the native codec for GBK three-way merge and streams text bodies larger
   const content = 'a'.repeat(17 * 1024 * 1024) + '中文';
   const encoded = await f.native.client.textSerialize({ content, targetFormat: { encoding: 'utf-8', bom: false } });
   if (encoded.kind !== 'serialized') throw new Error(encoded.message);
-  const decoded = await f.native.client.textDecode({ bytesBase64: encoded.bytesBase64 });
+  const decoded = await f.native.client.textDecode({ bytes: Buffer.from(encoded.bytesBase64, 'base64') });
   expect(decoded.kind).toBe('text'); if (decoded.kind === 'text') expect(decoded.content).toBe(content);
 });

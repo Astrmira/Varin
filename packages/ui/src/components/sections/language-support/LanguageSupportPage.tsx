@@ -42,7 +42,7 @@ const LanguageRow: React.FC<{
   busy: boolean;
   languageServerStatus?: VarinLanguageProviderStatus;
   preparing: boolean;
-  onPrepare(): void;
+  onPrepare(archive?: File): void;
   onCancelPreparation(): void;
   onCancel(): void;
   onImport(): void;
@@ -52,6 +52,7 @@ const LanguageRow: React.FC<{
   const { t } = useI18n();
   const lspStatus = languageServerStatus?.status ?? 'absent';
   const server = row.server;
+  const archiveInput = React.useRef<HTMLInputElement>(null);
   const serverFailure = lspStatus === 'failed' || lspStatus === 'degraded' || server?.status === 'failed' || server?.status === 'needs-runtime';
   const serverMessage = languageServerStatus && 'message' in languageServerStatus ? languageServerStatus.message : server?.message;
   const availability = server?.status ?? 'unsupported';
@@ -97,6 +98,17 @@ const LanguageRow: React.FC<{
             <div className="space-y-2 pt-2">
               {capabilityKeys.length > 0 ? <p>{capabilityKeys.map((key) => t(key)).join(' · ')}</p> : null}
               {server?.name ? <p>{server.name}</p> : null}
+              {server?.archiveUrl && availability !== 'installed' ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <a className="break-all underline" href={server.archiveUrl} target="_blank" rel="noreferrer">{server.archiveUrl.split('/').pop()}</a>
+                  <Button type="button" variant="outline" size="xs" disabled={preparing} onClick={() => archiveInput.current?.click()}>{t('settings.languageSupport.actions.importServer')}</Button>
+                  <input ref={archiveInput} type="file" hidden onChange={event => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = '';
+                    if (file) onPrepare(file);
+                  }} />
+                </div>
+              ) : null}
               {row.pack ? <p>{row.pack.packageName} · {row.pack.version} · {formatPackBytes(row.pack.bytes)} · {t('settings.languageSupport.field.abi', { abi: row.pack.abi })}</p> : null}
               {canImportGrammar(row.grammarStatus) && !busy ? (
                 <Button type="button" variant="outline" size="xs" onClick={onImport} className="!font-normal">{t('settings.languageSupport.actions.import')}</Button>
@@ -107,7 +119,7 @@ const LanguageRow: React.FC<{
         {canInstallGrammar(row.grammarStatus) || serverFailure || availability === 'available' || preparing ? (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {serverFailure || availability === 'available' || preparing ? (
-              <Button type="button" variant="outline" size="xs" disabled={preparing} onClick={onPrepare} className="!font-normal">
+              <Button type="button" variant="outline" size="xs" disabled={preparing} onClick={() => onPrepare()} className="!font-normal">
                 {preparing ? t('settings.languageSupport.server.preparing') : serverFailure ? t('settings.languageSupport.actions.retry') : t('settings.languageSupport.actions.prepare')}
               </Button>
             ) : null}
@@ -190,15 +202,15 @@ export const LanguageSupportPage: React.FC = () => {
     return () => subscription.close();
   }, [language, workspaceId]);
 
-  const runPrepare = React.useCallback(async (languageId: string, silent = false) => {
+  const runPrepare = React.useCallback(async (languageId: string, archive?: File) => {
     if (!workspaceId) return;
     setPreparingIds((previous) => new Set([...previous, languageId]));
     try {
       const running = lspByLanguage[languageId]?.status;
+      if (archive || (running !== 'failed' && running !== 'degraded')) await languageSupport.prepareServer({ workspaceId, languageId, ...(archive ? { archive } : {}) });
       if (running === 'failed' || running === 'degraded') await language.restart(workspaceId, languageId);
-      else await languageSupport.prepareServer({ workspaceId, languageId });
     } catch (error) {
-      if (!silent && currentWorkspace.current === workspaceId) {
+      if (currentWorkspace.current === workspaceId) {
         toast.error(error instanceof Error ? error.message : String(error));
       }
     } finally {
@@ -208,24 +220,6 @@ export const LanguageSupportPage: React.FC = () => {
       }
     }
   }, [language, languageSupport, lspByLanguage, refresh, workspaceId]);
-
-  // Native servers are prepared in the background for languages that are
-  // actually present in the workspace. Opening this page must not be a
-  // prerequisite for using them; the runtime also prepares on first request.
-  // Keep one preflight per workspace/server so aliases such as C and C++ do
-  // not start duplicate downloads or duplicate error toasts.
-  const autoPreparedServers = React.useRef(new Set<string>());
-  React.useEffect(() => {
-    if (!workspaceId || !status) return;
-    for (const row of status.languages) {
-      if (row.fileCount === 0 || row.server?.status !== 'available') continue;
-      const serverKey = row.server.name ?? row.languageId;
-      const key = `${workspaceId}:${serverKey}`;
-      if (autoPreparedServers.current.has(key)) continue;
-      autoPreparedServers.current.add(key);
-      void runPrepare(row.languageId, true);
-    }
-  }, [runPrepare, status, workspaceId]);
 
   const cancelPreparation = React.useCallback(async (languageId: string) => {
     if (!workspaceId) return;
@@ -349,7 +343,7 @@ export const LanguageSupportPage: React.FC = () => {
               busy={busyId === row.languageId}
               languageServerStatus={lspByLanguage[row.languageId]}
               preparing={preparingIds.has(row.languageId)}
-              onPrepare={() => void runPrepare(row.languageId)}
+              onPrepare={archive => void runPrepare(row.languageId, archive)}
               onCancelPreparation={() => void cancelPreparation(row.languageId)}
               onInstall={() => void runInstall(row.languageId)}
               onImport={() => void runImport(row.languageId)}

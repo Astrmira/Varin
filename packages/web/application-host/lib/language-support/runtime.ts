@@ -40,10 +40,12 @@ export interface LanguageSupportRuntimeOptions {
   store?: GrammarStore;
   installer?: GrammarInstaller;
   serverInfo?: (languageId: string) => LanguageSupportServerInfo | Promise<LanguageSupportServerInfo>;
-  prepareServer?: (languageId: string, root: string, signal: AbortSignal) => Promise<unknown>;
+  prepareServer?: (languageId: string, root: string, signal: AbortSignal, archive?: ArchiveReader) => Promise<unknown>;
 }
 
+type ArchiveReader = (signal: AbortSignal) => Promise<Uint8Array>;
 export interface LanguageSupportRuntime extends LanguageSupportAPI {
+  prepareServer(request: Parameters<LanguageSupportAPI['prepareServer']>[0], archive?: ArchiveReader): Promise<LanguageSupportServerInfo>;
   warmupDocuments(workspaceId: string, signal?: AbortSignal, refresh?: boolean): Promise<Array<{ languageId: string; resourceId: string }>>;
   noteRequest(languageId: string, workspaceId?: string): void;
   peekWanted(workspaceId: string): readonly string[];
@@ -258,10 +260,11 @@ export function createLanguageSupportRuntime(options: LanguageSupportRuntimeOpti
     peekWanted: (workspaceId) => [...(wantedByWorkspace.get(workspaceId) ?? [])],
     installedStructureSpec,
     getStatus,
-    prepareServer(request) {
+    prepareServer(request, readArchive) {
       const { workspaceId, languageId } = request;
       const key = JSON.stringify([workspaceId, languageId]);
       const existing = serverPreparations.get(key);
+      if (existing && (readArchive || request.archive)) return Promise.reject(new Error('Language server preparation already in progress'));
       if (existing) return existing.result;
       const controller = new AbortController();
       const result = (async (): Promise<LanguageSupportServerInfo> => {
@@ -269,7 +272,8 @@ export function createLanguageSupportRuntime(options: LanguageSupportRuntimeOpti
         try {
           const workspace = await options.inspectWorkspace(workspaceId);
           controller.signal.throwIfAborted();
-          await options.prepareServer(languageId, workspace.root, controller.signal);
+          const file = request.archive;
+          await options.prepareServer(languageId, workspace.root, controller.signal, readArchive ?? (file ? async () => new Uint8Array(await file.arrayBuffer()) : undefined));
         } catch (error) {
           if (!controller.signal.aborted) throw error;
         }

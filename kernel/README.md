@@ -45,6 +45,12 @@ worker encoding/hydration and acknowledged stream chunks. A single writer altern
 inline frames; packet bounds never limit total content. Thresholds and admission budgets are defined in
 [the protocol schema](protocol/schema.json), not product-level content limits.
 
+Protocol 97 carries document codec bytes and Blob chunks on that same authenticated data lane.
+An attached body starts with a zero byte, a big-endian u32 JSON metadata length, that metadata,
+and the exact bytes. Inline and streamed frames share this representation. The request still
+goes through normal arrival ordering, grant checks, cancellation and receipt handling.
+JSON consumers can still request the Base64 representation of a binary result.
+
 In-flight requests and large-body stream credits are independent. Stream credit includes hydration and
 returns only when the stream actually settles. Host requests, control-response requests and reverse
 bridge replies have independent body admission, so a nested Host↔Rust call cannot consume the credit

@@ -315,6 +315,7 @@ export const settingsDict = {
   'settings.languageSupport.actions.cancel': '취소',
   'settings.languageSupport.actions.refresh': '새로고침',
   'settings.languageSupport.actions.import': '.wasm 가져오기',
+  'settings.languageSupport.actions.importServer': '언어 서버 패키지 가져오기',
   'settings.languageSupport.field.abi': 'ABI {abi}',
   'settings.languageSupport.capability.outline': '개요',
   'settings.languageSupport.capability.classifyHits': '적중 분류',

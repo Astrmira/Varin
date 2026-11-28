@@ -319,26 +319,20 @@ impl Task {
             .try_send(value)
             .map_err(|_| failure("guardian control queue is unavailable"))
     }
-    pub(crate) fn run(
+    pub(crate) async fn run(
         self,
         input: Input,
         cancel: CancellationToken,
         mut observe: impl FnMut(Receipt, bool),
     ) {
         let id = self.seed.identity().operation_id.clone();
-        let (wake, changed) = mpsc::sync_channel(1);
-        self.shared
-            .interaction_wakes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id.clone(), wake.clone());
-        let _registration = cancel.wake_on_cancel(wake);
+        let mut progress_updates = self.shared.guardian_progress.subscribe();
         let writing = matches!(input, Input::Write { .. });
         let mut sent = false;
         let mut announced_cancel = false;
         let mut chunk = 0u64;
         let mut offset = 0usize;
-        let result = (|| -> Result<Receipt, KernelError> {
+        let result: Result<Receipt, KernelError> = async {
             loop {
                 let (progress, ready, closed) = {
                     let state = self.shared.lock();
@@ -388,16 +382,11 @@ impl Task {
                     );
                     announced_cancel = true;
                 }
-                if !ready {
-                    changed
-                        .recv()
-                        .map_err(|_| failure("process input wake closed"))?;
-                    continue;
-                }
-                if sent && progress.chunk < chunk {
-                    changed
-                        .recv()
-                        .map_err(|_| failure("process input wake closed"))?;
+                if !ready || (sent && (progress.chunk < chunk || !writing)) {
+                    tokio::select! {
+                        update = progress_updates.changed() => update.map_err(|_| failure("process control closed"))?,
+                        _ = cancel.cancelled(), if !announced_cancel => {}
+                    }
                     continue;
                 }
                 if self.control.stop_requested() && !sent {
@@ -410,12 +399,6 @@ impl Task {
                 }
                 let frame = match &input {
                     Input::Resize { cols, rows } => {
-                        if sent {
-                            changed
-                                .recv()
-                                .map_err(|_| failure("process resize wake closed"))?;
-                            continue;
-                        }
                         json!({"type":"resize","receipt":self.seed,"cols":cols,"rows":rows})
                     }
                     Input::Write { bytes, eof } => {
@@ -446,7 +429,7 @@ impl Task {
                 }
                 sent = true;
             }
-        })();
+        }.await;
         let receipt = result.unwrap_or_else(|error| {
             let current = self
                 .shared
@@ -466,11 +449,6 @@ impl Task {
             state.interactions.stdin.retain(|item| item != &id);
             state.interactions.resize.retain(|item| item != &id);
         }
-        self.shared
-            .interaction_wakes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&id);
         self.shared.notify();
     }
 }

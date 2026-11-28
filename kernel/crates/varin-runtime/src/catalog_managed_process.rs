@@ -228,7 +228,7 @@ impl Catalog {
     pub fn closing_script_environments(&mut self) -> Result<Vec<String>> {
         let tx = self.db.transaction()?;
         let operations = {
-            let mut query = tx.prepare("SELECT o.body FROM operations o JOIN runs r ON r.id=o.run_id WHERE json_extract(o.body,'$.managed_process.purpose.kind')='script_environment' AND json_extract(o.body,'$.effect')!='none' AND coalesce(json_extract(o.body,'$.external_receipt.executor_stopped'),0)=0 AND (json_extract(o.body,'$.cancel_requested')=1 OR json_extract(r.body,'$.cancel_requested')=1 OR json_extract(r.body,'$.state') IN ('completed','failed','cancelled'))")?;
+            let mut query = tx.prepare_cached(&format!("SELECT o.body FROM (SELECT body,run_id FROM operations INDEXED BY unsettled_managed_processes WHERE {UNSETTLED_MANAGED_PROCESS}) o JOIN runs r ON r.id=o.run_id WHERE json_extract(o.body,'$.managed_process.purpose.kind')='script_environment' AND (json_extract(o.body,'$.cancel_requested')=1 OR json_extract(r.body,'$.cancel_requested')=1 OR json_extract(r.body,'$.state') IN ('completed','failed','cancelled'))"))?;
             let rows = query
                 .query_map([], |row| row.get::<_, String>(0))?
                 .map(|row| Ok(serde_json::from_str::<Operation>(&row?)?))
@@ -263,7 +263,7 @@ impl Catalog {
     pub fn closing_retrieval_processes(&mut self) -> Result<Vec<String>> {
         let tx = self.db.transaction()?;
         let ids = {
-            let mut query = tx.prepare("SELECT p.id FROM operations p JOIN delegated_executions d ON d.run_id=p.run_id JOIN operations owner ON owner.id=d.child_operation_id WHERE json_extract(owner.body,'$.executor')='code_retrieval' AND (json_extract(d.body,'$.report') IS NOT NULL OR json_extract(owner.body,'$.cancel_requested')=1) AND json_extract(p.body,'$.managed_process') IS NOT NULL AND json_extract(p.body,'$.effect')!='none' AND coalesce(json_extract(p.body,'$.external_receipt.executor_stopped'),0)=0")?;
+            let mut query = tx.prepare_cached(&format!("SELECT p.id FROM (SELECT id,run_id FROM operations INDEXED BY unsettled_managed_processes WHERE {UNSETTLED_MANAGED_PROCESS}) p JOIN delegated_executions d ON d.run_id=p.run_id JOIN operations owner ON owner.id=d.child_operation_id WHERE json_extract(owner.body,'$.executor')='code_retrieval' AND (json_extract(d.body,'$.report') IS NOT NULL OR json_extract(owner.body,'$.cancel_requested')=1)"))?;
             let ids = query.query_map([], |row| row.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
             ids
         };

@@ -52,6 +52,7 @@ pub(crate) struct ImmutableReadTask {
 }
 pub(crate) struct PreparedImmutableRead {
     value: Value,
+    bytes: Option<Vec<u8>>,
     verified: bool,
 }
 pub(crate) enum BlobReadTask {
@@ -61,6 +62,11 @@ pub(crate) enum BlobReadTask {
 pub(crate) enum PreparedBlobRead {
     Immutable(PreparedImmutableRead),
     File(super::file_reads::PreparedFileRead),
+}
+impl PreparedBlobRead {
+    pub(crate) fn take_wire_bytes(&mut self) -> Option<Vec<u8>> {
+        match self { Self::Immutable(read) => read.bytes.take(), Self::File(_) => None }
+    }
 }
 impl BlobReadTask {
     /// Hash assembled immutable bytes on the admitted worker, never the range
@@ -177,16 +183,17 @@ impl ImmutableReadTask {
             content["hash"]=json!(self.hash);
             let version=content["format"]["encoding"].as_str().map(|encoding|super::file_mutations::text_read_version(version,encoding)).unwrap_or_else(||version.clone());
             self.checkpoint(BlobReadPhase::Encoded)?;
-            return Ok(PreparedImmutableRead{value:json!({"path":path,"source":source,"missing":false,"readVersion":version,"content":content}),verified:self.verify});
+            return Ok(PreparedImmutableRead{value:json!({"path":path,"source":source,"missing":false,"readVersion":version,"content":content}),bytes:None,verified:self.verify});
         }
         let next = self.offset + self.length as u64;
         file.seek(SeekFrom::Start(self.offset))?;
         let mut bytes=vec![0u8;self.length];
         for part in bytes.chunks_mut(128*1024){self.check_cancelled()?;file.read_exact(part)?;}
-        let value=json!({"hash":self.hash,"byteLength":self.byte_length,"offset":self.offset,"nextOffset":next,"eof":next>=self.byte_length,"bytesBase64":BASE64.encode(bytes)});
+        let value=json!({"hash":self.hash,"byteLength":self.byte_length,"offset":self.offset,"nextOffset":next,"eof":next>=self.byte_length,"bytesBase64":""});
         self.checkpoint(BlobReadPhase::Encoded)?;
         Ok(PreparedImmutableRead {
             value,
+            bytes: Some(bytes),
             verified: self.verify,
         })
     }
@@ -316,10 +323,11 @@ impl Storage {
                 "content object metadata changed during read".into(),
             ));
         }
-        let PreparedBlobRead::Immutable(prepared) = result? else { return Err(KernelError::Storage("blob reader result changed".into())); };
+        let PreparedBlobRead::Immutable(mut prepared) = result? else { return Err(KernelError::Storage("blob reader result changed".into())); };
         if prepared.verified {
             self.verified_objects.insert(task.hash.clone());
         }
+        if let Some(bytes) = prepared.bytes { prepared.value["bytesBase64"] = BASE64.encode(bytes).into(); }
         Ok(prepared.value)
     }
     #[cfg(test)]

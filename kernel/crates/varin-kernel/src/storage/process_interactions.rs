@@ -102,6 +102,13 @@ type Watch = Arc<
         + Send
         + Sync,
 >;
+
+fn interaction_runtime() -> Result<&'static tokio::runtime::Runtime, KernelError> {
+    static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1).thread_name("process-interactions").build())
+        .as_ref().map_err(|error| KernelError::Storage(error.to_string()))
+}
 #[derive(Clone)]
 pub(crate) struct Client {
     send: Arc<dyn Fn(Command) -> Result<(), KernelError> + Send + Sync>,
@@ -130,11 +137,37 @@ impl Client {
         self.watch = Some(Arc::new(watch));
         self
     }
-    pub(crate) fn wire(
+    pub(crate) fn dispatch_wire(
+        &self, request: Value, cancel: CancellationToken,
+        respond: impl FnOnce(Result<Value, KernelError>) + Send + 'static,
+    ) {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        match self.prepare_wire(request, cancel, move |receipt| { let _ = send.send(receipt); }) {
+            Ok(None) => {
+                // Admission created the runtime before reserving the guardian operation.
+                interaction_runtime().expect("admitted interaction").spawn(async move {
+                    let result = receive.await.map_err(|_| KernelError::Storage("input receipt owner stopped".into()))
+                        .and_then(|receipt| receipt.map_err(|failure| failure.error))
+                        .and_then(|receipt| serde_json::to_value(receipt).map_err(Into::into));
+                    respond(result);
+                });
+            }
+            Ok(Some(value)) => respond(Ok(value)),
+            Err(error) => respond(Err(error)),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn wire(&self, request: Value, cancel: CancellationToken) -> Result<Value, KernelError> {
+        let (send, receive) = mpsc::channel();
+        self.dispatch_wire(request, cancel, move |value| { let _ = send.send(value); });
+        receive.recv().map_err(|_| KernelError::Storage("input receipt owner stopped".into()))?
+    }
+    fn prepare_wire(
         &self,
         mut request: Value,
         cancel: CancellationToken,
-    ) -> Result<Value, KernelError> {
+        observe: impl FnOnce(Result<Receipt, InvokeFailure>) + Send + 'static,
+    ) -> Result<Option<Value>, KernelError> {
         crate::protocol::reject_unknown_fields(
             &request,
             &["v", "kind", "id", "method", "params", "epoch", "grantId"],
@@ -176,7 +209,7 @@ impl Client {
             ));
         }
         if method == "process.interaction.inspect" {
-            return serde_json::to_value(self.inspect(context, address)?).map_err(Into::into);
+            return Ok(Some(serde_json::to_value(self.inspect(context, address)?)?));
         }
         if cancel.is_cancelled() {
             return Err(KernelError::Cancelled);
@@ -187,7 +220,7 @@ impl Client {
             Some(receive.recv().map_err(|_| KernelError::Storage("process input metadata owner stopped".into()))??)
         } else { None };
         let receipt = self
-            .invoke(
+            .begin_interaction(
                 context,
                 address,
                 move || {
@@ -217,9 +250,10 @@ impl Client {
                 },
                 None,
                 cancel,
+                observe,
             )
             .map_err(|failure| failure.error)?;
-        serde_json::to_value(receipt).map_err(Into::into)
+        receipt.map(serde_json::to_value).transpose().map_err(Into::into)
     }
     fn lookup(&self, context: Context, address: Address) -> Result<Option<Read>, KernelError> {
         let (reply, receive) = mpsc::channel();
@@ -318,6 +352,19 @@ impl Client {
         native: Option<Native>,
         cancel: CancellationToken,
     ) -> Result<Receipt, InvokeFailure> {
+        let (send, receive) = mpsc::channel();
+        if let Some(receipt) = self.begin_interaction(context, address, prepare, native, cancel, move |receipt| { let _ = send.send(receipt); })? {
+            return Ok(receipt);
+        }
+        receive.recv().map_err(|_| InvokeFailure {
+            error: KernelError::Storage("input receipt owner stopped".into()), dispatched: true,
+        })?
+    }
+    fn begin_interaction(
+        &self, context: Context, address: Address, prepare: impl FnOnce() -> Result<Input, KernelError>,
+        native: Option<Native>, cancel: CancellationToken,
+        observe: impl FnOnce(Result<Receipt, InvokeFailure>) + Send + 'static,
+    ) -> Result<Option<Receipt>, InvokeFailure> {
         let prior = self.lookup(context.clone(), address.clone())?;
         // A supplied duplicate body is checked outside Storage; receipt-only retries use inspect.
         let input = prepare()?;
@@ -329,11 +376,12 @@ impl Client {
                 )
                 .into());
             }
-            return self.read(prior).map_err(|error| InvokeFailure {
+            return self.read(prior).map(Some).map_err(|error| InvokeFailure {
                 error,
                 dispatched: true,
             });
         }
+        let runtime = interaction_runtime()?;
         let (reply, receive) = mpsc::channel();
         (self.send)(Command::Prepare {
             context,
@@ -348,7 +396,7 @@ impl Client {
             .map_err(|_| KernelError::Storage("process input owner stopped".into()))??;
         let (intent, task) = match admission {
             Admission::Existing(read) => {
-                return self.read(read).map_err(|error| InvokeFailure {
+                return self.read(read).map(Some).map_err(|error| InvokeFailure {
                     error,
                     dispatched: true,
                 })
@@ -386,59 +434,27 @@ impl Client {
                         error,
                         dispatched: true,
                     })?;
-                return Ok(receipt);
+                return Ok(Some(receipt));
             }
         };
-        let (observed, result) = mpsc::channel();
         let client = self.clone();
-        let initial = intent.clone();
-        let receipt_path = task.receipt_path.clone();
-        let spawned = std::thread::Builder::new()
-            .name("process-input".into())
-            .spawn(move || {
-                let _guard = guard;
-                let mut observed = Some(observed);
-                task.run(input, cancel, |receipt, final_receipt| {
-                    let result = if final_receipt {
-                        client
-                            .finish(intent.clone(), receipt.clone())
-                            .map(|_| receipt)
-                    } else {
-                        Ok(receipt)
-                    };
-                    if let Some(sender) = observed.take() {
-                        let _ = sender.send(result);
-                    }
-                });
-            });
-        if let Err(error) = spawned {
-            let receipt = initial.receipt.no_effect(
-                format!("process input worker could not start: {error}"),
-                false,
-            );
-            interaction::persist(&receipt_path, &receipt).map_err(|error| InvokeFailure {
-                error,
-                dispatched: true,
-            })?;
-            self.finish(initial, receipt.clone())
-                .map_err(|error| InvokeFailure {
-                    error,
-                    dispatched: true,
-                })?;
-            return Ok(receipt);
-        }
-        result
-            .recv()
-            .map_err(|_| InvokeFailure {
-                error: KernelError::Storage(
-                    "process input worker stopped without a receipt".into(),
-                ),
-                dispatched: true,
-            })?
-            .map_err(|error| InvokeFailure {
-                error,
-                dispatched: true,
-            })
+        runtime.spawn(async move {
+            let _guard = guard;
+            let mut observed = Some(observe);
+            task.run(input, cancel, |receipt, final_receipt| {
+                let result = if final_receipt {
+                    tokio::task::block_in_place(|| client.finish(intent.clone(), receipt.clone()))
+                        .map(|_| receipt)
+                        .map_err(|error| InvokeFailure { error, dispatched: true })
+                } else {
+                    Ok(receipt)
+                };
+                if let Some(respond) = observed.take() {
+                    respond(result);
+                }
+            }).await;
+        });
+        Ok(None)
     }
 }
 impl Storage {

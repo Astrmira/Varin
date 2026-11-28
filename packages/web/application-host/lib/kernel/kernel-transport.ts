@@ -4,6 +4,7 @@ import net, { type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
+import { attachKernelBytes } from './binary-result.js';
 import { KERNEL_BODY_METHODS, KERNEL_CONTROL_METHODS, KERNEL_CONTROL_RESPONSE_METHODS, KERNEL_INPUT_ORDER_PARAMS, KERNEL_INLINE_MAX_BYTES, KERNEL_MAX_FRAME_BYTES, KERNEL_PROTOCOL_VERSION, KERNEL_STREAM_CREDITS } from "./protocol.generated.js";
 
 export const CONTROL_METHODS: ReadonlySet<string> = new Set(KERNEL_CONTROL_METHODS);
@@ -36,10 +37,28 @@ function needsBodyWorker(value: unknown): boolean {
 }
 
 type Envelope = Record<string, unknown>;
+// Self-contained so the body worker and inline lane parse the same framing.
+function parseDataBody(bytes: Buffer): { value: Envelope; binary?: Buffer } {
+  if (bytes[0] !== 0) return { value: JSON.parse(bytes.toString('utf8')) as Envelope };
+  if (bytes.length < 5) throw new Error('Invalid binary result header');
+  const end = 5 + bytes.readUInt32BE(1);
+  if (end > bytes.length) throw new Error('Truncated binary result');
+  const value = JSON.parse(bytes.toString('utf8', 5, end)) as Envelope;
+  if (value.kind !== 'response' || value.ok !== true || (value.result as Envelope | undefined)?.bytesBase64 !== '') throw new Error('Unexpected binary result');
+  return { value, binary: bytes.subarray(end) };
+}
 interface Outgoing {
+  tail?: Buffer;
   id: string; bytes?: Buffer; offset: number; sequence: number; ready: boolean; waiting: boolean;
   requestId?: string; aborting: boolean; ending: boolean; group: CreditGroup; started: boolean; opened: boolean; encoding: boolean; settled: boolean; value?: Envelope;
   resolve(): void; reject(error: Error): void;
+}
+// A zero byte cannot start JSON. Follow it with the metadata length, JSON, then raw bytes.
+function binaryPrefix(json: Buffer): Buffer {
+  const prefix = Buffer.allocUnsafe(5);
+  prefix[0] = 0;
+  prefix.writeUInt32BE(json.length, 1);
+  return Buffer.concat([prefix, json]);
 }
 interface Incoming { identity: Envelope; length?: number; received: number; sequence: number; stopping: boolean; abortSequence?: number }
 const identity = (value: Envelope): Envelope => {
@@ -63,6 +82,7 @@ const BODY_WORKER = String.raw`
 import { parentPort } from "node:worker_threads";
 const streams = new Map();
 const inputOrderParams = ${JSON.stringify(KERNEL_INPUT_ORDER_PARAMS)};
+const parseDataBody = ${parseDataBody.toString()};
 const identity = value => {
   const result = Object.fromEntries(["v","kind","id","method","epoch","grantId","kernelEpoch"].filter(key => value[key] !== undefined).map(key => [key,value[key]]));
   const field = inputOrderParams[value.method];
@@ -86,11 +106,14 @@ parentPort.on("message", message => {
       const stream = streams.get(id); streams.delete(id);
       if (!stream) throw new Error("Unknown completed body stream");
       const bytes = Buffer.concat(stream.chunks, stream.length);
-      const value = JSON.parse(bytes.toString("utf8"));
+      const { value, binary } = parseDataBody(bytes);
       const actual = identity(value);
       if (Object.keys(actual).length !== Object.keys(stream.identity).length
         || Object.entries(actual).some(([key, value]) => stream.identity[key] !== value)) throw new Error("Body identity mismatch");
-      parentPort.postMessage({ type:"decoded", id, value });
+      if (binary) {
+        const buffer = Uint8Array.from(binary).buffer;
+        parentPort.postMessage({ type:"decoded", id, value, binary:buffer }, [buffer]);
+      } else parentPort.postMessage({ type:"decoded", id, value });
     } else if (type === "abort") streams.delete(id);
   } catch (error) { parentPort.postMessage({ type:"failed", id, operation:type, message:error instanceof Error ? error.message : String(error) }); }
 });
@@ -215,7 +238,7 @@ export class KernelTransport {
   private command(kind: string, id: string, fields: Envelope = {}): Promise<void> {
     return this.write(this.control, controlFrame({ v:KERNEL_PROTOCOL_VERSION, kind, streamId:id, kernelEpoch:this.epoch, ...fields }));
   }
-  send(value: Envelope, lane: "control" | "data"): Promise<void> {
+  send(value: Envelope, lane: "control" | "data", tail?: Buffer): Promise<void> {
     if (lane === "control") {
       // Control can overtake a queued inline frame on the other socket. The receiver holds
       // this cancel until that exact arrival is registered, without a wire acknowledgement.
@@ -225,17 +248,21 @@ export class KernelTransport {
     if (this.failed || this.intentionalClose) return Promise.reject(this.failed ?? new Error("Kernel transport closed"));
     const inWorker = (value.kind !== 'request' || BODY_METHODS.has(String(value.method))) && needsBodyWorker(value);
     let bytes: Buffer | undefined;
-    try { if (!inWorker) bytes = Buffer.from(JSON.stringify(value), 'utf8'); }
+    try { if (!inWorker) {
+      const json = Buffer.from(JSON.stringify(value), 'utf8');
+      bytes = tail ? binaryPrefix(json) : json;
+    } }
     catch (error) { return Promise.reject(error); }
     const arrivalSequence = ++this.arrivalSequence;
     if (value.kind === 'request' && typeof value.id === 'string') this.requestArrivals.set(value.id, arrivalSequence);
-    if (bytes && bytes.length <= KERNEL_INLINE_MAX_BYTES) {
+    const length = (bytes?.length ?? 0) + (tail?.length ?? 0);
+    if (bytes && length <= KERNEL_INLINE_MAX_BYTES) {
       const header = Buffer.allocUnsafe(4 + INLINE_HEADER_BYTES);
-      header.writeUInt32BE(INLINE_HEADER_BYTES + bytes.length, 0);
+      header.writeUInt32BE(INLINE_HEADER_BYTES + length, 0);
       header[4] = 1;
       header.writeBigUInt64BE(BigInt(arrivalSequence), 5);
       return new Promise<void>((resolve, reject) => {
-        this.inline.push({bytes: Buffer.concat([header, bytes!]), resolve, reject});
+        this.inline.push({bytes: Buffer.concat(tail ? [header, bytes!, tail] : [header, bytes!]), resolve, reject});
         void this.pump();
       });
     }
@@ -243,7 +270,7 @@ export class KernelTransport {
     return new Promise<void>((resolve, reject) => {
       const group: CreditGroup = value.kind !== 'request' ? 'reverse' : CONTROL_RESPONSE_METHODS.has(String(value.method)) ? 'control' : 'request';
       this.outgoing.set(id, { id, offset:0, sequence:0, ready:false, waiting:false, aborting:false, ending:false,
-        group, started:false, opened:false, encoding:false, settled:false, ...(bytes ? {bytes} : {value}),
+        group, started:false, opened:false, encoding:false, settled:false, ...(bytes ? {bytes} : {value}), ...(tail ? {tail} : {}),
         ...(value.kind === 'request' && typeof value.id === 'string' ? {requestId:value.id} : {}), resolve, reject });
       this.order.push(id);
       // Offers reserve arrival order before any encoding or stream-credit wait. They carry
@@ -261,7 +288,7 @@ export class KernelTransport {
       if (!stream.opened || stream.started || stream.aborting || this.streamsUsed[stream.group] >= KERNEL_STREAM_CREDITS) continue;
       stream.started = true;
       this.streamsUsed[stream.group]++;
-      if (stream.bytes) void this.command('transport-stream-begin', stream.id, {byteLength:stream.bytes.length}).catch(error => this.fail(error as Error));
+      if (stream.bytes) void this.command('transport-stream-begin', stream.id, {byteLength:stream.bytes.length + (stream.tail?.length ?? 0)}).catch(error => this.fail(error as Error));
       else {
         try { stream.encoding = true; this.worker.postMessage({type:'encode', id:stream.id, value:stream.value}); delete stream.value; }
         catch (error) { stream.encoding = false; this.abortOutgoing(stream.id, error instanceof Error ? error : new Error(String(error))); }
@@ -289,6 +316,7 @@ export class KernelTransport {
     if (stream.aborting || stream.ending) return;
     stream.aborting = true;
     delete stream.bytes;
+    delete stream.tail;
     delete stream.value;
     this.order = this.order.filter(item => item !== id);
     void this.command("transport-stream-abort", id, {sequence:stream.sequence}).catch(failure => this.fail(failure as Error));
@@ -328,13 +356,15 @@ export class KernelTransport {
       const stream = this.outgoing.get(id); if (!stream) return;
       stream.encoding = false;
       if (stream.aborting) { if (stream.settled) this.settleStream(id); return; }
-      stream.bytes = Buffer.from(message.bytes as ArrayBuffer);
-      void this.command("transport-stream-begin", id, { byteLength:stream.bytes.length }).catch(error => this.fail(error as Error));
+      const json = Buffer.from(message.bytes as ArrayBuffer);
+      stream.bytes = stream.tail ? binaryPrefix(json) : json;
+      void this.command("transport-stream-begin", id, { byteLength:stream.bytes.length + (stream.tail?.length ?? 0) }).catch(error => this.fail(error as Error));
     } else if (message.type === "ack") {
       const stream = this.incoming.get(id);
       if (stream && !stream.stopping && stream.abortSequence === undefined) void this.command("transport-stream-ack", id, { sequence:message.sequence }).catch(error => this.fail(error as Error));
     } else if (message.type === "decoded") {
       const value = message.value as Envelope;
+      if (message.binary instanceof ArrayBuffer) attachKernelBytes(value.result as Envelope, Buffer.from(message.binary));
       const stream = this.decoding.get(id);
       this.decoding.delete(id);
       this.deliver(value);
@@ -427,7 +457,9 @@ export class KernelTransport {
   private consumeData(body: Buffer): void {
     if (body[0] === 1) {
       if (body.length < INLINE_HEADER_BYTES || body.length - INLINE_HEADER_BYTES > KERNEL_INLINE_MAX_BYTES) throw new Error('Invalid inline frame length');
-      this.deliver(JSON.parse(body.subarray(INLINE_HEADER_BYTES).toString('utf8')) as Envelope);
+      const { value, binary } = parseDataBody(body.subarray(INLINE_HEADER_BYTES));
+      if (binary) attachKernelBytes(value.result as Envelope, binary);
+      this.deliver(value);
       return;
     }
     if (body[0] !== 0) throw new Error('Unknown kernel data frame type');
@@ -472,6 +504,9 @@ export class KernelTransport {
         if (!selected?.bytes) break;
         this.inlineTurn = true;
         const stream = selected;
+        if (stream.offset === stream.bytes!.length && stream.tail) {
+          stream.bytes = stream.tail; delete stream.tail; stream.offset = 0;
+        }
         if (stream.offset === stream.bytes!.length) {
           stream.ending = true; delete stream.bytes; this.order = this.order.filter(id => id !== stream.id);
           await this.command("transport-stream-end", stream.id, { sequence:stream.sequence }); continue;

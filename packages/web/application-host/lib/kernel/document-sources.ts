@@ -1,3 +1,4 @@
+import { kernelResultBytes } from './binary-result.js';
 import { createHostModelReferences, resolveFileReference } from './model-references.js';
 /** Adapters into the original Run source and Experiment owners for PDF ingestion. */
 import path from 'node:path';
@@ -44,7 +45,7 @@ async function sourceBytes(client: Pick<KernelScopedClient, 'getBlob'>, state: E
   for (;;) {
     signal?.throwIfAborted();
     const page = await client.getBlob(state.objectHash, source, { offset, length: 256 * 1024, signal });
-    const bytes = Buffer.from(page.bytesBase64, 'base64');
+    const bytes = kernelResultBytes(page);
     if (page.offset !== offset || page.hash !== state.objectHash || page.byteLength !== state.byteLength
       || page.nextOffset !== offset + bytes.byteLength || page.nextOffset > state.byteLength
       || page.eof !== (page.nextOffset === state.byteLength) || !page.eof && page.nextOffset <= offset) {

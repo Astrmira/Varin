@@ -1298,15 +1298,17 @@ export class KernelClient {
     if (terminate && this.child && !this.child.killed) this.child.kill();
   }
 
-  private async write(request: PrivateModelProtocolResponse | PrivateManagedSourceFrame | KernelRequest | PrivateCredentialResponse | PrivateToolFrame | PrivatePolicyResponse | PrivateDriverFrame | PrivateMemoryResponse | PrivateContextResponse | PrivateResourceResponse | PrivateFileObservationResponse | PrivatePlanResponse | PrivateLanguageResponse): Promise<void> {
+  private async write(request: PrivateModelProtocolResponse | PrivateManagedSourceFrame | KernelRequest | PrivateCredentialResponse | PrivateToolFrame | PrivatePolicyResponse | PrivateDriverFrame | PrivateMemoryResponse | PrivateContextResponse | PrivateResourceResponse | PrivateFileObservationResponse | PrivatePlanResponse | PrivateLanguageResponse, binary?: Buffer): Promise<void> {
     const transport = this.transport;
     if (!transport) throw new KernelClientError({ code: "kernel-disconnected", message: "Rust kernel transport is unavailable", retryable: true });
     const control = request.kind === "agent-driver-closing" || request.kind === "cancel" || request.kind === "credential-response" || request.kind === "host-tool-revoked" || request.kind === "file-observation-response"
       || (request.kind === "request" && CONTROL_METHODS.has(request.method));
-    await transport.send(request as unknown as Record<string, unknown>, control ? "control" : "data");
+    const envelope = request as unknown as Record<string, unknown>;
+    if (binary) await transport.send(envelope, 'data', binary);
+    else await transport.send(envelope, control ? 'control' : 'data');
   }
 
-  private async requestRaw<T, M extends KernelMethod = KernelMethod>(method: M, params: KernelMethodParams[M], options: { signal?: AbortSignal | undefined; grant?: KernelGrantHandle | undefined; allowBootstrap?: boolean | undefined; settleCancellation?: boolean | undefined } = {}): Promise<T> {
+  private async requestRaw<T, M extends KernelMethod = KernelMethod>(method: M, params: KernelMethodParams[M], options: { signal?: AbortSignal | undefined; grant?: KernelGrantHandle | undefined; allowBootstrap?: boolean | undefined; settleCancellation?: boolean | undefined; binary?: Buffer } = {}): Promise<T> {
     this.assertAdmissionOpen(method);
     const cancelled = () => new KernelClientError({ code: "cancelled", message: "Kernel request cancelled", retryable: true });
     const newExecution = NEW_EXECUTION_METHODS.has(method);
@@ -1354,7 +1356,7 @@ export class KernelClient {
       void promise.catch(() => undefined);
       options.signal?.addEventListener("abort", abort, { once: true });
       try {
-        void this.write(request).catch(error => {
+        void this.write(request, options.binary).catch(error => {
           if (!cancelSent && this.pending.has(id)) this.failAll(error instanceof Error ? error : new Error(String(error)), true);
         });
         return await promise;
@@ -1386,14 +1388,23 @@ export class KernelClient {
     return this.requestRaw('text.encodings', {}, { allowBootstrap: true });
   }
 
-  async textDecode(params: import('./protocol.generated.js').KernelTextDecodeParams): Promise<import('./protocol.generated.js').KernelTextDecodeResult> {
+  async textDecode(params: import('./protocol.generated.js').KernelTextDecodeParams | (Omit<import('./protocol.generated.js').KernelTextDecodeParams, 'bytesBase64'> & { bytes: Uint8Array })): Promise<import('./protocol.generated.js').KernelTextDecodeResult> {
+    if ('bytes' in params) {
+      const { bytes, ...fields } = params;
+      const binary = Buffer.from(bytes);
+      if (!this.handshakeResult) await this.start();
+      return this.requestRaw('text.decode', { ...fields, bytesBase64: '' }, { allowBootstrap: true, binary });
+    }
     if (!this.handshakeResult) await this.start();
     return this.requestRaw('text.decode', params, { allowBootstrap: true });
   }
 
-  async textSerialize(params: import('./protocol.generated.js').KernelTextSerializeParams): Promise<import('./protocol.generated.js').KernelTextSerializeResult> {
+  async textSerialize(params: import('./protocol.generated.js').KernelTextSerializeParams & { sourceBytes?: Uint8Array }): Promise<import('./protocol.generated.js').KernelTextSerializeResult> {
+    const { sourceBytes, ...metadata } = params;
+    const binary = sourceBytes ? Buffer.from(sourceBytes) : Buffer.alloc(0);
     if (!this.handshakeResult) await this.start();
-    return this.requestRaw('text.serialize', params, { allowBootstrap: true });
+    if (metadata.sourceBytesBase64 !== undefined) return this.requestRaw('text.serialize', metadata, { allowBootstrap: true });
+    return this.requestRaw('text.serialize', sourceBytes ? { ...metadata, sourceBytesBase64: '' } : metadata, { allowBootstrap: true, binary });
   }
 
   async health(options: { deep?: boolean; gcPreview?: boolean; signal?: AbortSignal | undefined } = {}): Promise<KernelHealthResult> {
@@ -1445,8 +1456,8 @@ export class KernelClient {
         signal?.throwIfAborted();
         const chunk = source.subarray(offset, Math.min(offset + chunkSize, source.byteLength));
         const receipt = await this.requestRaw<{ sequence: number }>("storage.putBlob.chunk", {
-          streamId, sequence, bytesBase64: chunk.toString("base64"),
-        }, { signal, grant: scoped });
+          streamId, sequence, bytesBase64: '',
+        }, { signal, grant: scoped, binary: chunk });
         if (receipt.sequence !== sequence) throw new Error("Kernel acknowledged a different upload sequence");
         sequence += 1;
       }
@@ -1516,8 +1527,8 @@ export class KernelClient {
         for (let offset = 0; offset < source.byteLength; offset += 64 * 1024) {
           const chunk = source.subarray(offset, Math.min(offset + 64 * 1024, source.byteLength));
           const receipt = await this.requestRaw<{ sequence: number }>("storage.putBlob.chunk", {
-            streamId, sequence, bytesBase64: chunk.toString("base64"),
-          }, { signal, grant: scoped });
+            streamId, sequence, bytesBase64: '',
+          }, { signal, grant: scoped, binary: chunk });
           if (receipt.sequence !== sequence) throw new Error("Kernel acknowledged a different upload sequence");
           sequence += 1;
         }

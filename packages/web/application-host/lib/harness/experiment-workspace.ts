@@ -1,3 +1,4 @@
+import { kernelResultBytes } from '../kernel/binary-result.js';
 /**
  * Durable input and execution directories for experiments.
  *
@@ -742,7 +743,7 @@ export async function openExperimentInputTransfer(client: KernelClient, caller: 
           while (offset < byteLength) {
             signal?.throwIfAborted();
             const page = await scoped.getBlob(objectHash, { branchId: input.branchId, path: sourcePath }, { offset, length: Math.min(256 * 1024, byteLength - offset), ...(signal ? { signal } : {}) });
-            const bytes = Buffer.from(page.bytesBase64, "base64");
+            const bytes = kernelResultBytes(page);
             if (bytes.byteLength === 0 || page.nextOffset <= offset)
               throw new Error(`Experiment object ${objectHash} stopped at byte ${offset}`);
             offset = page.nextOffset;
@@ -833,7 +834,7 @@ export async function installExperimentInput(client: KernelClient, caller: Exper
         while (offset < state.byteLength) {
           options.signal?.throwIfAborted();
           const page = await read(entry.path, offset, Math.min(256 * 1024, state.byteLength - offset), options.signal);
-          const bytes = Buffer.from(page.bytesBase64, 'base64');
+          const bytes = kernelResultBytes(page);
           if (page.hash !== state.objectHash || page.offset !== offset || page.byteLength !== state.byteLength || page.nextOffset !== offset + bytes.length || !bytes.length
             || page.nextOffset > state.byteLength || page.eof !== (page.nextOffset === state.byteLength)) throw new Error('Managed experiment input page changed');
           offset = page.nextOffset;

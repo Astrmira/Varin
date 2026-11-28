@@ -133,6 +133,19 @@ The 0.9.3 storage worker opens with the current engine first. When the main file
 
 The old addon and its Windows loader patch have been removed from the runtime. Fixed file groups exercise direct migration, the WAL-only guidance, corruption, and the result of opening the same WAL in Varin 0.9.53. [Database fixtures and tests](../../packages/web/application-host/lib/knowledge/database.native.test.ts) · [Desktop native preparation](../../packages/electron/scripts/prepare-trivium-runtime.mjs)
 
+## Implemented after the original audit
+
+The terminal admits interactions on reusable workers and waits asynchronously for each guardian.
+Stdin and resize retain separate FIFO reservations. Catalog delivery always publishes the committed
+cursor. Preparation-only events can skip continuation reconciliation unless an explicit wait matches,
+and cleanup checks the index of unsettled managed processes before opening cleanup transactions.
+
+The workspace root listing shares the enclosing Git status across ordinary directories and inspects
+nested repositories and linked worktrees separately. Document codecs and Blob uploads/downloads
+carry native bytes over the existing authenticated transport. Knowledge stores checkpoint and
+release idle native handles. Language settings accept verified offline packages on the executing
+Host, with an equivalent local archive location for headless Hosts and Resource Nodes.
+
 ## Build footprint and module ownership
 
 Measure Rust debug symbols, incremental outputs and duplicate integration-test link products per target. Compare profiles on a clean build and an incremental rebuild, including link time and the usefulness of crash traces. Group integration binaries where fixtures and process isolation permit it. Keep internal unit tests alongside the private code they exercise. For release size, compare stripping and thin LTO on the shipped binaries for each target.

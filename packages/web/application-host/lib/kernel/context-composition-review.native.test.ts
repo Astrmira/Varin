@@ -55,12 +55,13 @@ async function fixture(reply: (body: Record<string, unknown>, response: ServerRe
   const releaseCodec = bindDocumentTextCodec(kernel);
   cleanups.push(async () => { releaseCodec(); await kernel.close(); if (!existingRoot) await fs.rm(root, { recursive: true, force: true }); });
   const secret = 'fake-http-provider-key-not-a-real-secret';
-  const requests: Array<{ body: Record<string, unknown>; authorization?: string }> = [];
+  const requests: Array<{ body: Record<string, unknown>; receivedAt: number; authorization?: string }> = [];
   const provider = createServer((request, response) => {
+    const receivedAt = performance.now();
     const chunks: Buffer[] = [];
     request.on('data', (bytes: Buffer) => chunks.push(bytes));
     request.on('end', guardProviderReply(response, () => {
-      requests.push({ body: JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>, ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}) });
+      requests.push({ receivedAt, body: JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>, ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}) });
       return reply(requests.at(-1)!.body, response);
     }));
   });
@@ -143,9 +144,11 @@ it('two consecutive HTTP submissions prepare bundled tools and default guidance 
   const identity = await f.api.create('default-conversation');
   for (const key of ['cold', 'warm']) {
     const expectedHead = (await f.api.snapshot(identity)).historyPage.head;
+    const submittedAt = performance.now();
     const run = await f.api.submit({ ...identity, key, expectedHead, text: key, model });
     await expect.poll(async () => (await f.api.run(run.run_id)).state, { timeout: 30_000 }).toBe('completed');
     const request = f.requests.at(-1)!.body;
+    if (process.env.VARIN_MEASURE_RESOURCE_COSTS) console.info(`HTTP submit → local provider, ${key}: ${(f.requests.at(-1)!.receivedAt - submittedAt).toFixed(1)} ms`);
     expect(system(request)).toContain('Distinguish completed work');
     // No workspace or plugin is required for discoverable tools. The model can use the
     // tool directory, even when detailed schemas are initially deferred.

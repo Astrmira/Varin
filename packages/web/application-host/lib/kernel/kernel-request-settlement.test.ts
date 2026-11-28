@@ -55,7 +55,9 @@ it.each(['text.decode', 'text.serialize'] as const)('dispatches the public %s wr
   expect(await (method === 'text.decode' ? f.client.textDecode({ bytesBase64: 'eA==', encoding: 'utf-8' })
     : f.client.textSerialize({ content: 'x', targetFormat: { encoding: 'utf-8' } }))).toEqual(result);
   expect(f.send).toHaveBeenCalledOnce();
-  expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ kind: 'request', method, params, epoch: 'authenticated-epoch' }), 'data');
+  const frame = expect.objectContaining({ kind: 'request', method, params, epoch: 'authenticated-epoch' });
+  if (method === 'text.serialize') expect(f.send).toHaveBeenCalledWith(frame, 'data', Buffer.alloc(0));
+  else expect(f.send).toHaveBeenCalledWith(frame, 'data');
   expect(f.send.mock.calls[0]![0]).not.toHaveProperty('grantId');
 });
 

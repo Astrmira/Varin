@@ -37,6 +37,7 @@ enum BlobReadReply {
 }
 
 enum WorkerRequest {
+    BinaryResult { id: String, value: Value, bytes: Vec<u8> },
     RootRegistered { request: Value, cancellation: Arc<AtomicBool>, result: Result<Value, KernelError> },
     CaptureResolved {
         request: Value,
@@ -61,7 +62,7 @@ enum WorkerRequest {
         task: crate::storage::file_lease_tasks::Task,
         result: Result<crate::storage::file_lease_tasks::Resolved, KernelError>,
     },
-    Wire(Value, Arc<AtomicBool>),
+    Wire(Value, Arc<AtomicBool>, Option<crate::transport::BinaryBody>),
     SourceWire(Value,varin_runtime::execution::CancellationToken),
     SourceDone { request:Value, key:String, result:Result<crate::source_resources::SourceWorkResult,KernelError> },
     Resource(crate::tools::ResourceCall),
@@ -400,11 +401,16 @@ impl Kernel {
         }
     }
 
-    fn handle(
+    #[cfg(test)]
+    fn handle(&mut self, request: &Value, cancellation: Arc<AtomicBool>, completions: &mpsc::Sender<WorkerRequest>) -> Result<Option<Value>, KernelError> {
+        self.handle_body(request, cancellation, completions, None)
+    }
+    fn handle_body(
         &mut self,
         request: &Value,
         cancellation: Arc<AtomicBool>,
         completions: &mpsc::Sender<WorkerRequest>,
+        binary: Option<crate::transport::BinaryBody>,
     ) -> Result<Option<Value>, KernelError> {
         if cancellation.load(Ordering::Acquire) {
             return Err(KernelError::Cancelled);
@@ -598,9 +604,14 @@ impl Kernel {
             if request.get("grantId").is_some() { return Err(KernelError::Authorization("Text codec requires authenticated Host ownership".into())); }
             let (method, request, completed, cancel) = (method.to_owned(), request.clone(), completions.clone(), cancellation.clone());
             let worker=thread::Builder::new().name("text-codec".into()).spawn(move || {
-                let result=if cancel.load(Ordering::Acquire){Err(KernelError::Cancelled)}else{crate::text::request(&method,params_value)};
+                let mut bytes = None;
+                let result=if cancel.load(Ordering::Acquire){Err(KernelError::Cancelled)}else{crate::text::request_with_bytes(&method,params_value,binary.as_ref().map(AsRef::as_ref), &mut bytes)};
                 let result=if cancel.load(Ordering::Acquire){Err(KernelError::Cancelled)}else{result};
-                let _=completed.send(WorkerRequest::ResourceRequestDone{request,result});
+                let done = match (result, bytes) {
+                    (Ok(value), Some(bytes)) => WorkerRequest::BinaryResult { id: request["id"].as_str().unwrap().to_owned(), value, bytes },
+                    (result, _) => WorkerRequest::ResourceRequestDone { request, result },
+                };
+                let _=completed.send(done);
             })?;
             self.file_workers.retain(|(_, worker)| !worker.is_finished());
             self.file_workers.push((cancellation,worker));
@@ -985,7 +996,7 @@ impl Kernel {
             return Ok(None);
         }
         storage.set_cancellation(cancellation);
-        let result = storage.dispatch(method, &authorized_params, grant_id, &authorized_grant);
+        let result = storage.dispatch_body(method, &authorized_params, grant_id, &authorized_grant, binary.as_ref().map(AsRef::as_ref));
         storage.clear_cancellation();
         let result = result?;
         if method == "storage.gc" { self.collect_obsolete_materialized_views(completions)?; }
@@ -1536,6 +1547,7 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
     let admission_cancellations = cancellations.clone();
     let process_controls = crate::process::ProcessControlRegistry::default();
     let interaction_requests = request_tx.clone();
+    let interaction_admission = crate::blocking_pool::BlockingPool::new("input-admission")?;
     let interaction_active = cancellations.clone();
     let interaction_revoked = revoked_grants.clone();
     let interaction_epoch = admission_epoch.clone();
@@ -1767,8 +1779,10 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
         kernel.source_resources=Some(source_resources);
         let mut stopping = false;
         macro_rules! respond {
-            ($response:expr) => {
-                if worker_response_tx.send($response).is_err() {
+            ($response:expr) => { respond!(@write worker_response_tx.send($response)) };
+            ($response:expr, $bytes:expr) => { respond!(@write worker_response_tx.send_binary($response, $bytes)) };
+            (@write $result:expr) => {
+                if $result.is_err() {
                     worker_writer_failed.store(true, Ordering::Release);
                     stopping = true;
                     if !kernel.shutdown_complete { kernel.stop_workspaces(None, &capture_completions); }
@@ -1785,9 +1799,9 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
                 break;
             }
             let Ok(message) = request_rx.recv() else { break; };
-            let (request, cancellation) = match message {
-                WorkerRequest::Wire(request, cancellation) => (request, cancellation),
-                WorkerRequest::SourceWire(request,cancel)=>{kernel.source_request_cancel=Some(cancel.clone());(request,cancel.shared_flag())},
+            let (request, cancellation, binary) = match message {
+                WorkerRequest::Wire(request, cancellation, binary) => (request, cancellation, binary),
+                WorkerRequest::SourceWire(request,cancel)=>{kernel.source_request_cancel=Some(cancel.clone());(request,cancel.shared_flag(),None)},
                 WorkerRequest::SourceDone{request,key,result}=>{
                     kernel.source_tasks.remove(&key);
                     let id=request["id"].as_str().unwrap_or_default();
@@ -2000,6 +2014,11 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
                     let _ = call.reply.send(result);
                     continue;
                 }
+                WorkerRequest::BinaryResult { id, value, bytes } => {
+                    if let Ok(mut active) = worker_cancellations.lock() { active.remove(&id); }
+                    respond!(response_ok(&id, value), bytes);
+                    continue;
+                }
                 WorkerRequest::ResourceRequestDone { request, result } => {
                     let id = request["id"].as_str().unwrap_or("");
                     if let Ok(mut active) = worker_cancellations.lock() { active.remove(id); }
@@ -2032,6 +2051,8 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
                     match reply {
                         BlobReadReply::Wire(request) => {
                             let id = request["id"].as_str().unwrap_or("");
+                            let mut result = result;
+                            let bytes = result.as_mut().ok().and_then(|read| read.take_wire_bytes());
                             let value = kernel.complete_blob_read(
                                 &request,
                                 &task,
@@ -2042,11 +2063,11 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
                                 .lock()
                                 .ok()
                                 .map(|mut active| active.remove(id));
-                            let response = match value {
-                                Ok(value) => response_ok(id, value),
-                                Err(error) => response_error(id, &error),
-                            };
-                            respond!(response);
+                            match (value, bytes) {
+                                (Ok(value), Some(bytes)) => { respond!(response_ok(id, value), bytes); }
+                                (Ok(value), None) => { respond!(response_ok(id, value)); }
+                                (Err(error), _) => { respond!(response_error(id, &error)); }
+                            }
                         }
                         BlobReadReply::Resource(call) => {
                             let denied = worker_revoked_grants
@@ -2455,7 +2476,7 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
             } else if revoked {
                 Err(KernelError::Authorization("grant is revoked".to_string()))
             } else {
-                kernel.handle(&request, cancellation, &capture_completions)
+                kernel.handle_body(&request, cancellation, &capture_completions, binary)
             };
             if kernel.workspace_shutdown {
                 stopping = true;
@@ -2612,7 +2633,7 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
         }
     });
     for incoming in &transport.incoming {
-        let (request, lane) = match incoming {
+        let (request, lane, binary) = match incoming {
             Incoming::Disconnected => break,
             Incoming::Abort(meta) => {
                 if meta["kind"] == "request" {
@@ -2685,7 +2706,8 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
                 );
                 continue;
             }
-            Incoming::Frame(request, lane) => (request, lane),
+            Incoming::Frame(request, lane) => (request, lane, None),
+            Incoming::Binary(request, bytes) => (request, Lane::Data, Some(bytes)),
         };
         if writer_failed.load(Ordering::Acquire) {
             break;
@@ -2905,8 +2927,7 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
             let client = interaction_client.clone();
             let responses = response_tx.clone();
             let active = cancellations.clone();
-            thread::spawn(move || {
-                let result = client.wire(request, cancel);
+            interaction_admission.submit(move || client.dispatch_wire(request, cancel, move |result| {
                 let response = match result {
                     Ok(value) => response_ok(&request_id, value),
                     Err(error) => response_error(&request_id, &error),
@@ -2915,7 +2936,7 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
                     active.remove(&request_id);
                 }
                 let _ = responses.send(response);
-            });
+            }));
             continue;
         }
         if request
@@ -3005,7 +3026,7 @@ pub(crate) fn run(resources_only: bool) -> Result<(), Box<dyn std::error::Error>
             continue;
         }
         if request_tx
-            .send(WorkerRequest::Wire(request, token))
+            .send(WorkerRequest::Wire(request, token, binary))
             .is_err()
         {
             // External credits were validated before enqueue. Internal resource/replay work

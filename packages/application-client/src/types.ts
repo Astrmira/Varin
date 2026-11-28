@@ -2443,6 +2443,8 @@ export interface LanguageSupportLanguageRow {
 
 /** Availability of the program, independent of a currently running LSP session. */
 export interface LanguageSupportServerInfo {
+  /** Pinned artifact for the platform that runs the language server. */
+  archiveUrl?: string;
   status: 'bundled' | 'available' | 'preparing' | 'installed' | 'failed' | 'needs-runtime' | 'unsupported';
   name?: string;
   message?: string;
@@ -2480,7 +2482,7 @@ export type LanguageSupportInstallResult =
 
 export interface LanguageSupportAPI {
   getStatus(request: { workspaceId: string }): Promise<LanguageSupportStatus>;
-  prepareServer(request: { workspaceId: string; languageId: string }): Promise<LanguageSupportServerInfo>;
+  prepareServer(request: { workspaceId: string; languageId: string; archive?: Blob }): Promise<LanguageSupportServerInfo>;
   cancelServerPreparation(request: { workspaceId: string; languageId: string }): Promise<void>;
   install(request: { languageId: string }): Promise<LanguageSupportInstallResult>;
   cancelInstall(request: { languageId: string }): Promise<LanguageSupportInstallResult>;

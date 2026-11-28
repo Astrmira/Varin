@@ -61,6 +61,7 @@ struct Shared {
     changed: Condvar,
     publication: Mutex<()>,
     interaction_wakes: Mutex<HashMap<String, SyncSender<()>>>,
+    guardian_progress: tokio::sync::watch::Sender<()>,
     // Seek metadata only; reading never consumes or deletes retained output.
     spool_index: Mutex<SpoolIndex>,
     text_pages: Mutex<paging::Boundaries>,
@@ -76,6 +77,7 @@ impl Shared {
             changed: Condvar::new(),
             publication: Mutex::new(()),
             interaction_wakes: Mutex::new(HashMap::new()),
+            guardian_progress: tokio::sync::watch::channel(()).0,
             spool_index: Mutex::new(SpoolIndex::default()),
             text_pages: Mutex::new(paging::Boundaries::default()),
             screen: Mutex::new(None),
@@ -83,6 +85,7 @@ impl Shared {
     }
     fn notify(&self) {
         self.changed.notify_all();
+        let _ = self.guardian_progress.send(());
         for wake in self
             .interaction_wakes
             .lock()

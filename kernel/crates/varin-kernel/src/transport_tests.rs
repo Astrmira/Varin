@@ -129,11 +129,11 @@ fn saturated_response_streams_do_not_own_reverse_bridge_credit() {
     assert_eq!(started.len(), KERNEL_STREAM_CREDITS + 1);
     assert!(started
         .iter()
-        .any(|job| matches!(job, BodyJob::Encode(_, value) if value["id"] == "nested")));
+        .any(|job| matches!(job, BodyJob::Encode(_, value, _) if value["id"] == "nested")));
     let completed = started
         .iter()
         .find_map(|job| match job {
-            BodyJob::Encode(id, value) if value["kind"] == "response" => Some(*id),
+            BodyJob::Encode(id, value, _) if value["kind"] == "response" => Some(*id),
             _ => None,
         })
         .unwrap();
@@ -144,7 +144,7 @@ fn saturated_response_streams_do_not_own_reverse_bridge_credit() {
     }
     shared.start_streams().unwrap();
     assert!(
-        matches!(jobs.try_recv().unwrap(), BodyJob::Encode(_, value) if value["kind"] == "response")
+        matches!(jobs.try_recv().unwrap(), BodyJob::Encode(_, value, _) if value["kind"] == "response")
     );
 }
 
@@ -156,7 +156,7 @@ fn concurrent_stream_admission_publishes_open_before_worker_begin() {
     let worker = thread::spawn(move || {
         for _ in 0..PER_SENDER * 2 {
             let job = jobs.recv_timeout(Duration::from_secs(5)).unwrap();
-            let BodyJob::Encode(id, _) = &job else { panic!("expected encoding") };
+            let BodyJob::Encode(id, _, _) = &job else { panic!("expected encoding") };
             let id = *id;
             run_body_job(job, &encoder).unwrap();
             // Release the encoded fixture stream's credit so admissions continue racing
@@ -244,6 +244,7 @@ fn writer_interleaves_inline_frames_and_ready_stream_chunks() {
         scheduler.streams.insert(
             id,
             Outgoing {
+                binary: None,
                 stream_id: id,
                 bytes: Some(vec![42; 32]),
                 offset: 0,
@@ -301,7 +302,7 @@ fn cancelled_wire_does_not_release_the_credit_of_a_still_owned_encoder_job() {
     assert_eq!(started.len(), KERNEL_STREAM_CREDITS);
     let job = started.remove(0);
     let id = match &job {
-        BodyJob::Encode(id, _) => *id,
+        BodyJob::Encode(id, _, _) => *id,
         _ => unreachable!(),
     };
     let mut wire = Vec::new();
@@ -321,5 +322,5 @@ fn cancelled_wire_does_not_release_the_credit_of_a_still_owned_encoder_job() {
     );
     run_body_job(job, &shared).unwrap();
     assert!(!shared.scheduled.lock().unwrap().streams.contains_key(&id));
-    assert!(matches!(jobs.try_recv().unwrap(), BodyJob::Encode(_, _)));
+    assert!(matches!(jobs.try_recv().unwrap(), BodyJob::Encode(_, _, _)));
 }

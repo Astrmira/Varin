@@ -189,15 +189,6 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
   });
   const db = trackStoreMutations(runtimeDb, persistence);
   try {
-    const knowledgeInstanceId = randomUUID();
-    let knowledgeEpoch = 0;
-    let knowledgeMutationEpoch = 0;
-    const bumpKnowledgeEpoch = (): void => {
-      knowledgeMutationEpoch += 1;
-      persistence.afterCommit(() => { knowledgeEpoch += 1; });
-    };
-    const knowledgeRevision = (): string => `${knowledgeInstanceId}:${knowledgeEpoch}`;
-
     // Property indexes. All are persistent and idempotent to create, and
     // creating one over existing rows backfills it, so an older database picks
     // these up on its first open after an upgrade (D-141).
@@ -241,11 +232,42 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
     );
     // Additive derived index upgrade owned here, once on open. Future queries
     // select candidates before reading bodies rather than rescanning all memory.
-    for (const row of lookup({ type: 'knowledge' })) {
-      if (typeof row.payload['memoryText'] !== 'string') db.patchPayload(row.id, { $set: {
-        memoryText: `${row.payload['content'] ?? ''} ${row.payload['trigger'] ?? ''}`.toLowerCase(),
-      } });
+    const meta = lookup({ type: 'knowledge_revision' })[0];
+    let revision: string;
+    let metaId: NodeId | undefined;
+    if (meta) {
+      if (typeof meta.payload['revision'] !== 'string') throw new Error('Invalid knowledge revision');
+      revision = meta.payload['revision'];
+      metaId = meta.id;
+    } else {
+      const legacy = lookup({ type: 'knowledge' });
+      for (const row of legacy) {
+        if (typeof row.payload['memoryText'] !== 'string') db.patchPayload(row.id, { $set: {
+          memoryText: `${row.payload['content'] ?? ''} ${row.payload['trigger'] ?? ''}`.toLowerCase(),
+        } });
+      }
+      revision = legacy.length ? randomUUID() : JSON.stringify(['empty', deps.hostId, deps.workspaceId]);
+      if (legacy.length) {
+        metaId = db.insert(placeholderVec, { type: 'knowledge_revision', revision });
+        persistence.commit();
+      }
     }
+    let pendingRevision = revision;
+    const knowledgeRevision = () => revision;
+    // A restore or a genuine change invalidates optimistic reads. Parking and
+    // reopening an unchanged graph preserves the revision observed by callers.
+    const commitMemory = (changes: TransactionOperation[]) => {
+      const next = randomUUID();
+      const payload = { type: 'knowledge_revision', revision: next };
+      const marker: TransactionOperation = metaId === undefined ? { type: 'insert', vector: placeholderVec, payload }
+        : { type: 'updatePayload', id: metaId, payload };
+      const ids = db.commitTransaction([...changes, marker]);
+      if (metaId === undefined) metaId = ids.at(-1)!;
+      pendingRevision = next;
+      persistence.commit();
+      persistence.afterCommit(() => { revision = next; });
+      return ids;
+    };
 
     const knowledgeSourceFromPayload = (value: unknown): KnowledgeSource | undefined => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -342,9 +364,6 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
       if (!targetPayload || targetPayload["type"] !== "knowledge" || targetPayload["scope"] !== scope) {
         throw new KnowledgeMutationError("invalid", `Supplements target ${target} is not a knowledge row in scope ${scope}`);
       }
-    };
-    const linkSupplements = (id: NodeId, target: NodeId | undefined): void => {
-      if (target !== undefined) db.link(id, target, "supplements", 1);
     };
     const notifyKnowledge = (ids: readonly NodeId[]): void => {
       if (ids.length === 0 || !deps.onKnowledgeChanged) return;
@@ -779,9 +798,8 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
         type: 'knowledge_mutation', dedupeKey: origin.id, receipt: { origin, action, result, changes },
       } });
       if (!operations.length) return;
-      db.commitTransaction(operations);
-      persistence.commit();
-      if (changes.length) { bumpKnowledgeEpoch(); notifyKnowledge(changes.map(item => item.id)); }
+      if (changes.length) { commitMemory(operations); notifyKnowledge(changes.map(item => item.id)); }
+      else { db.commitTransaction(operations); persistence.commit(); }
     };
     const progressOperation = (progress: OrganizerProgress): TransactionOperation => {
       const existing = lookup({ type: 'organizer', key: progress.key })[0];
@@ -911,10 +929,14 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
           }
           assertSupplementsTarget(k.supplements, k.scope);
           const payload = knowledgeInsertPayload(k, Date.now());
-          const id = db.insert(placeholderVec, payload);
-          linkSupplements(id, k.supplements);
-          persistence.commit();
-          bumpKnowledgeEpoch();
+          let id: NodeId;
+          if (k.supplements === undefined) {
+            id = commitMemory([{ type: 'insert', vector: placeholderVec, payload }])[0]!;
+          } else {
+            id = nextKnowledgeId();
+            commitMemory([{ type: 'insertWithId', id, vector: placeholderVec, payload },
+              { type: 'link', src: id, dst: k.supplements, label: 'supplements', weight: 1 }]);
+          }
           notifyKnowledge([id]);
           return id;
         });
@@ -1060,7 +1082,7 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
             return prior.result as KnowledgeCreateIfAbsentResult;
           }
           if (options?.expectedRevision !== undefined
-            && (knowledgeRevision() !== options.expectedRevision || knowledgeMutationEpoch !== knowledgeEpoch)) {
+            && (knowledgeRevision() !== options.expectedRevision || pendingRevision !== revision)) {
             throw new KnowledgeMutationError('conflict', 'Memory changed while the proposal was being prepared');
           }
           if (recallScope === 'user' && k.scope !== 'user') throw new KnowledgeMutationError('invalid', 'User knowledge store rejects non-user scope writes');
@@ -1161,9 +1183,7 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
             throw new KnowledgeMutationError("conflict", `Knowledge suggestion ${id} changed after it was opened`);
           }
           if (!patch.content.trim()) throw new KnowledgeMutationError("invalid", "Knowledge content is required");
-          db.patchPayload(id, { $set: { content: patch.content, trigger: patch.trigger, memoryText: `${patch.content} ${patch.trigger}`.toLowerCase() } });
-          persistence.commit();
-          bumpKnowledgeEpoch();
+          commitMemory([{ type: 'updatePayload', id, payload: { ...payload, content: patch.content, trigger: patch.trigger, memoryText: `${patch.content} ${patch.trigger}`.toLowerCase() } }]);
           notifyKnowledge([id]);
         });
       },
@@ -1374,19 +1394,18 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
               throw new KnowledgeMutationError("invalid", `Knowledge ${oldId} cannot be superseded by ${id}`);
             }
           }
-          db.patchPayload(id, { $set: {
+          const operations: TransactionOperation[] = [{ type: 'updatePayload', id, payload: { ...payload,
             status: "accepted",
-            ...(opts.edit ? { content: opts.edit.content, trigger: opts.edit.trigger } : {}),
-          } });
+            ...(opts.edit ? { content: opts.edit.content, trigger: opts.edit.trigger, memoryText: `${opts.edit.content} ${opts.edit.trigger}`.toLowerCase() } : {}),
+          } }];
           if (superseded.length > 0) {
             const now = Date.now();
             for (const oldId of superseded) {
-              db.patchPayload(oldId, { $set: { invalidAt: now } });
-              db.link(id, oldId, "supersedes", 1);
+              operations.push({ type: 'updatePayload', id: oldId, payload: { ...db.getPayload(oldId), invalidAt: now } },
+                { type: 'link', src: id, dst: oldId, label: 'supersedes', weight: 1 });
             }
           }
-          persistence.commit();
-          bumpKnowledgeEpoch();
+          commitMemory(operations);
           notifyKnowledge([id, ...superseded]);
         });
       },
@@ -1410,9 +1429,7 @@ export async function openKnowledgeStoreEngine(deps: KnowledgeStoreEngineOptions
           if (payload["status"] !== "suggested") {
             throw new KnowledgeMutationError("conflict", `Accepted knowledge ${id} cannot be dismissed as a suggestion`);
           }
-          db.patchPayload(id, { $set: { status: "dismissed" } });
-          persistence.commit();
-          bumpKnowledgeEpoch();
+          commitMemory([{ type: 'updatePayload', id, payload: { ...payload, status: 'dismissed' } }]);
           notifyKnowledge([id]);
         });
       },

@@ -545,24 +545,32 @@ pub(crate) fn spawn(
                         let event_responses = responses.clone();
                         let event_epoch = epoch.clone();
                         thread::spawn(move || {
+                            let mut previous = None;
                             while notifications.recv().is_ok() {
                                 let Some(owner) = observed.upgrade() else {
                                     break;
                                 };
-                                let cursor = owner
+                                let dispatch = owner
                                     .catalog()
                                     .lock()
                                     .ok()
-                                    .and_then(|catalog| catalog.event_cursor().ok());
-                                let _ = managed_process_commands::close_ended_environments(
+                                    .and_then(|catalog| catalog.event_dispatch_since(previous).ok());
+                                if dispatch.as_ref().is_none_or(|work| work.check_managed_processes) {
+                                    let _ = managed_process_commands::close_ended_environments(
                                     &owner,
                                     &environment_resources,
-                                );
+                                    );
+                                }
                                 // Subscribe before the first capture. Notifications coalesce but
                                 // the worker always rechecks durable facts; its own held state emits
                                 // no repeat events and a concurrent commit retains the next wake.
-                                continuation_notify.notify();
-                                if let Some(cursor) = cursor {
+                                if dispatch.as_ref().is_none_or(|work| work.reconcile_continuations) {
+                                    continuation_notify.notify();
+                                }
+                                if let Some(work) = dispatch {
+                                    let cursor = work.cursor;
+                                    if previous == Some(cursor) { continue; }
+                                    previous = Some(cursor);
                                     // A disconnected Host projection cannot stop native durable work.
                                     let _ = event_responses.send(json!({"v":PROTOCOL_VERSION,"kind":"runtime-event","kernelEpoch":event_epoch,"stream":"durable","cursor":cursor}));
                                 }

@@ -3194,12 +3194,13 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     manifest: grammarManifest,
     store: grammarStore,
     installer: grammarInstaller,
-    prepareServer: (languageId, root, signal) => managedLanguageServers.ensure(languageId, root, signal),
+    prepareServer: (languageId, root, signal, archive) => managedLanguageServers.ensure(languageId, root, signal, archive),
     serverInfo: (languageId) => {
       const bundled = VARIN_BUNDLED_LANGUAGE_SERVERS.find((server) => server.languageIds.includes(languageId));
       if (bundled) return { status: 'bundled', name: bundled.name };
       const { status, name, message } = managedLanguageServers.inspect(languageId);
-      return { status, ...(name ? { name } : {}), ...(message ? { message } : {}) };
+      const archiveUrl = managedLanguageServers.archiveUrl(languageId);
+      return { status, ...(archiveUrl ? { archiveUrl } : {}), ...(name ? { name } : {}), ...(message ? { message } : {}) };
     },
   });
   const syntaxStructure = createTreeSitterStructureProvider({

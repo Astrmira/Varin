@@ -1,3 +1,4 @@
+import { kernelResultBytes } from '../kernel/binary-result.js';
 import { normalizeConversationUi, migrateConversationUiState } from '@varin/application-client';
 import { createHash, randomUUID } from 'node:crypto';
 import type { RenderUiInput, UiReceipt, UiSource, UiObservation, UiSelection, UiViewState, UiSourceIdentity, UiMessageFragment, UiBranchScope, ConversationUiNode } from '@varin/application-client';
@@ -62,7 +63,7 @@ export function createUiContentStore(kernel: KernelClient, onCleanupError: () =>
     const chunks: Buffer[] = []; let offset = 0;
     for (;;) {
       const slice = await client.getBlob(object.hash, { recordId: record, slot: object.slot }, { offset });
-      chunks.push(Buffer.from(slice.bytesBase64, 'base64'));
+      chunks.push(kernelResultBytes(slice));
       if (slice.eof) break;
       if (slice.nextOffset <= offset) throw new Error('UI content reader did not advance');
       offset = slice.nextOffset;
