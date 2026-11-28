@@ -161,6 +161,9 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(packageJson.version),
   },
   server: {
+    // Host generations are published by rename. Watching their staged HTML can
+    // keep directory handles open on Windows and block that publication.
+    watch: { ignored: /[/\\]\.application-host-(?:staging|dev)-[^/\\]+(?:[/\\]|$)/u },
     port: 5173,
     proxy: {
       // The Host checks browser authority for HTTP auth and every WebSocket.
