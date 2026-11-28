@@ -33,6 +33,7 @@ The workbench is a replaceable UI layer over shared client kernels and Host serv
   - `@` attaches files, dirs, attachments, and family tasks scoped to the active Thread's Source.
   - `[Quote N]` / `[Image N]` atomic draggable markers (see [interactive-content.md](interactive-content.md#user-quoting-and-draggable-composer-markers)).
   - **Image annotation**: Shared viewer/editor supporting arrows, shapes, brush, text, numbered callouts, and opaque redaction; composites at original resolution on send/download (redaction burns pixels without attaching raw originals).
+  - **Thinking level slider**: Native, single-recipient Bot group, and external-agent composers open a popover slider (`ThinkingSlider`) whenever the active model exposes multiple thinking choices (2–7 stops, switch, budget with token readout, or external harness names; single-value models stay static and Settings keeps dropdowns). Switching models retains an exact stop or maps by relative rank among active thinking levels (`remapThinkingLevel`) without turning thinking on or off.
   - **Inline images**: Adjacent markdown images group responsively; local files serve via `/api/fs/raw` with Host-generated previews; remote URLs load directly in the browser.
 
 ## Text Documents, Buffers & Editors

@@ -3,7 +3,7 @@
 | Task | Guide |
 | --- | --- |
 | Local dev startup & verification | [development.md](../development.md) · [README.md](../../README.md) |
-| Container images, Resource Node & SSH deployment | [cloud-deployment.md](cloud-deployment.md) |
+| Container images, managed hosts, parking, Resource Nodes & SSH deployment | [cloud-deployment.md](cloud-deployment.md) |
 | Reverse proxy & external access | [REVERSE_PROXY.md](REVERSE_PROXY.md) · [deploy/external-access](../../deploy/external-access/README.md) |
 | Cold backup & isolated recovery | [cold-backup.md](cold-backup.md) |
 | Conversation & file recovery | [recovery.md](recovery.md) |

@@ -16,7 +16,7 @@ description: Work continuously with one or more Bots, collaborate in group chats
 ## Group chats
 
 - Start a group chat from the Bot sidebar to let several Bots collaborate on one shared timeline.
-- Mention (`@`) one or more Bots, or reply to a Bot's message, to continue with those specific members. Unaddressed messages only reach members with listening enabled; if nobody is listening, the post stays in the group without starting a turn.
+- Mention (`@`) one or more Bots, or reply to a Bot's message, to continue with those specific members. Unaddressed messages only reach members with listening enabled; if nobody is listening, the post stays in the group without starting a turn. When a message targets a single Bot, you can override that Bot's thinking level for that message from the composer slider; with multiple recipients, each Bot keeps its own setting.
 - Share files and search past messages directly in the group. Bots can read group history on demand and address other members. The side panel brings together members, activity, and group schedules using the same Calendar and follow-up controls as direct conversations.
 
 ## Memory and matters
@@ -29,6 +29,7 @@ description: Work continuously with one or more Bots, collaborate in group chats
 
 Open **Schedules & Watches** in the right panel to manage recurring schedules and incoming event watches from connected plugins:
 
+- Expand any schedule definition in the **Schedules** panel to inspect its execution history: opening a standalone run shows its final reply and output attachments directly, while a delivered continuation opens that turn in the original conversation with a button to return to the schedule.
 - Choose how incoming events are handled: **immediately**, **batched** over a window, on a **schedule**, or **queued** for your next turn.
 - Pause, resume, or trigger **Process now** on any watch without deleting its history.
 

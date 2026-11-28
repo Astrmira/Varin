@@ -9,6 +9,8 @@ Open **Settings → Model services**. Add a channel, choose its type and endpoin
 
 Add models by their IDs, choose built-in catalog entries, or discover candidates with the channel’s current connection settings. Discovery can use unsaved settings and a newly entered key; it does not save either. Review and save the models you want to use; discovery alone does not change the saved catalog. Enable the channel, model and required operation, such as chat. Choose the channel and model in the conversation composer.
 
+When a model offers multiple thinking levels, adjust effort from the **thinking level slider** in the composer toolbar (drag, click a stop, or use arrow keys; switching models preserves a matching level or maps to the closest active thinking level without turning thinking on or off). Under **Settings → Model roles**, **Quick retrieval model** controls the background `code_retrieval` tool — disabling it hides quick retrieval tools for new runs while preserving your chosen model for later.
+
 The Application Host owns channel configuration and model accounts. Credentials are kept separately from model metadata and are not included in conversation history. Missing or withdrawn credentials do not silently select another account. Editing a channel affects later preparation; accepted work retains its original selection.
 
 Use [Agent memory and instructions](/agent-personalization/) for standing instructions and [MCP](/mcp/) for additional tools. Model access does not itself grant file or tool permissions.
