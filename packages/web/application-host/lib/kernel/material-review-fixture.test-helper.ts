@@ -1,5 +1,6 @@
 /** Actual KernelClient operations and ToolBridge with only request delivery replaced by stdio.
  * Shared by the finite material integration fixtures; never included in the product Host. */
+import { jsonFixtureParams } from './tests/json-fixture-params.js';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createThreadsHttpAPI, type ThreadMaterialsAPI } from '@varin/application-client';
@@ -48,7 +49,7 @@ export function createMaterialReviewFixture(verifyGrant: (params: Record<string,
     cancelRunPreparation() {}, unregisterCredentialOwner() {}, releaseRunPolicyOwners() {},
     unregisterToolOwners(runId: string) { bridge.unregister(runId); },
     agentRuntimeRequest: (method: string, params: unknown) => request(method, params),
-    requestRaw: (method: string, params: unknown, options: { grant?: KernelGrantHandle } = {}) => request(method, params, options.grant),
+    requestRaw: (method: string, params: unknown, options: { grant?: KernelGrantHandle; binary?: Buffer } = {}) => request(method, jsonFixtureParams(method, params, options.binary), options.grant),
     assertGrant(grant: KernelGrantHandle) { assert(issued.has(grant)); assert.equal(grant.kernelEpoch, epoch); return grant; },
     assertGrantForScope(grant: KernelGrantHandle) { return this.assertGrant(grant); },
     scoped(grant: KernelGrantHandle) { return new KernelScopedClient(kernel, grant); },

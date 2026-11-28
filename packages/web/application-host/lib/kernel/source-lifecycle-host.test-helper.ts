@@ -1,3 +1,4 @@
+import { jsonFixtureParams } from './tests/json-fixture-params.js';
 import { AgentSettingsService } from '../models/settings.js';
 /** Public Thread source lifecycle with original owners; only HTTP/IPC delivery and model bytes are controlled. */
 import assert from 'node:assert/strict';
@@ -40,13 +41,13 @@ let sourceRequest: ThreadPrepareSource, preparedSource: ThreadPreparedSource;
 const grants: string[] = [], failures: string[] = [];
 const methods: string[] = [];
 const model = { providerId: 'controlled', modelId: 'source-lifecycle' };
-function request(method: string, params: unknown, options: { grant?: KernelGrantHandle } = {}) {
+function request(method: string, params: unknown, options: { binary?: Buffer; grant?: KernelGrantHandle } = {}) {
   methods.push(method);
   if (options.grant) kernel.assertGrantForScope(options.grant);
   const id = `source-lifecycle:${++sequence}`;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    write({ kind: 'fixture-request', id, method, params, ...(options.grant ? { grantId: options.grant.grantId } : {}) });
+    write({ kind: 'fixture-request', id, method, params: jsonFixtureParams(method, params, options.binary), ...(options.grant ? { grantId: options.grant.grantId } : {}) });
   });
 }
 function installHttp() {

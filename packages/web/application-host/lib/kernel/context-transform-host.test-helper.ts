@@ -1,5 +1,6 @@
 /** Actual declarative providers and ThreadContext over the existing test-only stdio rendezvous.
  * The model response is controlled in Rust. This helper never starts a product listener. */
+import { jsonFixtureParams } from './tests/json-fixture-params.js';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -26,10 +27,10 @@ let collectionPreparations = 0;
 const id = (name: string) => `example.context-${name}`;
 const key = (name: string) => `${id(name)}:host:varin.context.fragments@1`;
 
-function request(method: string, params: unknown, options: { grant?: { grantId: string } } = {}): Promise<unknown> {
+function request(method: string, params: unknown, options: { binary?: Buffer; grant?: { grantId: string } } = {}): Promise<unknown> {
   const requestId = `context:${++sequence}`;
   const result = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
-  send({ kind: 'fixture-request', id: requestId, method, params, ...(options.grant ? { grantId: options.grant.grantId } : {}) });
+  send({ kind: 'fixture-request', id: requestId, method, params: jsonFixtureParams(method, params, options.binary), ...(options.grant ? { grantId: options.grant.grantId } : {}) });
   return result;
 }
 

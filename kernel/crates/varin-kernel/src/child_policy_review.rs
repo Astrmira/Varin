@@ -151,7 +151,8 @@ impl Fixture {
                 launch.extension_bindings[0].tool = helper.clone();
                 launch.tools = native;
                 launch.tools.push(helper);
-                input.tools = Some(launch.tools.iter().map(|tool| tool.name.clone()).collect());
+                // This worker inherits all source-free tools admitted for its parent.
+                input.tools = None;
                 launch.source = None;
             },
         );

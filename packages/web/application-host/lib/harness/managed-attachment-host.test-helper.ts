@@ -1,5 +1,6 @@
 /** Real native Storage is supplied by the existing Rust stdio fixture. This
  * exercises original Source/Router owners, not product network/socket transport. */
+import { jsonFixtureParams } from '../kernel/tests/json-fixture-params.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
@@ -26,10 +27,10 @@ async function run(frame: { root: string; epoch: string; storageRoot: string }) 
   const state = kernel as unknown as { epoch: string; started: boolean; handshakeResult: KernelHandshakeResult };
   state.epoch = frame.epoch; state.started = true;
   state.handshakeResult = { hostId: 'target', storageRoot: frame.storageRoot, kernelEpoch: frame.epoch } as KernelHandshakeResult;
-  Object.defineProperty(kernel, 'requestRaw', { value: (method: string, params: unknown, options: { grant?: { grantId: string }; signal?: AbortSignal } = {}) => {
+  Object.defineProperty(kernel, 'requestRaw', { value: (method: string, params: unknown, options: { binary?: Buffer; grant?: { grantId: string }; signal?: AbortSignal } = {}) => {
     options.signal?.throwIfAborted(); const id = `attachment-fixture:${++serial}`;
     return new Promise((resolve, reject) => { pending.set(id, { resolve, reject });
-      send({ kind: 'fixture-request', id, method, params, ...(options.grant ? { grantId: options.grant.grantId } : {}) }); });
+      send({ kind: 'fixture-request', id, method, params: jsonFixtureParams(method, params, options.binary), ...(options.grant ? { grantId: options.grant.grantId } : {}) }); });
   } });
   const workspace = join(frame.root, 'execution'); await mkdir(workspace);
   const actor = kernel.scoped(await kernel.issueGrant({ grantId: 'fixture-owner', owningWorkspace: 'workspace', executionWorkspace: 'workspace',

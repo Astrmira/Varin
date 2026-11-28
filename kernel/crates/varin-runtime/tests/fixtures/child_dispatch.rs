@@ -13,6 +13,11 @@ use varin_runtime::catalog::launches::{LaunchSelection, SourceSelection};
 use varin_runtime::execution::*;
 use varin_runtime::*;
 
+fn request_tools(tools: &[ToolSchema], launch: &varin_runtime::catalog::launch_content::LaunchMetadata) -> Vec<ToolSchema> {
+    varin_runtime::tool_disclosure::launch_request_tools(tools, false, Some(&launch.selection))
+        .cloned().collect()
+}
+
 pub(crate) struct Fixture {
     pub(crate) root: std::path::PathBuf,
     pub(crate) db: Catalog,
@@ -606,12 +611,14 @@ impl Fixture {
                 project.map(|project| serde_json::from_value(json!({"mode":"agent","threadRole":"main","revision":1,"configurationDigest":"fixture-project","memorySnapshot":{"revision":0,"memories":[]},"threadId":"thread:parent","projectId":project,"originalSections":[{"name":"system","content":"Project main"}],"instructionSources":[]})).unwrap()),
             )
             .unwrap();
+        let metadata = db.launch_metadata(&receipt.run_id).unwrap().unwrap();
+        let visible = request_tools(&launch.tools, &metadata);
         let prepared = db
             .prepare_child_dispatch_binding(
                 &receipt.run_id,
                 model,
                 launch.tool_schema_generation,
-                launch.tools.clone(),
+                visible.clone(),
             )
             .unwrap()
             .load()
@@ -697,7 +704,7 @@ impl Fixture {
                     credential_ref: Some("credential-ref".into()),
                     configuration_generation: 2,
                     tool_schema_generation: 1,
-                    tools: launch.tools.clone(),
+                    tools: visible,
                     instruction_sources: vec![],
                     memory_checkpoint: None,
                     attachment_refs: vec![],
@@ -918,6 +925,7 @@ impl Fixture {
             ancestor_id: None,
             leaf_id: self.db.head(&branch).unwrap(),
         };
+        let metadata = self.db.launch_metadata(&self.context.run_id).unwrap().unwrap();
         let tools = self
             .db
             .launch_intent(&self.context.run_id)
@@ -943,12 +951,7 @@ impl Fixture {
                     provider_id: None,
                     tokenizer: None,
                     request_context: None,
-                    child_dispatch: self
-                        .db
-                        .launch_metadata(&self.context.run_id)
-                        .unwrap()
-                        .unwrap()
-                        .dispatch_context_ref,
+                    child_dispatch: metadata.dispatch_context_ref.clone(),
                     goal: None,
                     resource_activations: Vec::new(),
                     resource_checkpoint_id: None,
@@ -958,7 +961,7 @@ impl Fixture {
                     credential_ref: Some("credential-ref".into()),
                     configuration_generation: 2,
                     tool_schema_generation: 1,
-                    tools,
+                    tools: request_tools(&tools, &metadata),
                     instruction_sources: vec![],
                     memory_checkpoint: None,
                     attachment_refs: vec![],
@@ -1142,6 +1145,8 @@ impl Fixture {
             )
             .unwrap();
         let launch = self.db.launch_intent(&run_id).unwrap().unwrap().selection;
+        let metadata = self.db.launch_metadata(&run_id).unwrap().unwrap();
+        let tools = request_tools(&launch.tools, &metadata);
         let boundary = self.db.policy_boundary(&run_id, epoch).unwrap();
         let checkpoint = boundary.resource_checkpoint_id.clone();
         let action_id = format!("{run_id}:policy:{}", boundary.id);
@@ -1175,18 +1180,13 @@ impl Fixture {
                     tool_output_visible_bytes: None,
                     execution_environment: None,
                     direct_tools: None,
-                    child_dispatch: self
-                        .db
-                        .launch_metadata(&run_id)
-                        .unwrap()
-                        .unwrap()
-                        .dispatch_context_ref,
+                    child_dispatch: metadata.dispatch_context_ref,
                     resource_activations: Vec::new(),
                     resource_checkpoint_id: checkpoint,
                     run_id: run_id.clone(),
                     origin,
                     tool_schema_generation: launch.tool_schema_generation,
-                    tools: std::sync::Arc::new(launch.tools),
+                    tools: std::sync::Arc::new(tools),
                     source: launch.source,
                 },
                 node: PolicyToolNode {

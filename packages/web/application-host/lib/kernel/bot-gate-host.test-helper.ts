@@ -1,4 +1,5 @@
 /** Original KernelClient/Storage/BotService over the existing Rust↔Host stdio fixture. */
+import { jsonFixtureParams } from './tests/json-fixture-params.js';
 import assert from 'node:assert/strict';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -34,9 +35,9 @@ async function handle(frame:Record<string,unknown>) {
     storageRoot=String(frame.storageRoot);
     kernel=new KernelClient({hostId:'web-domain-host',hostGeneration:'web-domain-generation',storageRoot,buildVersion:'0.9.25'});
     bindEpoch(String(frame.epoch));
-    Object.defineProperty(kernel,'requestRaw',{value:(method:string,params:unknown,options:{grant?:{grantId:string}}={})=>{
+    Object.defineProperty(kernel,'requestRaw',{value:(method:string,params:unknown,options:{binary?:Buffer;grant?:{grantId:string}}={})=>{
       const id=`bot-gate:${++sequence}`;const result=new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
-      send({kind:'fixture-request',id,method,params,...(options.grant?{grantId:options.grant.grantId}:{})});return result;
+      send({kind:'fixture-request',id,method,params:jsonFixtureParams(method,params,options.binary),...(options.grant?{grantId:options.grant.grantId}:{})});return result;
     }});
     Object.defineProperty(kernel,'write',{value:async(value:unknown)=>{send(value);}});
     const runtime = new AgentRuntimeClient(kernel);

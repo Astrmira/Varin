@@ -1,3 +1,4 @@
+import { jsonFixtureParams } from './tests/json-fixture-params.js';
 import { AgentSettingsService } from '../models/settings.js';
 /** Real Context budget/summary owners over the existing test-only stdio rendezvous. */
 import assert from 'node:assert/strict';
@@ -27,10 +28,10 @@ let storage: KernelStorageAdapter, service: ContextService;
 let configuration: unknown;
 const observations: unknown[] = [];
 let holdPublication = true;
-function request(method: string, params: unknown, options: { grant?: { grantId: string } } = {}): Promise<unknown> {
+function request(method: string, params: unknown, options: { binary?: Buffer; grant?: { grantId: string } } = {}): Promise<unknown> {
   const id = `budget:${++sequence}`;
   const result = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
-  send({ kind: 'fixture-request', id, method, params, ...(options.grant ? { grantId: options.grant.grantId } : {}) });
+  send({ kind: 'fixture-request', id, method, params: jsonFixtureParams(method, params, options.binary), ...(options.grant ? { grantId: options.grant.grantId } : {}) });
   return result;
 }
 async function settings(reserveTokens: number) {

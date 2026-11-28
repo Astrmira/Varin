@@ -1,5 +1,6 @@
 /** Original Source/Storage, package and dynamic tool owners. Only delivery and the user's
  * explicit enable action are controlled; no product socket or HTTP listener is started. */
+import { jsonFixtureParams } from './tests/json-fixture-params.js';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
@@ -51,12 +52,12 @@ let firstStyles: PanelConsumer['styles'] = [];
 const sectionOf = (panel: PanelConsumer) => Array.from(panel.container.children)
   .find(child => Array.from(child.children).some(node => node.children[1]?.textContent.includes('Agent-authored text counter')))?.children[0];
 
-function request(method: string, params: unknown, options: { grant?: { grantId: string } } = {}) {
+function request(method: string, params: unknown, options: { binary?: Buffer; grant?: { grantId: string } } = {}) {
   const key = `authored:${++sequence}`;
   forwarded.push(method);
   const result = new Promise((resolve, reject) => {
     pending.set(key, { resolve, reject, method });
-    write({ kind: 'fixture-request', id: key, method, params, ...(options.grant ? { grantId: options.grant.grantId } : {}) });
+    write({ kind: 'fixture-request', id: key, method, params: jsonFixtureParams(method, params, options.binary), ...(options.grant ? { grantId: options.grant.grantId } : {}) });
   });
   if (method === 'runtime.tools.ready') {
     const selected = params as { extensionBindings?: LiveExtensionToolBinding[] };

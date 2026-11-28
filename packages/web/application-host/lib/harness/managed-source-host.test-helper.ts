@@ -1,5 +1,6 @@
 /** Original managed Source client/authenticated Router/target service over the
  * existing Rust↔Host stdio fixture. No HTTP or product IPC listener is started. */
+import { jsonFixtureParams } from '../kernel/tests/json-fixture-params.js';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -51,12 +52,12 @@ function kernelFor(target: 'a' | 'b', storageRoot: string, epoch: string): Kerne
   state.epoch = epoch; state.started = true;
   state.handshakeResult = { hostId, storageRoot, kernelEpoch: epoch } as KernelHandshakeResult;
   Object.defineProperty(kernel, 'requestRaw', { value: (method: string, params: unknown,
-    options: { grant?: { grantId: string }; signal?: AbortSignal } = {}) => {
+    options: { binary?: Buffer; grant?: { grantId: string }; signal?: AbortSignal } = {}) => {
     options.signal?.throwIfAborted();
     const id = `managed:${target}:${++serial}`;
     const work = new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      write({ kind: 'fixture-request', target, id, method, params,
+      write({ kind: 'fixture-request', target, id, method, params: jsonFixtureParams(method, params, options.binary),
         ...(options.grant ? { grantId: options.grant.grantId } : {}) });
     });
     if (target === 'b' && method === 'storage.getBlob' && packageReadBarrier) {
