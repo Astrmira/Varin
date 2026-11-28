@@ -114,12 +114,23 @@ export function createThinkingLight(canvas: HTMLCanvasElement) {
     'uMotion','uGrain','uFlow','uWave','uPlate','uSeam','uLight'].map(name => [name, gl.getUniformLocation(program, name)]));
   gl.uniform1f(u.uRows, 3);
   gl.uniform1f(u.uGain, 1.7);
+  // Resolve the same CSS paints as the fallback grid, only when the theme changes.
+  const colors = [[u.uPlate, 'plate'], [u.uSeam, 'seam'], [u.uLight, 'light']] as const;
+  const swatch = canvas.ownerDocument.createElement('canvas');
+  swatch.width = colors.length; swatch.height = 1;
+  const paint = swatch.getContext('2d', { willReadFrequently: true });
+  if (!paint) { dispose(); return null; }
   return {
     palette(style: CSSStyleDeclaration) {
-      for (const [uniform, color] of [[u.uPlate, 'plate'], [u.uSeam, 'seam'], [u.uLight, 'light']] as const) {
-        const hex = style.getPropertyValue('--thinking-' + color).trim();
-        gl.uniform3fv(uniform, [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255));
-      }
+      colors.forEach(([, color], i) => {
+        paint.fillStyle = style.getPropertyValue('--thinking-' + color).trim();
+        paint.fillRect(i, 0, 1, 1);
+      });
+      const rgb = paint.getImageData(0, 0, colors.length, 1).data;
+      colors.forEach(([uniform], i) => {
+        const offset = i * 4;
+        gl.uniform3f(uniform, rgb[offset]! / 255, rgb[offset + 1]! / 255, rgb[offset + 2]! / 255);
+      });
       const glow = Number(style.getPropertyValue('--thinking-glow'));
       gl.uniform1f(u.uFace, .1 * glow);
       gl.uniform1f(u.uBleed, .5 * glow);

@@ -68,7 +68,7 @@ export function mountThinkingTrack(track: HTMLDivElement, count: number, hasOff:
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(resize) : undefined;
   observer?.observe(track);
   const colors = new MutationObserver(theme);
-  colors.observe(document.documentElement, { attributes: true, attributeFilter: ['class','style'] });
+  colors.observe(document.documentElement, { attributes: true, attributeFilter: ['class','style','data-theme'] });
   theme(); resize();
   return {
     grab(clientX: number) {
