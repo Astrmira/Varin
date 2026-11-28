@@ -1,17 +1,14 @@
 import { useConversationOrganization, refreshConversationOrganization } from '@/stores/useConversationOrganizationStore';
 import { ConversationOrganizationTree, type OrganizationNavigationHandle } from '@/components/conversation/ConversationOrganizationTree';
-import { OrganizationCreateMenu } from '@/components/conversation/OrganizationCreateMenu';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import React from 'react';
 import type { BotGroupSummary, BotSummary, ThreadIdentity } from '@varin/application-client';
 import { GroupFaces } from './BotGroupChat';
 import { MobileBotInbox } from './MobileBotInbox';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { groupLabel } from './botGroupChatModel';
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { WorkbenchProfileSwitcher } from '@/components/layout/WorkbenchProfileSwitcher';
 import { BotMenu, type BotMenuAction } from '@/components/sections/bots/BotMenu';
@@ -43,7 +40,7 @@ function SessionMark({ waiting, running, unread }: { waiting: boolean; running: 
  * Only the selected Bot lists its conversations; the others stay folded until chosen.
  */
 export function BotNavigator({ bots, selectedId, sessions, current, figures, busy, showArchived, isMobile, sessionTitle, organization,
-  onSelectBot, onSelectSession, onSessionAction, onNewSession, onBotAction, onCreateBot, onToggleArchived, onRefresh, onOpenSettings, groupChats, currentGroup, onGroup, onCreateGroup }: {
+  onSelectBot, onSelectSession, onSessionAction, onNewSession, onConversationNavigate, onBotAction, onCreateBot, onToggleArchived, onRefresh, onOpenSettings, groupChats, currentGroup, onGroup, onCreateGroup }: {
   bots: BotSummary[] | null;
   organization: BotOrganizationController;
   selectedId: string | null;
@@ -58,6 +55,7 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
   onSelectSession(identity: ThreadIdentity, botId?: string): void;
   onSessionAction(session: BotSessionView, identity: ThreadIdentity, action: BotSessionAction): void;
   onNewSession(bot?: BotSummary): void;
+  onConversationNavigate(): void;
   onBotAction(bot: BotSummary, action: BotMenuAction): void;
   onCreateBot(): void;
   onToggleArchived(): void;
@@ -72,20 +70,31 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
   const apis = useRuntimeAPIs();
   useConversationOrganization();
   const [conversationArchived, setConversationArchived] = React.useState(false);
-  const [conversationScope, setConversationScope] = React.useState<'bots' | 'current'>('bots');
-  React.useEffect(() => { if (!selectedId && conversationScope === 'current') setConversationScope('bots'); }, [selectedId, conversationScope]);
+  const [managedBotId, setManagedBotId] = React.useState<string | null>(null);
   const organizationRef = React.useRef<OrganizationNavigationHandle>(null);
   const list = React.useRef<HTMLDivElement>(null);
   const [query, setQuery] = React.useState('');
   const [searching, setSearching] = React.useState(false);
-  const [chooseBot, setChooseBot] = React.useState(false);
   const [mobileBranches, setMobileBranches] = React.useState<string | null>(null);
   const [searchFolded, setSearchFolded] = React.useState<{ query: string; bots: Record<string, boolean> }>({ query: '', bots: {} });
   const folded = useBotLayout(state => state.navigatorFolded), setFolded = useBotLayout(state => state.setNavigatorFolded);
   const scope = useThreadStore(state => state.hostKey);
   const [organizationDialog, setOrganizationDialog] = React.useState<BotOrganizationDialogState | null>(null);
   const selected = bots?.find(bot => bot.id === selectedId) ?? null;
-  const canStart = Boolean(selected && !selected.archived && !selected.deletion && (selected.activity?.state ?? 'awake') === 'awake');
+  const managedBot = apis.conversationOrganization ? bots?.find(bot => bot.id === managedBotId && !bot.deletion) : undefined;
+  const directoryBack = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => { directoryBack.current?.focus(); }, [managedBot?.id]);
+  const targetBot = managedBot ?? selected;
+  const canStart = Boolean(targetBot && !targetBot.archived && !targetBot.deletion && (targetBot.activity?.state ?? 'awake') === 'awake');
+  const startConversation = () => {
+    if (managedBot) organizationRef.current?.newConversation(managedBot.id);
+    else onNewSession();
+  };
+  const manageConversations = (bot: BotSummary) => {
+    setQuery('');
+    setConversationArchived(false);
+    setManagedBotId(bot.id);
+  };
   const currentRow = currentGroup ? `group-chat:${currentGroup}` : current ? rowId(current) : null;
   const needle = query.trim().toLocaleLowerCase();
   const shownSessions = sessions?.filter(session => !needle || sessionTitle(session).toLocaleLowerCase().includes(needle))
@@ -95,7 +104,7 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
   const shownBots = bots?.filter(bot => bot.archived === showArchived && (!needle || bot.name.toLocaleLowerCase().includes(needle)
     || matchingGroups.has(bot.id) || bot.id === selectedId && !!shownSessions?.length)) ?? [];
   const displayedChats = groupChats?.filter(group => !needle || group.name.toLocaleLowerCase().includes(needle)) ?? [];
-  const listLayoutKey = JSON.stringify([conversationScope, selectedId, displayedChats.map(group => group.id), shownBots.map(bot => bot.id), shownSessions?.map(session => [rowId(session.identity), session.branches.map(rowId), session.thread.archived]), folded, searchFolded, !!needle, organization.value.revision]);
+  const listLayoutKey = JSON.stringify([managedBot?.id, selectedId, displayedChats.map(group => group.id), shownBots.map(bot => bot.id), shownSessions?.map(session => [rowId(session.identity), session.branches.map(rowId), session.thread.archived]), folded, searchFolded, !!needle, organization.value.revision]);
   useSelectionGlide(list, currentRow, listLayoutKey);
   useHoverPill(list);
   const titleCounts = new Map<string, number>();
@@ -136,41 +145,45 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
     </React.Fragment>;
   };
 
+  const groupSection = !managedBot && !showArchived && (!!groupChats?.length || onCreateGroup) ? <section className="max-h-[40%] shrink-0 overflow-auto px-2.5 pb-2" aria-label={groupLabel('groups')}>
+    {groupChats?.length ? <div className="flex min-h-8 items-center justify-between px-1.5 typography-micro text-muted-foreground">
+      <span>{groupLabel('groups')}</span>
+      {onCreateGroup && <button type="button" className={isMobile ? 'mobile-page-action' : 'organization-icon-button'}
+        title={groupLabel('create')} aria-label={groupLabel('create')} onClick={onCreateGroup}><Icon name="add" className="size-4" /></button>}
+    </div> : <button type="button" className={rowClass} onClick={onCreateGroup}><Icon name="add" className="size-4 shrink-0" />{groupLabel('create')}</button>}
+    {!isMobile && displayedChats.map(group => <button type="button" data-sidebar-row={`group-chat:${group.id}`} aria-current={currentGroup === group.id ? 'page' : undefined}
+      data-current={currentGroup === group.id || undefined} key={group.id} onClick={() => onGroup?.(group.id)} className="bot-nav-row group-chat-nav-row">
+      <GroupFaces group={group} bots={bots ?? []} /><span className="min-w-0 flex-1"><span className="block truncate">{group.name}</span>{group.preview && <span className="group-chat-nav-preview">{group.preview}</span>}</span>
+      <SessionMark waiting={group.needsAttention} running={group.active} unread={false} />
+    </button>)}
+  </section> : null;
+
   return <nav className="flex h-full min-h-0 min-w-0 flex-col" aria-label={t('bot.sidebar.aria')}>
     {isMobile ? <header className="mobile-directory-toolbar"><WorkbenchProfileSwitcher /><span className="flex-1" />
       <button type="button" className="mobile-page-action" data-varin-settings-origin="open" aria-label={t('sessions.sidebar.footer.actions.settings')} onClick={onOpenSettings}><Icon name="settings-3" className="size-5" /></button>
       <button type="button" className="mobile-page-action" disabled={!organization.ready || organization.pending} aria-label={t('bot.groups.create')} onClick={() => setOrganizationDialog({ kind: 'create' })}><Icon name="folder-add" className="size-5" /></button>
-      <DropdownMenu><DropdownMenuTrigger className="mobile-page-action" aria-label={t('organization.newConversation')}><Icon name="chat-new" className="size-5" /></DropdownMenuTrigger>
-        <DropdownMenuContent align="end"><DropdownMenuItem onClick={() => setChooseBot(true)}><Icon name="chat-new" />{t('organization.newConversation')}</DropdownMenuItem>
-          {onCreateGroup && <DropdownMenuItem onClick={onCreateGroup}><Icon name="group" />{groupLabel('create')}</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
+      <button type="button" className="mobile-page-action disabled:opacity-50" disabled={!canStart || busy}
+        aria-label={t('organization.newConversation')} onClick={startConversation}><Icon name="chat-new" className="size-5" /></button>
     </header> : <div className="bot-nav-toolbar">
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="bot-nav-toolbar-new">
-            <button type="button" disabled={!canStart || busy} onClick={() => { if (apis.conversationOrganization && conversationScope !== 'bots') organizationRef.current?.newConversation(selectedId ?? undefined); else onNewSession(); }}
+            <button type="button" disabled={!canStart || busy} onClick={startConversation}
               className="flex w-full items-center rounded-[9px] text-[13.5px] text-foreground transition-colors hover:bg-interactive-hover disabled:opacity-50">
               <Icon name="chat-new" className="size-4 shrink-0" /><span className="min-w-0 text-left">{t('organization.newConversation')}</span>
             </button>
           </span>
         </TooltipTrigger>
-        {!canStart && selected ? <TooltipContent side="bottom">{t('bot.session.newNeedsAwake', { name: selected.name })}</TooltipContent> : null}
+        {!canStart && targetBot ? <TooltipContent side="bottom">{t('bot.session.newNeedsAwake', { name: targetBot.name })}</TooltipContent> : null}
       </Tooltip>
-      {onCreateGroup && !showArchived && conversationScope === 'bots' && <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="bot-nav-toolbar-action text-muted-foreground" aria-label={t('organization.newConversation')}><Icon name="arrow-down-s" className="size-3.5" /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
-          <DropdownMenuItem disabled={!canStart || busy} onSelect={() => onNewSession()}><Icon name="chat-new" className="size-4" />{t('organization.newConversation')}</DropdownMenuItem>
-          <DropdownMenuItem onSelect={onCreateGroup}><Icon name="chat-3" className="size-4" />{groupLabel('create')}</DropdownMenuItem>
-          <DropdownMenuItem disabled={busy || !bots} onSelect={onCreateBot}><Icon name="add" className="size-4" />{t('settings.bots.create')}</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>}
       <Button variant="ghost" size="icon" className="bot-nav-toolbar-action text-muted-foreground" aria-label={t('bot.session.search')} aria-pressed={searching}
         onClick={() => { setSearching(value => !value); setQuery(''); }}>
         <Icon name="search" className="size-4" />
       </Button>
-      <Button variant="ghost" size="icon" className="bot-nav-toolbar-action text-muted-foreground" disabled={busy} aria-label={t('tasksHub.refresh')} onClick={() => { onRefresh(); if (conversationScope !== 'bots') void refreshConversationOrganization(); }}>
+      <Button variant="ghost" size="icon" className="bot-nav-toolbar-action text-muted-foreground" disabled={busy} aria-label={t('tasksHub.refresh')} onClick={() => { onRefresh(); if (managedBot) void refreshConversationOrganization(); }}>
         <Icon name="refresh" className="size-4" />
       </Button>
-      {conversationScope === 'bots' && <Button variant="ghost" size="icon" className="bot-nav-toolbar-action text-muted-foreground" disabled={!organization.ready || organization.pending} aria-label={t('bot.groups.create')} title={t('bot.groups.create')} onClick={() => setOrganizationDialog({ kind: 'create' })}>
+      {!managedBot && <Button variant="ghost" size="icon" className="bot-nav-toolbar-action text-muted-foreground" disabled={!organization.ready || organization.pending} aria-label={t('bot.groups.create')} title={t('bot.groups.create')} onClick={() => setOrganizationDialog({ kind: 'create' })}>
         <Icon name="folder-add" className="size-4" />
       </Button>}
     </div>}
@@ -179,23 +192,24 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
         placeholder={t('bot.session.search')} aria-label={t('bot.session.search')}
         className="h-8 w-full rounded-md border border-border bg-transparent px-2.5 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]" />
     </div> : null}
-    {!isMobile && conversationScope === 'bots' && !showArchived && !!displayedChats.length && <div className="px-2.5 pb-2 max-h-[40%] overflow-auto">
-      <div className="px-1.5 py-1 typography-micro text-muted-foreground">{groupLabel('groups')}</div>
-      {displayedChats.map(group => <button type="button" data-sidebar-row={`group-chat:${group.id}`} aria-current={currentGroup === group.id ? 'page' : undefined}
-        data-current={currentGroup === group.id || undefined} key={group.id} onClick={() => onGroup?.(group.id)} className="bot-nav-row group-chat-nav-row">
-        <GroupFaces group={group} bots={bots ?? []} /><span className="min-w-0 flex-1"><span className="block truncate">{group.name}</span>{group.preview && <span className="group-chat-nav-preview">{group.preview}</span>}</span>
-        <SessionMark waiting={group.needsAttention} running={group.active} unread={false} />
-      </button>)}
-    </div>}
-    {apis.conversationOrganization && (conversationScope === 'bots' ? !isMobile && <div className="flex items-center justify-between px-4 pb-2 typography-micro text-muted-foreground"><span>{t('organization.bots')}</span><button type="button" className="organization-icon-button" disabled={!selectedId} title={t('organization.botWork')} aria-label={t('organization.botWork')} onClick={() => setConversationScope('current')}><Icon name="folder-open" className="size-3.5" /></button></div> : <div className="flex items-center gap-1 px-3 pb-1"><button type="button" className="organization-icon-button" aria-label={t('organization.backToBots')} onClick={() => setConversationScope('bots')}><Icon name="arrow-left-s" className="size-4" /></button><span className="min-w-0 flex-1 truncate typography-meta">{t('organization.botWorkNamed', { name: selected?.name ?? t('organization.currentBot') })}</span><button type="button" className="organization-icon-button" title={t(conversationArchived ? 'organization.activeConversations' : 'organization.archivedConversations')} aria-label={t(conversationArchived ? 'organization.activeConversations' : 'organization.archivedConversations')} onClick={() => setConversationArchived(value => !value)}><Icon name={conversationArchived ? 'arrow-go-back' : 'inbox-archive'} className="size-3.5" /></button><OrganizationCreateMenu onCreate={botId => organizationRef.current?.newConversation(botId)} /></div>)}
-    {apis.conversationOrganization && conversationScope !== 'bots' ? <ConversationOrganizationTree ref={organizationRef} archived={conversationArchived} query={query} onSearchReset={() => setQuery('')} botId={selectedId ?? undefined} defaultBotId={selectedId ?? undefined} viewKey="bot" /> : <>
+    {groupSection}
+    {managedBot ? <>
+      <div className="flex items-center gap-1 px-3 pb-1">
+        <button ref={directoryBack} type="button" className="organization-icon-button" aria-label={t('organization.backToBots')} onClick={() => setManagedBotId(null)}><Icon name="arrow-left-s" className="size-4" /></button>
+        <span className="min-w-0 flex-1 truncate typography-meta">{t('organization.botConversations', { name: managedBot.name })}</span>
+        <button type="button" className="organization-icon-button" title={t(conversationArchived ? 'organization.activeConversations' : 'organization.archivedConversations')}
+          aria-label={t(conversationArchived ? 'organization.activeConversations' : 'organization.archivedConversations')} onClick={() => setConversationArchived(value => !value)}>
+          <Icon name={conversationArchived ? 'arrow-go-back' : 'inbox-archive'} className="size-3.5" />
+        </button>
+      </div>
+      <ConversationOrganizationTree ref={organizationRef} archived={conversationArchived} query={query} onSearchReset={() => setQuery('')}
+        onNavigate={onConversationNavigate} botId={managedBot.id} viewKey="bot" />
+    </> : <>
+    {!isMobile && <div className="px-4 pb-2 typography-micro text-muted-foreground">{t('organization.bots')}</div>}
     <div ref={list} className="bot-nav-list min-h-0 flex-1 overflow-y-auto px-2.5">
       {isMobile && !showArchived && <MobileBotInbox bots={bots ?? []} groups={groupChats ?? []} sessions={sessions} query={query} current={current} currentGroup={currentGroup}
         open={(botId, identity) => onSelectSession(identity, botId)} openGroup={id => onGroup?.(id)} />}
-      {isMobile && <div className="mobile-list-section"><span>{t('organization.bots')}</span><div className="flex items-center">
-        <Button variant="ghost" size="sm" onClick={onCreateBot} disabled={!bots || busy}><Icon name="add" className="size-4" />{t('settings.bots.create')}</Button>
-        {apis.conversationOrganization && <button type="button" className="mobile-page-action" aria-label={t('organization.botWork')} disabled={!selectedId} onClick={() => setConversationScope('current')}><Icon name="folder-open" className="size-4" /></button>}
-      </div></div>}
+      {isMobile && <div className="mobile-list-section"><span>{t('organization.bots')}</span></div>}
       {organization.error && <p role="alert" className="px-2 py-2 typography-meta text-destructive">{organization.error} <button type="button" className="underline" onClick={() => { void organization.refresh(); }}>{t('common.retry')}</button></p>}
       <BotOrganizationList bots={shownBots} organization={organization} selectedId={selectedId} query={query} scope={scope} onDialog={setOrganizationDialog} renderBot={bot => {
         const isSelected = bot.id === selectedId;
@@ -204,7 +218,10 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
         const figure = figures.get(bot.id) ?? 'idle';
         const short = shortState(figure);
         return <div key={bot.id} className="bot-nav-group" data-open={open}>
-          <BotMenu bot={bot} disabled={busy || organization.pending} onAction={action => onBotAction(bot, action)} onMove={organization.ready ? () => setOrganizationDialog({ kind: 'move', bot }) : undefined}>
+          <BotMenu bot={bot} disabled={busy || organization.pending} onAction={action => onBotAction(bot, action)}
+            onNewConversation={!bot.archived ? () => onNewSession(bot) : undefined}
+            onManageConversations={apis.conversationOrganization ? () => manageConversations(bot) : undefined}
+            onMove={organization.ready ? () => setOrganizationDialog({ kind: 'move', bot }) : undefined}>
             <button type="button" data-sidebar-row={`bot:${bot.id}`} aria-expanded={!isMobile && isSelected ? open : undefined}
               aria-label={!isMobile && isSelected ? t(open ? 'bot.sidebar.collapse' : 'bot.sidebar.expand', { name: bot.name }) : bot.name}
               className="bot-nav-row bot-nav-bot min-w-0 flex-1"
@@ -245,22 +262,17 @@ export function BotNavigator({ bots, selectedId, sessions, current, figures, bus
       {bots && !bots.some(bot => bot.archived === showArchived) ? <p className="px-2 py-3 typography-meta text-muted-foreground">{t(showArchived ? 'settings.bots.archivedEmpty' : 'settings.bots.empty')}</p> : null}
     </div>
     </>}
-    <div className="border-t border-border px-2.5 py-2">
-      {conversationScope === 'bots' && <>{!isMobile && <button type="button" disabled={busy || !bots} onClick={onCreateBot} className={rowClass}>
+    {(!managedBot || !isMobile) && <div className="border-t border-border px-2.5 py-2">
+      {!managedBot && <><button type="button" disabled={busy || !bots} onClick={onCreateBot} className={rowClass}>
         <Icon name="add" className="size-4 shrink-0" />{t('settings.bots.create')}
-      </button>}
+      </button>
       <button type="button" onClick={onToggleArchived} className={rowClass}>
         <Icon name={showArchived ? 'robot' : 'archive'} className="size-4 shrink-0" />{t(showArchived ? 'settings.bots.activeList' : 'settings.bots.archivedList')}
       </button></>}
       {!isMobile && <button type="button" onClick={onOpenSettings} className={rowClass} data-varin-settings-origin="open">
         <Icon name="settings-3" className="size-4 shrink-0" />{t('sessions.sidebar.footer.actions.settings')}
       </button>}
-    </div>
-    {isMobile && <Dialog open={chooseBot} onOpenChange={setChooseBot}><DialogContent className="max-w-sm"><DialogHeader><DialogTitle>{t('organization.newConversation')}</DialogTitle></DialogHeader>
-      <div className="max-h-[60dvh] overflow-auto">{bots?.filter(b => !b.archived && !b.deletion).map(b => <button type="button" className="mobile-room-row" key={b.id}
-        disabled={busy || (b.activity?.state ?? 'awake') !== 'awake'} onClick={() => { setChooseBot(false); onNewSession(b); }}>
-        <BotFigure bot={b} state="idle" portrait still size={28} />{b.name}</button>)}</div>
-    </DialogContent></Dialog>}
+    </div>}
     <BotOrganizationDialog value={organizationDialog} onClose={() => setOrganizationDialog(null)} organization={organization} />
   </nav>;
 }

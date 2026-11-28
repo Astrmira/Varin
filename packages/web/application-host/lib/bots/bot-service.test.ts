@@ -275,7 +275,7 @@ it('starts further conversations under fresh identities only while the Bot can e
   expect(new Set([bot.entry.threadId, first.identity.threadId, second.identity.threadId]).size).toBe(3);
   expect(createSession.mock.calls.every(([owner]) => owner.id === bot.id)).toBe(true);
   await service.listSessions(bot.id);
-  expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ id: bot.id }));
+  expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ id: bot.id }), undefined);
   await service.sleep(bot.id);
   await vi.waitFor(async () => expect((await service.get(bot.id))?.activity?.state).toBe('asleep'));
   createSession.mockClear();

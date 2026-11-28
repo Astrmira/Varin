@@ -366,7 +366,7 @@ export function registerBotRoutes(app: Express, { bots, computers, memory, organ
   app.get("/api/harness/bots/:botId/sessions", requireAuth, async (request: Request, response: Response) => {
     response.setHeader("Cache-Control", "no-store");
     try {
-      response.json({ sessions: await bots.listSessions(botIdOf(request)) });
+      response.json({ sessions: await bots.listSessions(botIdOf(request), 'visible') });
     } catch (error) {
       sendError(response, error, "Unable to list Bot conversations");
     }

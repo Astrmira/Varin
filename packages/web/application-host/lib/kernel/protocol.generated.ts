@@ -3331,7 +3331,7 @@ export interface ThreadBranch {
   latest_run: Run | null;
 }
 
-export interface ThreadCatalogQuery { query?: string; archived?: 'exclude' | 'include' | 'only'; principalId?: string | null; }
+export interface ThreadCatalogQuery { query?: string; archived?: 'exclude' | 'include' | 'only'; principalId?: string | null; botId?: string; }
 
 export interface ThreadTitleJob { key: string; threadId: string; branchId: string; headId: string; checkpointId: string | null; activeRunId: string | null; rounds: number; generation: number; title: string; initial: boolean; }
 

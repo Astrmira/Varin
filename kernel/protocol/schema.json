@@ -2400,7 +2400,7 @@
     "BranchWorkspace": {"fields":{"revision":{"type":"number"},"source":{"type":"LaunchSource | null"}}},
     "SetBranchWorkspace": {"raw":"export interface SetBranchWorkspace { threadId: string; branchId: string; expectedRevision: number; source: LaunchSource | null; }","rustType":"varin_runtime::catalog::branch_workspace::SetBranchWorkspace"},
     "ThreadBranch": {"fields":{"workspace_default":{"type":"BranchWorkspace | null","optional":true},"branch_id":{"type":"string"},"head":{"type":"string | null"},"active_run_id":{"type":"string | null"},"latest_run":{"type":"Run | null"}}},
-    "ThreadCatalogQuery": {"raw":"export interface ThreadCatalogQuery { query?: string; archived?: 'exclude' | 'include' | 'only'; principalId?: string | null; }", "rustType":"varin_runtime::catalog::threads::ThreadListQuery"},
+    "ThreadCatalogQuery": {"raw":"export interface ThreadCatalogQuery { query?: string; archived?: 'exclude' | 'include' | 'only'; principalId?: string | null; botId?: string; }", "rustType":"varin_runtime::catalog::threads::ThreadListQuery"},
     "ThreadTitleJob": {"raw": "export interface ThreadTitleJob { key: string; threadId: string; branchId: string; headId: string; checkpointId: string | null; activeRunId: string | null; rounds: number; generation: number; title: string; initial: boolean; }"},
     "ThreadTitlePrepareParams": {"raw": "export interface ThreadTitlePrepareParams { threadId: string; branchId: string; interval: number; initial?: boolean; }", "rustType": "varin_runtime::catalog::titles::TitlePrepare"},
     "ThreadTitleFinishParams": {"raw": "export interface ThreadTitleFinishParams { job: ThreadTitleJob; title: string | null; }", "rustType": "varin_runtime::catalog::titles::TitleFinish"},

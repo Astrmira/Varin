@@ -7,17 +7,20 @@ import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, C
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 
 export type BotMenuAction = 'pin' | 'rename' | 'profile' | 'memory' | 'sleep' | 'wake' | 'archive' | 'restore' | 'retry' | 'delete';
-export function BotMenu({ bot, disabled, onAction, children, onMove }: {
+export function BotMenu({ bot, disabled, onAction, children, onMove, onNewConversation, onManageConversations }: {
   bot: BotSummary; disabled: boolean; onAction(action: BotMenuAction): void; children?: React.ReactNode; onMove?(): void;
+  onNewConversation?(): void;
+  onManageConversations?(): void;
 }) {
   const { t } = useI18n();
-  const pending = React.useRef<BotMenuAction | 'move' | null>(null);
+  const pending = React.useRef<(() => void) | null>(null);
   const returnFocus = React.useRef(true);
   const opened = (open: boolean) => { if (open) { pending.current = null; returnFocus.current = true; } };
   const complete = (open: boolean) => {
     if (open || !pending.current) return;
-    const action = pending.current; pending.current = null; if (action === 'move') onMove?.(); else onAction(action);
+    const action = pending.current; pending.current = null; action();
   };
+  const select = (action: () => void, focus: boolean) => () => { pending.current = action; returnFocus.current = focus; };
   const state = bot.activity?.state ?? 'awake';
   const transitioning = state === 'sleeping' || state === 'waking';
   type ItemAction = { id: BotMenuAction; icon: IconName; label: string; disabled?: boolean };
@@ -47,10 +50,15 @@ export function BotMenu({ bot, disabled, onAction, children, onMove }: {
   const items = (dropdown: boolean) => {
     const Item = dropdown ? DropdownMenuItem : ContextMenuItem;
     const Separator = dropdown ? DropdownMenuSeparator : ContextMenuSeparator;
-    return <>{onMove && !bot.deletion ? <><Item disabled={disabled} onClick={() => { pending.current = 'move'; returnFocus.current = false; }}><Icon name="folder" className="size-4" />{t('bot.groups.move')}</Item><Separator /></> : null}{actions.map((action, index) => action ? <Item key={action.id} className={action.id === 'delete' ? 'text-destructive' : undefined} disabled={disabled || action.disabled} onClick={() => {
-      pending.current = action.id;
-      returnFocus.current = !['rename', 'profile', 'memory', 'delete'].includes(action.id);
-    }}>
+    return <>
+      {!bot.deletion && (onNewConversation || onManageConversations) ? <>
+        {onNewConversation && <Item disabled={disabled || bot.archived || state !== 'awake'} onClick={select(onNewConversation, false)}><Icon name="chat-new" className="size-4" />{t('organization.newConversation')}</Item>}
+        {onManageConversations && <Item disabled={disabled} onClick={select(onManageConversations, false)}><Icon name="folder-open" className="size-4" />{t('organization.manageBotConversations')}</Item>}
+        <Separator />
+      </> : null}
+      {onMove && !bot.deletion ? <><Item disabled={disabled} onClick={select(onMove, false)}><Icon name="folder" className="size-4" />{t('bot.groups.move')}</Item><Separator /></> : null}
+      {actions.map((action, index) => action ? <Item key={action.id} className={action.id === 'delete' ? 'text-destructive' : undefined} disabled={disabled || action.disabled}
+      onClick={select(() => onAction(action.id), !['rename', 'profile', 'memory', 'delete'].includes(action.id))}>
       <Icon name={action.icon} className="size-4" />{action.label}
     </Item> : <Separator key={`separator-${index}`} />)}</>;
   };

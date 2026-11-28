@@ -1655,6 +1655,9 @@ fn snapshot(
         if containers_only && query.bot_id.is_none() {
             continue;
         }
+        if query.bot_id.is_some() && matches!(&r, ConversationRef::Native { id } if id.starts_with("thread:bot-group:")) {
+            continue;
+        }
         let mut entry = directory.entry(r, title, archived, pinned, revision)?;
         if query.exclude_bot_conversations.unwrap_or(false) && entry.origin.direct_bot_id.is_some() {
             continue;

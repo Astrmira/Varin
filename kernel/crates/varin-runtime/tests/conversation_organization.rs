@@ -1726,6 +1726,30 @@ fn bot_public_scope_and_entry_resolution_never_claim_foreign_sessions() {
     assert!(c.capture_bot_history_scoped("bot","alice","ab","missing","missing",Some(Some("bob".into()))).is_err());
     assert!(c.capture_bot_activity_scoped("bot",None,None,Some(Some("alice".into()))).unwrap().load(&||false).unwrap().events.is_empty());
 }
+
+#[test]
+fn bot_sidebar_and_directory_agree_on_legacy_and_current_conversation_visibility() {
+    use varin_runtime::catalog::threads::{ThreadDelete, ThreadListQuery};
+
+    let fixture = Fixture::new();
+    let mut catalog = fixture.open();
+    catalog.publish_bot_gate(bot::BotGate { bot_id: "bot".into(), profile_revision: 1, activity_operation_id: None, permitted: true }).unwrap();
+    for (thread, branch, owner) in [
+        ("legacy", "legacy-main", None),
+        ("mine", "mine-main", Some("alice")),
+        ("foreign", "foreign-main", Some("bob")),
+        ("deleted", "deleted-main", Some("alice")),
+        ("thread:bot-group:room", "room-main", Some("alice")),
+    ] {
+        catalog.create_bot_thread_with_placement(thread, branch, "bot", owner, None).unwrap();
+    }
+    catalog.delete_thread(&ThreadDelete { thread_id: "deleted".into(), expected_revision: 1, key: "delete".into() }).unwrap();
+    let sidebar = catalog.list_thread_catalog(&ThreadListQuery { principal_id: Some(Some("alice".into())), bot_id: Some("bot".into()), ..Default::default() }).unwrap();
+    let directory = catalog.organization_snapshot(Some("alice"), OrganizationQuery { bot_id: Some("bot".into()), ..Default::default() }).unwrap();
+    let expected = BTreeSet::from(["legacy", "mine"]);
+    assert_eq!(sidebar.iter().map(|row| row["thread_id"].as_str().unwrap()).collect::<BTreeSet<_>>(), expected);
+    assert_eq!(directory.conversations.iter().map(|row| row.conversation.id()).collect::<BTreeSet<_>>(), expected);
+}
 #[test]
 fn bot_matter_reads_and_updates_reject_foreign_and_mixed_metadata() {
     use varin_runtime::catalog::bot_work::{BotMatter,MatterThread,MatterUpdate};

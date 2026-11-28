@@ -1822,7 +1822,7 @@ export interface ThreadBranch {
   latest_run: Run | null;
 }
 
-export interface ThreadCatalogQuery { query?: string; archived?: 'exclude' | 'include' | 'only'; principalId?: string | null; }
+export interface ThreadCatalogQuery { query?: string; archived?: 'exclude' | 'include' | 'only'; principalId?: string | null; botId?: string; }
 
 export interface ThreadModelPreference { providerId: string; modelId: string; thinkingLevel?: ThinkingLevel; temperature?: number }
 

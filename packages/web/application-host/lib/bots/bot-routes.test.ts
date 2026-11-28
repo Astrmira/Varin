@@ -93,7 +93,7 @@ describe('Bot routes without a network listener', () => {
     const listed = await f.call('GET', '/api/harness/bots/bot/sessions');
     expect(listed.status).toBe(200);
     expect(listed.body).toMatchObject({ sessions: [{ identity: entry, primary: true }, { identity: f.session.identity, primary: false }] });
-    expect(f.listSessions).toHaveBeenCalledWith('bot');
+    expect(f.listSessions).toHaveBeenCalledWith('bot', 'visible');
     const created = await f.call('POST', '/api/harness/bots/bot/sessions');
     expect(created.body).toEqual({ session: f.session });
     expect(f.createSession).toHaveBeenCalledWith('bot');

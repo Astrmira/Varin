@@ -144,9 +144,8 @@ fn catalog_archive_search_pin_and_restore_use_real_metadata() {
     let rows = db.list_thread_catalog(&ThreadListQuery::default()).unwrap();
     assert_eq!(rows[0]["thread_id"], "thread");
     let query = ThreadListQuery {
-            principal_id: None,
         query: Some("RÉSUMÉ".into()),
-        archived: None,
+        ..Default::default()
     };
     // Queries run on independent WAL connections in production. The scalar function
     // is connection-local, including after the writer reopens the existing Catalog.
@@ -161,9 +160,8 @@ fn catalog_archive_search_pin_and_restore_use_real_metadata() {
     db.update_thread(&archive).unwrap();
     assert!(db.list_thread_catalog(&query).unwrap().is_empty());
     let only = ThreadListQuery {
-            principal_id: None,
-        query: None,
         archived: Some(ArchiveFilter::Only),
+        ..Default::default()
     };
     assert_eq!(
         db.list_thread_catalog(&only).unwrap()[0]["thread_id"],
@@ -283,9 +281,8 @@ fn catalog_tombstone_keeps_original_live_executor_queue_and_receipts() {
     assert!(tombstone["deleted_at_ms"].is_number());
     assert!(db
         .list_thread_catalog(&ThreadListQuery {
-            principal_id: None,
-            query: None,
-            archived: Some(ArchiveFilter::Include)
+            archived: Some(ArchiveFilter::Include),
+            ..Default::default()
         })
         .unwrap()
         .is_empty());

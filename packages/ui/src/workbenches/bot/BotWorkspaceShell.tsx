@@ -15,11 +15,12 @@ import { useI18n } from '@/lib/i18n';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { toast } from '@/components/ui';
 import {
-  archiveBot, changeBotState, createBot, createBotSession, ensureBotEntry, ensurePrimaryBot, listBots, listBotSessions, listBotWork,
+  archiveBot, changeBotState, createBot, ensureBotEntry, ensurePrimaryBot, listBots, listBotSessions, listBotWork,
   openBotConversation, openBotWorkInWorkbench, sameBotEntry, updateBot, useBotNavigation, useBotReturn,
   type BotModelSelection, type BotReturnPoint, type BotSummary, type BotWorkItem,
 } from '@/lib/bots';
 import { useWorkbenchProfileId } from '@/lib/workbench/profile-context';
+import { startThreadFromNavigation } from '@/lib/agent-runtime/threadNavigation';
 import { useWorkbenchShellActive } from '@/lib/workbench/shell-activity';
 import { ThreadConversation } from '@/components/thread/ThreadConversation';
 import { ChildNavigationContext, type ChildNavigation } from '@/components/conversation/childNavigation';
@@ -181,8 +182,12 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const [showArchived, setShowArchived] = React.useState(false);
   const [details, setDetails] = React.useState<{ id: string; name: string; tab: 'profile' | 'memory' } | null>(null);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const opening = React.useRef<AbortController | null>(null);
   React.useEffect(() => {
     if (!committed || !selectedDraftKey || selectedDraftKey === dismissedDraftKey || !selectedDraft?.botId) return;
+    opening.current?.abort();
+    setBusy(false);
     setSelectedId(selectedDraft.botId);
     setDraftTransfer({ key: selectedDraftKey, botId: selectedDraft.botId });
   }, [committed, selectedDraftKey, selectedDraft?.botId, dismissedDraftKey]);
@@ -199,7 +204,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const [matters, setMatters] = React.useState<{ botId: string; items: BotMatter[] } | null>(null);
   const [workRevision, refreshWork] = React.useReducer((value: number) => value + 1, 0);
   const [error, setError] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
   const [actionBusy, setActionBusy] = React.useState<string | null>(null);
   const [nameDialog, setNameDialog] = React.useState<{ mode: 'create' } | { mode: 'rename'; bot: BotSummary } | { mode: 'session'; session: BotSessionView } | null>(null);
   const [nameDraft, setNameDraft] = React.useState('');
@@ -212,7 +216,6 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const [spaceExpanded, setSpaceExpanded] = React.useState(false);
   const [moment, setMoment] = React.useState<{ line: BotStateLine; until: number } | null>(null);
   const [listening, setListening] = React.useState(false);
-  const opening = React.useRef<AbortController | null>(null);
   const selected = bots?.find((bot) => bot.id === selectedId);
   const profileModelKey = JSON.stringify(selected?.model ?? null);
   const [entryResolution, setEntryResolution] = React.useState<{ botId: string; entry: ThreadIdentity; profileModelKey: string; model: BotModelSelection | null }>();
@@ -253,8 +256,8 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
       const visible = list.filter((bot) => bot.archived === showArchived);
       setBots(list);
       setError(null);
-      setSelectedId((previous) => visible.find((bot) => bot.id === useBotNavigation.getState().botId)?.id
-        ?? visible.find((bot) => bot.id === previous)?.id
+      setSelectedId((previous) => visible.find((bot) => bot.id === previous)?.id
+        ?? visible.find((bot) => bot.id === useBotNavigation.getState().botId)?.id
         ?? visible[0]?.id ?? null);
     }).catch((cause: unknown) => {
       if (!controller.signal.aborted) setError(message(cause));
@@ -279,8 +282,10 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
       if (inactive) {
         const sessions = await listBotSessions(botId, controller.signal);
         if (superseded()) return;
-        const entry = sessions.find(session => session.primary && !session.thread.archived)
-          ?? sessions.find(session => !session.thread.archived);
+        const activeSessions = sessions.filter(session => !session.thread.archived);
+        const personalSessions = activeSessions.filter(session => session.thread.principal_id != null);
+        const entries = personalSessions.length ? personalSessions : activeSessions;
+        const entry = entries.find(session => session.primary) ?? entries[0];
         useBotNavigation.setState({ botId, entry: entry?.identity ?? null, model: known.model, archived: known.archived });
         setSelectedId(botId);
         if (navigate) useUIStore.getState().closeMainSurfaces();
@@ -298,15 +303,21 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     } catch (cause) {
       if (!superseded()) setError(message(cause));
     } finally {
-      if (!controller.signal.aborted) setBusy(false);
+      if (opening.current === controller) {
+        opening.current = null;
+        if (!controller.signal.aborted) setBusy(false);
+      }
     }
   }, []);
 
   React.useEffect(() => {
-    if (!committed || !selectedId) return;
-    if (useBotNavigation.getState().botId !== selectedId || !useBotNavigation.getState().entry) void openEntry(selectedId);
-    return () => opening.current?.abort();
-  }, [committed, selectedId, openEntry, readOnly]);
+    if (!committed || !selectedId || activeDraftKey || materializedDraft) return;
+    const navigation = useBotNavigation.getState();
+    if ((navigation.botId === selectedId && navigation.entry) || (opening.current && !opening.current.signal.aborted)) return;
+    void openEntry(selectedId);
+    const controller = opening.current;
+    return () => controller?.abort();
+  }, [committed, selectedId, openEntry, readOnly, activeDraftKey, materializedDraft]);
 
   React.useEffect(() => {
     if (!committed || !selectedId || settingsOpen) return;
@@ -373,7 +384,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
   const sessionEntry = Boolean(ownsConversation);
 
   React.useEffect(() => {
-    if (!committed || !selected || readOnly || conversationArchived || !sessionEntry) return;
+    if (!committed || !selected || activeDraftKey || materializedDraft || readOnly || conversationArchived || !sessionEntry) return;
     if (entryResolution?.botId === selected.id && entryResolution.profileModelKey === profileModelKey) return;
     const controller = new AbortController();
     const botId = selected.id;
@@ -383,7 +394,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
       if (!controller.signal.aborted) setError(message(cause));
     });
     return () => controller.abort();
-  }, [committed, selected, profileModelKey, readOnly, conversationArchived, sessionEntry, entryResolution]);
+  }, [committed, selected, activeDraftKey, materializedDraft, profileModelKey, readOnly, conversationArchived, sessionEntry, entryResolution]);
 
   // "Listening" is the user typing into this conversation's composer.
   const draftKey = activeDraftKey ?? (selectedEntry ? threadComposerKey(threadHostKey(), selectedEntry) : null);
@@ -677,27 +688,25 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     }
   }, [selectedId, focusTab]);
 
+  const revealConversation = React.useCallback(() => {
+    setGroupId(null);
+    useUIStore.getState().setSessionSwitcherOpen(false);
+    if (floatingSidebar) useUIStore.getState().setSidebarOpen(false);
+  }, [floatingSidebar]);
+
   const newSession = React.useCallback(async (bot = selected) => {
-    if (!bot) return;
-    dismissDraft();
+    if (!bot || bot.archived || bot.deletion || (bot.activity?.state ?? 'awake') !== 'awake') return;
     const host = getRuntimeEndpointGeneration();
-    setActionBusy(`session:${bot.id}`);
     setError(null);
+    noteSwitchDirection(1);
     try {
-      const session = await createBotSession(bot.id);
+      await startThreadFromNavigation({ botId: bot.id });
       if (!alive.current || host !== getRuntimeEndpointGeneration()) return;
-      setSessionResult(current => current?.botId === bot.id && 'items' in current ? { botId: bot.id, items: [...current.items, session] } : current);
-      noteSwitchDirection(1);
-      await openBotConversation(bot.id, session.identity);
-      useUIStore.getState().setSessionSwitcherOpen(false);
-      void useThreadStore.getState().loadCatalog().catch(() => {});
-      refreshWork();
+      revealConversation();
     } catch (cause) {
       if (alive.current && host === getRuntimeEndpointGeneration()) setError(message(cause));
-    } finally {
-      if (alive.current) setActionBusy(null);
     }
-  }, [selected, dismissDraft]);
+  }, [selected, revealConversation]);
 
   const archiveMatter = React.useCallback((matter: BotMatter) => {
     if (!selected || !botsAPI) return;
@@ -798,7 +807,7 @@ const BotWorkspace: React.FC<{ committed: boolean }> = ({ committed }) => {
     groupChats={groupChats.groups} currentGroup={currentGroup?.id ?? null} onGroup={id => { useUIStore.getState().closeMainSurfaces(); useUIStore.getState().setSessionSwitcherOpen(false); setGroupId(id); }}
     onCreateGroup={() => setCreatingGroup(true)}
     onSelectBot={id => { setGroupId(null); selectBot(id); }} onSelectSession={(identity, botId) => { setGroupId(null); openSession(identity, botId); }}
-    onNewSession={bot => { setGroupId(null); void newSession(bot); }}
+    onNewSession={bot => { void newSession(bot); }} onConversationNavigate={revealConversation}
     onSessionAction={(session, identity, action) => { void sessionAction(session, identity, action); }}
     onBotAction={(bot, action) => { void mutateBot(bot, action); }} onCreateBot={openCreateDialog}
     onToggleArchived={() => setShowArchived(value => !value)} onRefresh={refresh} onOpenSettings={openSettings} />;

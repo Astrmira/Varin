@@ -8,7 +8,6 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useThreadStore } from '@/stores/useThreadStore';
 import { threadSubtreeIds } from '@/lib/agent-runtime/thread-tree';
 import { startThreadFromNavigation } from '@/lib/agent-runtime/threadNavigation';
-import { createBotSession, openBotConversation } from '@/lib/bots';
 import { useOpenThreadContext } from '@/lib/openThreadContext';
 import { isDesktopShell } from '@/lib/desktop';
 import type { ComposerCommandAction } from '@/lib/commands/surface-command-types';
@@ -38,7 +37,7 @@ export function useThreadComposerCommands({ api, identity, snapshot, sourcePath,
   const count = threadSubtreeIds(useThreadStore.getState().threads, target.threadId).length - 1;
   const nativeDisabled = disabled ?? (!snapshot ? t('common.loading') : undefined);
   return {
-    new: { run: async () => { verify(); if (thread?.bot_id) { const entry = await createBotSession(thread.bot_id); verify(); await openBotConversation(thread.bot_id, entry.identity); } else await startThreadFromNavigation({ directory: sourcePath }); } },
+    new: { run: async () => { verify(); await startThreadFromNavigation(thread?.bot_id ? { botId: thread.bot_id } : { directory: sourcePath }); } },
     branch: { disabled: nativeDisabled ?? (!branch?.head ? t('composer.menu.unavailable') : undefined), content: complete => <div className="space-y-2">
       <ComposerActionForm description={t('composer.branch.current')} confirm={async () => { verify(); if (!branch?.head) throw new Error(t('composer.menu.unavailable')); await onFork(branch.head); }} onDone={complete} />
       <button type="button" onClick={() => { onHistory(); complete(); }}>{t('composer.branch.history')}</button>

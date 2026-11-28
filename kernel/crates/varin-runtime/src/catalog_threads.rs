@@ -15,6 +15,7 @@ pub struct ThreadListQuery {
     pub principal_id: Option<Option<String>>,
     pub query: Option<String>,
     pub archived: Option<ArchiveFilter>,
+    pub bot_id: Option<String>,
 }
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -356,9 +357,15 @@ impl Catalog {
             ArchiveFilter::Only => 2,
         };
         let needle = query.query.as_deref().unwrap_or("").trim().to_lowercase();
-        inspect_selected(&self.db,
-            "(?2=0 OR t.principal_id IS NULL OR t.principal_id=?3) AND t.deleted_at_ms IS NULL AND t.hidden_kind IS NULL AND (?1=1 OR t.archived=CASE WHEN ?1=2 THEN 1 ELSE 0 END) AND (?4='' OR instr(varin_lower(t.id),?4)>0 OR instr(varin_lower(t.title),?4)>0)",
-            params![archive, query.principal_id.is_some(), query.principal_id.as_ref().and_then(Option::as_deref),needle])
+        let scoped = query.principal_id.is_some();
+        let principal = query.principal_id.as_ref().and_then(Option::as_deref);
+        let visibility = "(?2=0 OR t.principal_id IS NULL OR t.principal_id=?3) AND t.deleted_at_ms IS NULL AND t.hidden_kind IS NULL AND (?1=1 OR t.archived=CASE WHEN ?1=2 THEN 1 ELSE 0 END) AND (?4='' OR instr(varin_lower(t.id),?4)>0 OR instr(varin_lower(t.title),?4)>0)";
+        if let Some(bot) = &query.bot_id {
+            let filter = format!("{visibility} AND t.id IN (SELECT thread_id FROM bot_thread_bindings WHERE bot_id=?5) AND t.id NOT GLOB 'thread:bot-group:*'");
+            inspect_selected(&self.db, &filter, params![archive, scoped, principal, needle, bot])
+        } else {
+            inspect_selected(&self.db, visibility, params![archive, scoped, principal, needle])
+        }
     }
     /// Navigation batch: hidden, deleted and absent rows are omitted so clients remove stale entries.
     pub fn inspect_threads(&self, ids: &[String]) -> Result<Vec<Value>> {

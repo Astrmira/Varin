@@ -130,6 +130,8 @@ export interface ThreadDraft {
   materials: ThreadMaterialAttachment[];
   /** Next-input selection. The active picker reads the Run, not this draft. */
   model?: ThreadModel;
+  /** A picker choice becomes this Bot conversation's model when its first message is sent. */
+  botModelOverride?: boolean;
   /** Consumed model transitions survive closing/reopening this in-memory draft. */
   modelObservation?: {
     preference?: { model: ThreadModel | null };

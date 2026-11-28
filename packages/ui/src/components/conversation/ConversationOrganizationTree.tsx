@@ -94,7 +94,7 @@ export const ConversationOrganizationTree = React.forwardRef<OrganizationNavigat
   const externalSelected = useExternalAgentStore(s => s.selectedId);
   const sidebar = useSidebarCatalog(viewKey === 'bot');
   const snapshot = state.host === getRuntimeEndpointGeneration() ? state.snapshot : null;
-  const [preference, setPreference] = useOrganizationNavigation(viewKey);
+  const [preference, setPreference] = useOrganizationNavigation(botId ? `${viewKey}:${botId}` : viewKey);
   const recent = preference.view === 'recent' && !preference.focus;
   const selectionTargets = React.useRef(new Map<string, OrganizationNode>());
   const [selection, setSelection] = React.useState<Set<string>>(new Set());
@@ -113,20 +113,17 @@ export const ConversationOrganizationTree = React.forwardRef<OrganizationNavigat
   const list = React.useRef<HTMLDivElement>(null);
   const activePanel = botWorkspace?.views.find(view => view.key === botWorkspace.activeKey);
   const selectedObject = viewKey === 'bot' ? activePanel?.kind === 'work' ? { kind: 'native' as const, id: activePanel.identity.threadId } : activePanel?.kind === 'external' ? { kind: 'external' as const, id: activePanel.id } : botEntry ? { kind: 'native' as const, id: botEntry.threadId } : null : selected ? { kind: 'native' as const, id: selected.threadId } : externalSelected ? { kind: 'external' as const, id: externalSelected } : null;
-  const selectedEntry = useConversationOrganizationEntry(selectedObject ?? { kind: 'native', id: '' }, !!selectedObject, true);
-  const revealKey = JSON.stringify([state.host, selectedObject, selectedEntry.entry?.path]);
+  const selectionEntry = useConversationOrganizationEntry(selectedObject ?? { kind: 'native', id: '' }, !!selectedObject, true).entry;
+  const selectedEntry = selectionEntry && (!botId || selectionEntry.origin.botId === botId || selectionEntry.origin.directBotId === botId) ? selectionEntry : null;
+  const revealKey = JSON.stringify([state.host, botId, selectedObject, selectedEntry?.path]);
   React.useEffect(() => {
-    if (!selectedObject || !selectedEntry.entry) return;
-    setPreference({ expanded: Object.fromEntries(selectedEntry.entry.path.map(id => [organizationObjectKey({ kind: 'container', id }), true])) });
+    if (!selectedEntry) return;
+    setPreference({ expanded: Object.fromEntries(selectedEntry.path.map(id => [organizationObjectKey({ kind: 'container', id }), true])) });
   // The selected path changes independently of directory refreshes and manual folding.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealKey]);
-  React.useEffect(() => { setSelection(new Set()); setUndo(null); setMovingBusy(false); setEditor(null); setMove(null); setRename(null); setProjectCreate(null); setMoving(''); setConfirmation(null); selectionTargets.current.clear(); }, [state.host, apis.conversationOrganization]);
+  React.useEffect(() => { setSelection(new Set()); setUndo(null); setMovingBusy(false); setEditor(null); setMove(null); setRename(null); setProjectCreate(null); setMoving(''); setConfirmation(null); selectionTargets.current.clear(); }, [state.host, botId, apis.conversationOrganization]);
   React.useEffect(() => { if (!selectionMode) setSelection(new Set()); }, [selectionMode]);
-  const previousBot = React.useRef(botId);
-  React.useEffect(() => {
-    if (previousBot.current !== botId) { previousBot.current = botId; setPreference({ focus: null }); setSelection(new Set()); }
-  }, [botId, setPreference]);
   const namedSnapshot = React.useMemo(() => snapshot ? { ...snapshot, containers: snapshot.containers.map(container => {
     if (container.kind !== 'project') return container;
     const project = container.projectId ? projectById.get(container.projectId) : undefined;
@@ -301,7 +298,8 @@ export const ConversationOrganizationTree = React.forwardRef<OrganizationNavigat
   const onDragOver = (event: DragOverEvent) => setDropLabel((event.over?.data.current as Drop | undefined)?.label ?? '');
   const create = (parentId: string | null) => setEditor({ id: crypto.randomUUID(), parentId, name: '', icon: 'stack', color: '' });
   const newConversation = (containerId: string | null, identity: string | null | undefined = defaultBotId ?? botId) => act(async () => {
-    const projectId = nearestOrganizationProject(snapshot!, containerId);
+    if (containerId && !snapshot) throw new Error(t('organization.scopeChanged'));
+    const projectId = snapshot ? nearestOrganizationProject(snapshot, containerId) : null;
     const project = projectId ? projectById.get(projectId) : undefined;
     await startThreadFromNavigation({ directory: project?.path, projectId: projectId ?? undefined, organization: { containerId }, ...(identity ? { botId: identity } : {}) });
     onNavigate?.();
@@ -310,7 +308,8 @@ export const ConversationOrganizationTree = React.forwardRef<OrganizationNavigat
     await submitOrganizationMetadata(items.flatMap(n => n.conversation ? [{ conversation: n.conversation.conversation, expectedRevision: n.conversation.revision, patch }] : []));
   };
   const archiveContainer = async (containerId: string, recursive: boolean) => {
-    const scope = await readOrganizationActionScope({ containerId, recursive, archived: archived ? 'only' : 'exclude', ...(excludeBotConversations ? { excludeBotConversations: true } : {}) });
+    const scope = await readOrganizationActionScope({ containerId, recursive, archived: archived ? 'only' : 'exclude',
+      ...(botId ? { botId } : {}), ...(excludeBotConversations ? { excludeBotConversations: true } : {}) });
     await metadata(scope.conversations.map(conversation => ({ key: organizationObjectKey(conversation.conversation), object: conversation.conversation, parentId: conversation.position.containerId, order: conversation.position.order, conversation, children: [] })), { archived: !archived });
   };
   const name = (node: OrganizationNode) => node.container?.name ?? node.conversation?.title ?? t('organization.untitled');
@@ -479,7 +478,7 @@ export const ConversationOrganizationTree = React.forwardRef<OrganizationNavigat
   return <section className="flex min-h-0 flex-1 flex-col" aria-label={t('organization.shared')}>
     <div className="flex min-h-9 items-center justify-between gap-2 px-3 pb-1">
       {preference.focus ? <button type="button" className="flex min-w-0 items-center gap-1 typography-micro text-muted-foreground hover:text-foreground" title={location(preference.focus)} onClick={() => setPreference({ focus: null })}><Icon name="arrow-left-s" className="size-3 shrink-0" /><span className="truncate">{location(preference.focus)}</span></button> : <div className="organization-tabs" role="tablist" aria-label={t('organization.directory')}><button type="button" role="tab" aria-selected={recent} onClick={() => selectView('recent')}>{t('organization.recent')}</button><button type="button" role="tab" aria-selected={!recent} onClick={() => selectView('classified')}>{t('organization.classified')}</button></div>}
-      <div className="flex shrink-0 items-center">{selectedEntry.entry && <button type="button" className="organization-icon-button" title={t('organization.locate')} aria-label={t('organization.locate')} onClick={() => { setPreference({ focus: selectedEntry.entry!.position.containerId, view: 'classified' }); onSearchReset?.(); }}><Icon name="target" className="size-3.5" /></button>}{!archived && <DropdownMenu><DropdownMenuTrigger asChild><button type="button" className="organization-icon-button" disabled={!snapshot} aria-label={t('organization.add')}><Icon name="add" className="size-3.5" /></button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => create(preference.focus)}><Icon name="folder-add" className="size-4" />{t('organization.newGroupMenu')}</DropdownMenuItem><DropdownMenuItem onClick={() => setProjectCreate({ parentId: preference.focus })}><Icon name="code-box" className="size-4" />{t('organization.addProject')}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div>
+      <div className="flex shrink-0 items-center">{selectedEntry && <button type="button" className="organization-icon-button" title={t('organization.locate')} aria-label={t('organization.locate')} onClick={() => { setPreference({ focus: selectedEntry.position.containerId, view: 'classified' }); onSearchReset?.(); }}><Icon name="target" className="size-3.5" /></button>}{!archived && <DropdownMenu><DropdownMenuTrigger asChild><button type="button" className="organization-icon-button" disabled={!snapshot} aria-label={t('organization.add')}><Icon name="add" className="size-3.5" /></button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => create(preference.focus)}><Icon name="folder-add" className="size-4" />{t('organization.newGroupMenu')}</DropdownMenuItem><DropdownMenuItem onClick={() => setProjectCreate({ parentId: preference.focus })}><Icon name="code-box" className="size-4" />{t('organization.addProject')}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div>
     </div>
     {projectCreate && <ProjectCreateDialog open parentContainerId={projectCreate.parentId} onOpenChange={open => { if (!open) { setProjectCreate(null); void refreshConversationOrganization(); } }} />}
     {state.error && <p role="alert" className="px-3 py-2 typography-meta text-destructive">{state.error} <button type="button" className="underline" onClick={() => act(refreshConversationOrganization)}>{t('organization.refresh')}</button></p>}

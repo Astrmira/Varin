@@ -16,7 +16,7 @@ import { BOT_CONVERSATION_PANEL_SCOPE } from '@/lib/openConversationTree';
 import { useOpenThreadContext } from '@/lib/openThreadContext';
 
 const state = vi.hoisted(() => ({
-  profileId: 'varin.bot', mobile: false,
+  profileId: 'varin.bot', mobile: false, directory: false,
   list: vi.fn(), ensure: vi.fn(), primary: vi.fn(), work: vi.fn(), sessions: vi.fn(), createSession: vi.fn(), memory: vi.fn(), schedules: vi.fn(),
   create: vi.fn(), update: vi.fn(), archive: vi.fn(), open: vi.fn(), change: vi.fn(), openWork: vi.fn(), activity: vi.fn(), presence: vi.fn(),
   fork: vi.fn(), copy: vi.fn(), arrangements: vi.fn(), eventSources: vi.fn(),
@@ -45,7 +45,9 @@ vi.mock('@/lib/bots', async original => ({
   openBotWorkInWorkbench: state.openWork,
   deleteBot: vi.fn(),
 }));
-vi.mock('@/hooks/useRuntimeAPIs', () => { const threads = { fork: state.fork, sources: { list: async () => ({ targets: [], unavailable: [] }) }, followups: { arrangements: state.arrangements, eventSources: state.eventSources } }; return { useRuntimeAPIs: () => ({ threads }) }; });
+vi.mock('@/hooks/useRuntimeAPIs', () => { const threads = { fork: state.fork, sources: { list: async () => ({ targets: [], unavailable: [] }) }, followups: { arrangements: state.arrangements, eventSources: state.eventSources } }; return { useRuntimeAPIs: () => ({ threads, conversationOrganization: state.directory ? {} : undefined }) }; });
+vi.mock('@/stores/useConversationOrganizationStore', () => ({ useConversationOrganization: () => {}, refreshConversationOrganization: vi.fn() }));
+vi.mock('@/components/conversation/ConversationOrganizationTree', () => ({ ConversationOrganizationTree: ({ botId }: { botId?: string }) => <div data-managed-bot={botId} /> }));
 vi.mock('@/lib/clipboard', () => ({ copyTextToClipboard: state.copy }));
 vi.mock('@/lib/computers', () => ({ listComputers: async () => ({ desktops: [], machines: [], defaultDesktopId: null }) }));
 vi.mock('./BotWorkDetail', async () => {
@@ -113,9 +115,11 @@ vi.mock('@/components/sections/harness/useHarnessSettings', () => ({ useHarnessS
 vi.mock('@/components/sections/bots/BotModelSelector', () => ({ BotModelSelector: () => null }));
 vi.mock('@/components/layout/WorkbenchProfileSwitcher', () => ({ WorkbenchProfileSwitcher: () => null }));
 vi.mock('@/components/sections/bots/BotDetailsDialog', () => ({ BotDetailsDialog: ({ bot }: { bot: { id: string; tab: string } | null }) => bot ? <div data-details={bot.id}>{bot.tab}</div> : null }));
-vi.mock('@/components/sections/bots/BotMenu', () => ({ BotMenu: ({ bot, onAction, children }: { bot: BotSummary; onAction(action: string): void; children: React.ReactNode }) => <div>{children}
+vi.mock('@/components/sections/bots/BotMenu', () => ({ BotMenu: ({ bot, onAction, children, onNewConversation, onManageConversations }: React.ComponentProps<typeof import('@/components/sections/bots/BotMenu').BotMenu>) => <div>{children}
   <button onClick={() => onAction('profile')}>profile-{bot.id}</button>
   <button onClick={() => onAction('sleep')}>sleep-{bot.id}</button>
+  {onNewConversation && <button onClick={onNewConversation}>new-{bot.id}</button>}
+  {onManageConversations && <button onClick={onManageConversations}>manage-{bot.id}</button>}
 </div> }));
 vi.mock('@/components/sections/bots/BotNameDialog', () => ({
   BotNameDialog: ({ open, mode, name, onNameChange, onSubmit, submitLabel }: React.ComponentProps<typeof import('@/components/sections/bots/BotNameDialog').BotNameDialog>) => open ? <form onSubmit={event => {
@@ -178,6 +182,7 @@ describe('Bot workbench', () => {
   const centre = () => container.querySelector('[data-agent]');
 
   beforeEach(() => {
+    state.directory = false;
     const { window, document } = parseHTML('<!doctype html><html><body></body></html>');
     Object.defineProperty(window, 'location', { value: new URL('http://ui.test/'), configurable: true });
     vi.stubGlobal('window', window);
@@ -453,7 +458,7 @@ describe('Bot workbench', () => {
     expect(useBotNavigation.getState().entry).toEqual(bot('new').entry);
   });
 
-  it('lists the Bot’s own conversations, opens them in place and starts new ones', async () => {
+  it('opens the current Bot’s draft without creating a conversation or replacing the existing one', async () => {
     const trip = sessionOf('a', 'thread:bot:a:trip', 'branch:bot:a:trip', { title: 'Trip planning', unread: true });
     state.sessions.mockResolvedValue([sessionOf('a', 'entry-a', 'branch-a', { title: 'New thread' }, true), trip]);
     await render();
@@ -465,16 +470,36 @@ describe('Bot workbench', () => {
     await click('Trip planning');
     expect(centre()?.getAttribute('data-agent')).toBe('thread:bot:a:trip');
     expect(container.querySelector('header')?.getAttribute('data-title')).toBe('Trip planning');
-    const fresh = sessionOf('a', 'thread:bot:a:fresh', 'branch:bot:a:fresh', { title: 'New thread' });
-    state.createSession.mockResolvedValue(fresh);
-    state.sessions.mockResolvedValue([sessionOf('a', 'entry-a', 'branch-a', {}, true), trip, fresh]);
-    await click('bot.session.new');
+    await click('organization.newConversation');
     await settle();
-    expect(state.createSession).toHaveBeenCalledExactlyOnceWith('a');
-    expect(useBotNavigation.getState().entry).toEqual(fresh.identity);
-    expect(container.querySelector('header')?.getAttribute('data-title')).toBe('Bot a');
-    expect(container.textContent).not.toContain('New thread');
-    expect([...container.querySelectorAll('[data-sidebar-row]')].map(row => row.getAttribute('data-sidebar-row'))).toContain('session:thread:bot:a:fresh:branch:bot:a:fresh');
+    const draftKey = useThreadStore.getState().selectedDraftKey!;
+    expect(container.querySelector('[data-bot-draft]')?.getAttribute('data-bot-draft')).toBe(draftKey);
+    expect(useThreadDraftStore.getState().drafts[draftKey]).toMatchObject({ botId: 'a' });
+    expect(useBotNavigation.getState().entry).toEqual(trip.identity);
+    expect(state.createSession).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.bot-nav-session')).toHaveLength(2);
+  });
+
+  it('manages the Bot selected by its menu and starts a draft for that Bot directly', async () => {
+    state.directory = true;
+    await render();
+    await click('manage-b');
+    expect(container.querySelector('[data-managed-bot="b"]')).not.toBeNull();
+    expect(centre()?.getAttribute('data-agent')).toBe('entry-a');
+    await click('organization.backToBots');
+    expect(container.querySelector('[data-managed-bot]')).toBeNull();
+    state.ensure.mockClear();
+    await click('new-b');
+    await settle();
+    const draftKey = useThreadStore.getState().selectedDraftKey!;
+    expect(container.querySelector('[data-bot-draft]')?.getAttribute('data-bot-draft')).toBe(draftKey);
+    expect(useThreadDraftStore.getState().drafts[draftKey]?.botId).toBe('b');
+    expect(state.ensure).not.toHaveBeenCalled();
+    expect(state.createSession).not.toHaveBeenCalled();
+    await click('Bot a');
+    await settle();
+    expect(centre()?.getAttribute('data-agent')).toBe('entry-a');
+    expect(state.ensure.mock.calls.map(([id]) => id)).toEqual(['a']);
   });
 
   it('reveals the selected session or Bot from the schedule page, including repeated selection', async () => {
@@ -711,7 +736,7 @@ describe('Bot workbench', () => {
     const sleeping = { ...bot('a'), activity: { state: 'asleep' as const, operationId: 'sleep-a', planned: true, work: [], machines: [], error: null } };
     state.list.mockResolvedValue([sleeping]);
     await render();
-    expect(find('bot.session.new')?.disabled).toBe(true);
+    expect(find('organization.newConversation')?.disabled).toBe(true);
     expect(state.createSession).not.toHaveBeenCalled();
   });
 

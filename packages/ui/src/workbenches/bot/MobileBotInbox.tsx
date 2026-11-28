@@ -23,7 +23,7 @@ export function MobileBotInbox({ bots, groups, sessions, query, current, current
   const needle = query.trim().toLocaleLowerCase();
   const rows = [...threads.values()].flatMap(thread => {
     const bot = byId.get(thread.bot_id ?? '');
-    if (!bot || thread.archived || thread.deleted_at_ms != null || (chosen && chosen.id !== bot.id)) return [];
+    if (!bot || thread.archived || thread.deleted_at_ms != null || thread.thread_id.startsWith('thread:bot-group:') || (chosen && chosen.id !== bot.id)) return [];
     const title = botSessionTitle(thread.title, bot.name);
     if (needle && ![title, bot.name].some(text => text.toLocaleLowerCase().includes(needle))) return [];
     const waiting = thread.branches.some(b => isWaitingStatus(runStatus(b.latest_run)));

@@ -1,6 +1,5 @@
 import type { ThreadModel, ThreadSnapshot, ThreadsAPI } from '@varin/application-client';
 import { useThreadDraftStore } from '@/stores/useThreadDraftStore';
-import { useThreadStore } from '@/stores/useThreadStore';
 
 /** The picker and keyboard shortcuts change the same conversation setting. */
 export async function setThreadComposerModel(api: ThreadsAPI, draftKey: string, snapshot: ThreadSnapshot | null | undefined, model: ThreadModel): Promise<void> {
@@ -10,9 +9,7 @@ export async function setThreadComposerModel(api: ThreadsAPI, draftKey: string, 
       key: crypto.randomUUID(), expectedRevision: snapshot.thread.revision, model });
   } else if (snapshot && activeRunId) {
     await api.selectModel({ ...snapshot.identity, runId: activeRunId, key: crypto.randomUUID(), model });
-  } else if (!snapshot && useThreadDraftStore.getState().drafts[draftKey]?.botId) {
-    await useThreadStore.getState().materializeDraft(draftKey, { model });
   } else {
-    useThreadDraftStore.getState().patch(draftKey, { model });
+    useThreadDraftStore.getState().patch(draftKey, draft => ({ model, ...(!snapshot && draft.botId ? { botModelOverride: true } : {}) }));
   }
 }

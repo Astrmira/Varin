@@ -67,7 +67,7 @@ export interface BotServiceOptions {
     model(bot: BotSummary): Promise<BotModelSelection | null>;
     listWork(bot: BotSummary, includeEntry: boolean): Promise<BotWorkItem[]>;
     /** Directly bound conversations, primary entry first. */
-    listSessions(bot: BotSummary): Promise<BotSession[]>;
+    listSessions(bot: BotSummary, view?: 'owned' | 'visible'): Promise<BotSession[]>;
     /** Bind a new conversation to the Bot under fresh native identities. */
     createSession(bot: BotSummary, identity: ThreadIdentity, organization?: ConversationOrganizationPlacement): Promise<BotSession>;
     applyProfile?(bot: BotSummary): Promise<void>;
@@ -176,7 +176,7 @@ export interface BotService {
   /** Threads owned by the Bot's owner scope, including original executor references. */
   listWork(botId: string, includeEntry?: boolean): Promise<BotWorkItem[]>;
   /** The Bot's own conversations; each is an independent Thread bound to the Bot. */
-  listSessions(botId: string): Promise<BotSession[]>;
+  listSessions(botId: string, view?: 'owned' | 'visible'): Promise<BotSession[]>;
   /** Start another conversation with the same Bot identity, memory and profile. */
   createSession(botId: string, options?: { key?: string; organization?: ConversationOrganizationPlacement }): Promise<BotSession>;
 }
@@ -606,10 +606,10 @@ export function createBotService(options: BotServiceOptions): BotService {
     return options.agent.listWork(bot, includeEntry);
   };
 
-  const listSessions: BotService["listSessions"] = async (botId) => {
+  const listSessions: BotService["listSessions"] = async (botId, view) => {
     const bot = await get(botId);
     if (!bot) throw new HarnessServiceError('not-found', 'Unknown Bot');
-    return options.agent.listSessions(bot);
+    return options.agent.listSessions(bot, view);
   };
 
   const createSession: BotService["createSession"] = (botId, input) => serialize(botId, async () => {

@@ -72,3 +72,14 @@ it('scopes public and authenticated session reads without narrowing background l
   await sessions.listSessions(bot);
   expect(request.mock.calls.at(-1)?.[1]).toEqual({ botId: 'bot', historyOnly: true });
 });
+
+it('projects visible directory sessions with the current principal and keeps the primary entry first', async () => {
+  const { request, sessions } = fixture();
+  request.mockResolvedValue([
+    { thread_id: 'legacy', main_branch_id: 'legacy-main', created_at_ms: 1 },
+    { thread_id: 'original', main_branch_id: 'original-main', created_at_ms: 2 },
+  ]);
+  const visible = await withRequestPrincipal('alice', () => sessions.listSessions(bot, 'visible'));
+  expect(visible.map(session => [session.identity.threadId, session.primary])).toEqual([['original', true], ['legacy', false]]);
+  expect(request).toHaveBeenCalledExactlyOnceWith('runtime.thread.catalog.list', { principalId: 'alice', botId: 'bot', archived: 'include' }, undefined);
+});
