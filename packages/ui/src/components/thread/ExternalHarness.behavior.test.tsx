@@ -37,7 +37,7 @@ vi.mock('@/lib/agent-editor/attachments', () => ({ subscribeEditorContextAttachm
 vi.mock('@/lib/agent-editor/projection', () => ({ projectEditorContextAttachments: (text: string) => text }));
 vi.mock('@/lib/messages/inlineComments', () => ({ appendInlineComments: (text: string) => text }));
 vi.mock('@/lib/agent-runtime/sendThreadDraft', () => ({ sendThreadDraft: vi.fn() }));
-vi.mock('@/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => true }));
+vi.mock('@/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => true, useMotionLevel: () => 'off' }));
 vi.mock('@/components/motion/Departure', () => ({ Departure: ({ children }: React.PropsWithChildren) => <div>{children}</div> }));
 vi.mock('@/lib/motion/haptics', () => ({ tapHaptic: () => {} }));
 vi.mock('./useThreadWorkFocus', () => ({ useThreadWorkFocus: () => 'general' }));
@@ -62,6 +62,17 @@ vi.mock('@/components/chat/DraftPresetChips', () => ({ DraftPresetChips: () => n
 vi.mock('@/components/ui/VarinLogo', () => ({ VarinLogo: () => null }));
 vi.mock('@/components/ui/button', () => ({ Button: ({ variant: _variant, size: _size, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string }) => <button {...props} /> }));
 vi.mock('@/components/icon/Icon', () => ({ Icon: () => null }));
+// Exercise the actual effort labels and commits. This DOM fixture has no portal layout or GPU.
+vi.mock('@base-ui/react/popover', () => ({ Popover: {
+  Root: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
+  Trigger: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button type="button" {...props}>{children}</button>,
+  Portal: ({ children }: React.PropsWithChildren) => children,
+  Positioner: ({ children }: React.PropsWithChildren) => children,
+  Popup: ({ children }: React.PropsWithChildren) => <div role="dialog">{children}</div>,
+} }));
+vi.mock('./thinking-track', async load => ({ ...await load<typeof import('./thinking-track')>(), mountThinkingTrack: () => ({
+  setMotion() {}, settle() {}, dispose() {},
+}) }));
 vi.mock('@/components/ui', () => ({ toast: { error: vi.fn() } }));
 vi.mock('@/components/ui/dropdown-menu', () => ({ DropdownMenu: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
   DropdownMenuTrigger: ({ children }: React.PropsWithChildren) => children,
@@ -138,9 +149,9 @@ const click = (label: string) => act(async () => button(label).click());
 const focusComposer = () => act(async () => { f.composer?.external?.onInteract('focus'); });
 const choose = (label: string, value: string) => act(async () => {
   const trigger = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
-  const menu = trigger.parentElement!.querySelector('[role="menu"]')!;
+  const menu = trigger.parentElement!.querySelector('[role="menu"], [role="dialog"]')!;
   const text = ({ first: 'First model', second: 'Second model', 'value:long': 'Long' } as Record<string, string>)[value] ?? value;
-  [...menu.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.toLowerCase() === text.toLowerCase())!.click();
+  [...menu.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.toLowerCase() === text.toLowerCase() || node.textContent === 'settings.agents.thinking.' + value)!.click();
 });
 const submit = () => act(async () => container.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
 

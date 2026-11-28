@@ -2065,9 +2065,9 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
   kernelClient.subscribeExit(() => { for (const runId of agentMcpScopes.keys()) releaseAgentMcpScope(runId); });
   const prepareAgentPolicy = createAgentPolicy(extensionRuntime);
   const modelAuthority = createModelAuthority(modelsService, { retrySettings: async () => (await modelsService.readGlobalInferenceSettings()).retry, outputVisibleBytes: async () => (await modelsService.settings.harness()).output.visibleBytes });
-  const botAgentModel = async (bot: import('@varin/application-client').BotSummary, usage: 'execute' | 'display' = 'execute') => {
+  const botAgentModel = async (bot: import('@varin/application-client').BotSummary, usage: 'execute' | 'display' = 'execute', catalog?: Awaited<ReturnType<typeof modelAuthority.listModels>>) => {
     const global = (await modelsService.settings.snapshot()).global;
-    return resolveBotModelSelection(bot.model, global, await modelAuthority.listModels(), usage);
+    return resolveBotModelSelection(bot.model, global, catalog ?? await modelAuthority.listModels(), usage);
   };
   const liveSources = createLiveSourceOwner({ documents: documentsAuthority, kernel: kernelClient, ...placement });
   const mcpProcessAdmission = (input: import('./lib/kernel/agent-runtime-client.js').McpPreparation) => {
@@ -2962,7 +2962,7 @@ async function main(options: StartWebUiServerOptions = {}): Promise<WebUiServerC
     } catch (error) { next(error); }
   });
   const botGroupChats = createBotGroupChats({ client: botService.catalogClient, workspaceId: BOT_CATALOG_WORKSPACE_ID,
-    bots: botService, runtime: agentRuntime, threads, attachments: threadAttachments, model: botAgentModel,
+    bots: botService, runtime: agentRuntime, threads, attachments: threadAttachments, model: (bot, catalog) => botAgentModel(bot, 'execute', catalog),
     async pauseCalendar(botId, target) {
       const scope = botScopeId(botId);
       const tasks = (await projectConfigRuntime.listScheduledTasks(scope)).filter(task => task.enabled

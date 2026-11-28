@@ -1,8 +1,9 @@
 import { create } from 'zustand';
+import type { GroupPostInput } from '@varin/application-client';
 import { threadHostKey } from '@/stores/useThreadStore';
 import { emptyGroupDraft, type GroupDraft, type GroupDraftFile, type GroupQuote } from './botGroupChatModel';
 
-type Draft = { message: GroupDraft; files: GroupDraftFile[]; quote?: GroupQuote; sending?: string; retryId?: string };
+type Draft = { message: GroupDraft; files: GroupDraftFile[]; quote?: GroupQuote; thinking?: GroupPostInput['thinking']; sending?: string; retryId?: string };
 const empty: Draft = { message: emptyGroupDraft, files: [] };
 const drafts = create<{ entries: Record<string, Draft> }>(() => ({ entries: {} }));
 
@@ -14,12 +15,12 @@ export function useGroupChatDraft(id: string) {
   function write(next: Draft) {
     drafts.setState(state => {
       const entries = { ...state.entries };
-      if (next.message.text || next.files.length || next.quote || next.sending) entries[key] = next;
+      if (next.message.text || next.files.length || next.quote || next.thinking || next.sending) entries[key] = next;
       else delete entries[key];
       return { entries };
     });
   }
-  function edit(change: Partial<Pick<Draft, 'message' | 'files' | 'quote'>>) {
+  function edit(change: Partial<Pick<Draft, 'message' | 'files' | 'quote' | 'thinking'>>) {
     const current = read();
     if (!current.sending) write({ ...current, ...change, retryId: undefined });
   }

@@ -3630,7 +3630,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.modelControls.searchProvidersOrModels': '搜尋供應商或模型',
   'chat.modelControls.clearSearch': '清除搜尋',
   'chat.modelControls.current': '目前',
-  'chat.modelControls.thinking': '思考',
+  'chat.modelControls.thinking': '思考程度',
   'chat.modelControls.default': '預設',
   'chat.modelControls.selectAgent': '選擇 Agent',
   'chat.modelControls.costPerMillion': '成本（$/百萬 tokens）',

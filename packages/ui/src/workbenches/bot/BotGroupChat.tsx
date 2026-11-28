@@ -177,14 +177,15 @@ export function BotGroupChat({ group, bots, api, sequence, panelTarget, onOpenPa
     catch (error) { setError(messageError(error)); }
   };
   const send = async () => {
-    const { addressed, replyId, gone } = groupDraftRecipients(draft, members, quote);
+    const { addressed, replyId, gone, recipients } = groupDraftRecipients(draft, members, quote);
+    const thinking = recipients.length === 1 && members.some(member => member.botId === recipients[0] && member.membership === compose.thinking?.membership) ? compose.thinking : undefined;
     if ((!draft.text.trim() && !draftFiles.length) || gone.length || busy) return;
     const sendId = compose.begin();
     if (!sendId) return;
     setError('');
     try {
       const uploads = await Promise.all(draftFiles.map(entry => uploadBotGroupFile(id, entry.id, entry.file)));
-      await botGroupRequest(id + '/post', { id: sendId, text: draft.text.trim(), addressed, quoteId: quote?.post.id, reply: Boolean(replyId), files: uploads.map(file => file.id) });
+      await botGroupRequest(id + '/post', { id: sendId, text: draft.text.trim(), addressed, quoteId: quote?.post.id, reply: Boolean(replyId), files: uploads.map(file => file.id), thinking });
       compose.finish(sendId, true); atEnd.current = true; refresh();
     } catch (error) { compose.finish(sendId, false); setError(messageError(error)); }
     finally { composer.current?.focus(); }
@@ -420,7 +421,7 @@ export function BotGroupChat({ group, bots, api, sequence, panelTarget, onOpenPa
         </AnimatePresence>
         {error && <div className="chat-input-column"><div role="alert" className="group-chat-trouble">{error}</div></div>}
         <BotGroupComposer groupId={group.id} editor={composer} draft={draft} onDraft={message => compose.edit({ message })} quote={quote} onClearQuote={() => compose.edit({ quote: undefined })}
-          members={members} bots={bots} displayName={displayName} files={draftFiles}
+          members={members} bots={bots} displayName={displayName} files={draftFiles} thinking={compose.thinking} onThinking={thinking => compose.edit({ thinking })}
           onFiles={files => compose.edit({ files: [...draftFiles, ...files.map(file => ({ file, id: crypto.randomUUID() }))] })}
           onRemoveFile={id => compose.edit({ files: draftFiles.filter(file => file.id !== id) })} busy={busy} onSend={() => void send()} onWake={onWake} />
       </div>

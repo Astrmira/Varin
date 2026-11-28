@@ -6,6 +6,8 @@ New configs open in the `varin.bot` shell ("Varin") and auto-create a default ge
 
 ## Group chats
 
+When a user message has one recipient, the composer can override that Bot’s thinking level for this message. The Host checks the choice against the recipient and model and retains it through queued delivery and retries. With multiple recipients, each Bot uses its own conversation or profile setting.
+
 The Bot sidebar can open a shared timeline with several Bots. Explicit mentions and replies address the selected members. An ordinary user post reaches the members who have enabled listening in that group. Bots can read published posts and shared files on demand, change their own listening setting, and address another member through native collaboration. Group schedules run in the owning member's room conversation, under that member's existing Calendar scope.
 
 The Host coordinates room membership and publication through a revisioned kernel storage record. Each participant has a private native Thread for group execution. File bytes use the existing blob and attachment owners. The group timeline publishes assistant replies and explicitly shared tasks, while approvals and questions refer to the original operation. [Group chat design](design/bot-group-chat.md) · [Host service](../packages/web/application-host/lib/bots/bot-group-chat.ts)

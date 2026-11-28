@@ -1,4 +1,4 @@
-import { CODEX_PERMISSION_PROFILE_OPTION, type ExternalAgentCapabilities, type ExternalInput } from '@varin/application-client';
+import { CODEX_PERMISSION_PROFILE_OPTION, remapThinkingLevel, type ExternalAgentCapabilities, type ExternalInput } from '@varin/application-client';
 
 export type ExternalSessionChoice = Pick<ExternalInput, 'model' | 'thinking' | 'mode' | 'config'>;
 
@@ -43,10 +43,14 @@ export function externalModelChoice(choice: ExternalSessionChoice, model: string
   if (modelId) delete config[modelId];
   const next = { ...choice, model, config };
   const { levels, selectedModel } = externalThinkingOptions(next, capabilities);
-  if (selectedModel === externalThinkingOptions(choice, capabilities).selectedModel) return next;
+  const previous = externalThinkingOptions(choice, capabilities);
+  if (selectedModel === previous.selectedModel) return next;
   for (const option of capabilities?.configOptions ?? [])
     if (option.category === 'model_config' || option.category === 'thought_level') delete config[option.id];
-  return { ...next, thinking: next.thinking && levels?.includes(next.thinking) ? next.thinking : undefined };
+  const prior = choice.thinking || (previous.sessionOption && choice.config?.[previous.sessionOption.id]);
+  const thinking = prior && levels?.length && (levels.includes(prior) || previous.levels?.includes(prior))
+    ? remapThinkingLevel(prior, previous.levels ?? [], levels) : undefined;
+  return { ...next, thinking };
 }
 
 /** Never send an effort override hidden by the current session/model's controls. */

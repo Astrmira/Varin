@@ -10,6 +10,7 @@ const labels = {
   name: ['Group name', '群名称', '群組名稱'], createAction: ['Create group', '创建群聊', '建立群聊'],
   choose: ['Choose the Bots you want to chat with.', '选择一起聊天的 Bot。', '選擇一起聊天的 Bot。'],
   members: ['Members', '成员', '成員'], activity: ['Activity', '动态', '動態'], add: ['Add members', '添加成员', '加入成員'],
+  inheritThinking: ['Use the Bot’s setting', '沿用 Bot 的设置', '沿用 Bot 的設定'],
   listen: ['Receive unaddressed user messages', '接收未指定对象的用户消息', '接收未指定對象的使用者訊息'],
   listening: ['Listening', '在听', '在聽'], search: ['Search group', '搜索群消息', '搜尋群組訊息'],
   openPanel: ['Open group panel', '打开群聊面板', '開啟群聊面板'],

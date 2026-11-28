@@ -195,7 +195,8 @@ export function createModelAuthority(authority: ModelAuthority, options: { outpu
     async listModels(): Promise<ThreadModelInfo[]> {
       return (await authority.listModels()).filter(model => families.has(model.api) || Boolean(model.adapterId && model.adapterVersion && model.endpointPath))
         .map(model => ({ providerId: model.providerId, modelId: model.modelId, name: model.name, acceptsImages: model.input?.includes('image') ?? false,
-          ...(model.contextWindow === undefined ? {} : { contextWindowTokens: model.contextWindow }), thinkingLevels: thinkingLevels(model) }));
+          ...(model.contextWindow === undefined ? {} : { contextWindowTokens: model.contextWindow }), thinkingLevels: thinkingLevels(model),
+          ...(model.thinking?.mode === 'budget' ? { thinkingBudgetTokens: model.thinking.tokens } : {}) }));
     },
     /** Public model metadata for pure planning. Never consult auth mode, routing
      * environment, account scopes, credential helpers or a provider connection. */

@@ -3970,7 +3970,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.modelControls.searchProvidersOrModels': '搜索提供商或模型',
   'chat.modelControls.clearSearch': '清除搜索',
   'chat.modelControls.current': '当前',
-  'chat.modelControls.thinking': '思考',
+  'chat.modelControls.thinking': '思考程度',
   'chat.modelControls.default': '默认',
   'chat.modelControls.selectAgent': '选择智能体',
   'chat.modelControls.costPerMillion': '成本（$/100万 tokens）',

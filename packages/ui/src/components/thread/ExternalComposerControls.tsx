@@ -5,6 +5,8 @@ import { Icon } from '@/components/icon/Icon';
 import { cn } from '@/lib/utils';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ModelLogo } from '@/components/ui/ModelLogo';
+import { THINKING_LEVELS } from '@varin/protocol';
+import { ThinkingControl, ThinkingSlider } from './ThinkingSlider';
 import { externalGenericOptions, externalModelChoice, externalThinkingOptions, normalizeExternalSessionChoice, type ExternalSessionChoice } from './externalSessionChoice';
 
 export interface ExternalComposerOptions {
@@ -45,7 +47,8 @@ function selector(options: ExternalComposerOptions, kind: ExternalSelectorKind, 
       })) ?? [] };
   }
   const { levels, sessionOption, modelChanged } = externalThinkingOptions(choice, caps);
-  return { current: kind === 'thinking' && modelChanged ? undefined : caps?.current?.[kind], selected: choice[kind], values: kind === 'model' ? caps?.models ?? [] : kind === 'mode' ? caps?.modes ?? []
+  const currentThinking = caps?.current?.thinking ?? (typeof sessionOption?.currentValue === 'string' ? sessionOption.currentValue : undefined);
+  return { current: kind === 'thinking' ? modelChanged ? undefined : currentThinking : caps?.current?.[kind], selected: choice[kind], values: kind === 'model' ? caps?.models ?? [] : kind === 'mode' ? caps?.modes ?? []
     : levels?.map(level => ({ id: level, name: sessionOption?.options.find(option => option.value === level)?.name ?? level })) ?? [] };
 }
 function choose(options: ExternalComposerOptions, kind: ExternalSelectorKind, value?: string) {
@@ -54,7 +57,28 @@ function choose(options: ExternalComposerOptions, kind: ExternalSelectorKind, va
     const config = { ...choice.config };
     if (value === undefined) delete config[kind.config]; else config[kind.config] = value;
     onChange({ ...choice, config });
+  } else if (kind === 'thinking') {
+    const { sessionOption } = externalThinkingOptions(choice, capabilities);
+    const config = { ...choice.config };
+    if (sessionOption) delete config[sessionOption.id];
+    onChange({ ...choice, thinking: value, config });
   } else onChange(kind === 'model' ? externalModelChoice(choice, value ?? '', capabilities) : { ...choice, [kind]: value });
+}
+
+function ExternalThinkingSlider({ options, inline, onComplete }: { options: ExternalComposerOptions; inline?: boolean; onComplete?(): void }) {
+  const { t } = useI18n();
+  const { selected, current, values } = selector(options, 'thinking', t);
+  const stops = values.map(item => {
+    const known = THINKING_LEVELS.find(level => level === item.id);
+    return { id: item.id, name: known && item.name === item.id ? t(`settings.agents.thinking.${known}`) : item.name };
+  });
+  const currentName = stops.find(stop => stop.id === current)?.name ?? current ?? t('external.notReported');
+  const select = (id?: string) => { choose(options, 'thinking', id); onComplete?.(); };
+  const props = { label: t('chat.modelControls.thinking'), stops, value: selected || current, disabled: options.disabled, onSelect: select };
+  const inherit = <button type="button" className="thinking-slider-reset" disabled={options.disabled} aria-pressed={!selected}
+    onClick={() => select()}>{t('external.inheritCurrent', { current: currentName })}{!selected && <Icon name="check" className="ml-1 inline size-3" />}</button>;
+  return inline ? <ThinkingSlider key={JSON.stringify(stops.map(stop => stop.id))} {...props}>{inherit}</ThinkingSlider> :
+    <ThinkingControl {...props} triggerLabel={t('chat.context.thinking')} onOpen={() => options.onInteract('menu')} badge={options.source === 'cached' ? t('external.previousCapabilities') : undefined}>{inherit}</ThinkingControl>;
 }
 
 /** The same next-input menu is used by the toolbar and the slash layer. Never mutates a live session. */
@@ -65,6 +89,8 @@ export function ExternalOptionMenu({ options, kind, onComplete }: { options: Ext
   const currentName = values.find(value => value.id === current)?.name ??
     (current ? isPermission(kind) ? permissionLabel(current, t) : current : t('external.notReported'));
   const apply = (value?: string) => { choose(options, kind, value); onComplete?.(); };
+  if (kind === 'thinking' && values.length > 1) return <ExternalThinkingSlider options={options} inline onComplete={onComplete} />;
+  if (kind === 'thinking' && values.length > 1) return <ExternalThinkingSlider options={options} inline onComplete={onComplete} />;
   return <div className="min-w-56 max-w-sm space-y-1 p-1 typography-meta">
     <p className="px-2 py-1 text-muted-foreground">{t('external.nextTurnOptions')}{options.source === 'cached' ? ` · ${t('external.previousCapabilities')}` : ''}</p>
     {kind === 'model' && <input type="search" aria-label={t('external.searchModels')} placeholder={t('external.searchModels')} className="mb-1 w-full rounded border border-border bg-background px-2 py-1.5" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); if (event.key !== 'Escape') event.stopPropagation(); }} />}
@@ -107,7 +133,9 @@ function OptionChip({ options, kind, label, icon }: { options: ExternalComposerO
 export function ExternalModelControls({ options }: { options: ExternalComposerOptions }) {
   const { t } = useI18n();
   const parameters = externalGenericOptions(options.choice, options.capabilities).filter(option => option.category === 'model_config');
-  return <>{Boolean(externalThinkingOptions(options.choice, options.capabilities).levels?.length || options.capabilities?.modelsError && options.choice.thinking) && <OptionChip options={options} kind="thinking" label={t('chat.context.thinking')} icon="brain" />}
+  const { levels, selectedModel } = externalThinkingOptions(options.choice, options.capabilities);
+  return <>{(levels?.length ?? 0) > 1 ? <ExternalThinkingSlider key={selectedModel} options={options} />
+    : Boolean(levels?.length || options.capabilities?.modelsError && options.choice.thinking) && <OptionChip options={options} kind="thinking" label={t('chat.context.thinking')} icon="brain" />}
     <OptionChip options={options} kind="model" label={t('external.model')} />
     {parameters.map(option => <ConfigControl key={option.id} options={options} option={option} />)}</>;
 }

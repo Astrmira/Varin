@@ -44,13 +44,33 @@ function fixture() {
     }),
     workspaceId: 'test-bots',
     bots: { get: async (id: string) => bots.get(id) ?? null, canExecute: async (id: string) => !sleeping.has(id), wake: async (id: string) => sleeping.delete(id) },
-    runtime: core, threads: { submit }, model: async () => ({ providerId: 'test', modelId: 'fixture' }),
+    runtime: core, threads: { submit, listModels: async () => [{ providerId: 'test', modelId: 'fixture', thinkingLevels: ['off','high'] }] },
+    model: async () => ({ providerId: 'test', modelId: 'fixture', thinkingLevel: 'off' }),
     changed: vi.fn(), onError: (error: unknown) => { throw error; },
   } as unknown as Parameters<typeof createBotGroupChats>[0];
   return { groups: createBotGroupChats(options), options, submit, state, sleeping, core };
 }
 
 describe('Bot group chat delivery', () => {
+  it('keeps a one-message thinking choice bound to its recipient through sleep and retry', async () => {
+    const { groups, sleeping, submit } = fixture();
+    const room = await groups.create('user', 'Review', ['ops', 'qa']);
+    const membership = room.members[0]!.membership;
+    const available = await groups.memberModel('user', room.id, membership);
+    expect(available).toMatchObject({ thinkingLevel: 'off', thinkingLevels: ['off', 'high'] });
+    const thinking = { membership, providerId: 'test', modelId: 'fixture', level: 'high' as const };
+    const input = { id: 'review', text: 'Review this', addressed: ['ops'], thinking };
+    await expect(groups.post('user', room.id, { ...input, addressed: ['ops', 'qa'] })).rejects.toThrow('recipient');
+    await expect(groups.post('user', room.id, { ...input, thinking: { ...thinking, level: 'max' } })).rejects.toThrow('levels changed');
+    sleeping.add('ops');
+    await groups.post('user', room.id, input);
+    const delivered = async () => (await groups.page('user', room.id)).posts[0]?.delivery[0];
+    await expect.poll(async () => (await delivered())?.state).toBe('asleep');
+    await groups.change('user', room.id, { kind: 'retry', postId: 'user:review', botId: 'ops' });
+    await expect.poll(async () => (await delivered())?.state).toBe('running');
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ model: { providerId: 'test', modelId: 'fixture', thinkingLevel: 'high' } }));
+    expect(await groups.memberModel('user', room.id, membership)).toMatchObject({ thinkingLevel: 'off' });
+  });
   it('keeps ordinary posts searchable, honors address precedence and recovers the settled reply', async () => {
     const { groups, options, submit, state } = fixture();
     const { id } = await groups.create('user', 'Release', ['ops', 'qa']);

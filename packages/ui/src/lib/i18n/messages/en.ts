@@ -3838,7 +3838,7 @@ export const dict = {
   'chat.modelControls.searchProvidersOrModels': 'Search providers or models',
   'chat.modelControls.clearSearch': 'Clear search',
   'chat.modelControls.current': 'Current',
-  'chat.modelControls.thinking': 'Thinking',
+  'chat.modelControls.thinking': 'Thinking level',
   'chat.modelControls.default': 'Default',
   'chat.modelControls.selectAgent': 'Select agent',
   'chat.modelControls.costPerMillion': 'Cost ($/1M tokens)',

@@ -98,7 +98,7 @@ export interface ThreadAttentionSnapshot {
 }
 export type ThreadThinkingLevel = import('@varin/protocol').ThinkingLevel;
 export type ThreadModel = import('@varin/protocol').ThreadModelPreference;
-export interface ThreadModelInfo extends ThreadModel { name?: string; acceptsImages?: boolean; contextWindowTokens?: number; thinkingLevels?: ThreadThinkingLevel[] }
+export interface ThreadModelInfo extends ThreadModel { name?: string; acceptsImages?: boolean; contextWindowTokens?: number; thinkingLevels?: ThreadThinkingLevel[]; thinkingBudgetTokens?: number }
 export interface ThreadAgentChoice { profileId: string | null; workFocus: import('@varin/protocol').WorkFocusId }
 /** A public model selection resolves only through the Host's existing model/credential authority. */
 export type ThreadMcpSamplingRequestReview = ThreadIdentity & Omit<McpSamplingRequestReviewParams, 'action' | 'editedRequest'> & (

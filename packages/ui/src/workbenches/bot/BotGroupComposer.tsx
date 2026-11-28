@@ -1,7 +1,8 @@
 import React from 'react';
 import { Popover } from '@base-ui/react/popover';
 import { AnimatePresence, motion } from 'motion/react';
-import type { BotGroupMember, BotSummary } from '@varin/application-client';
+import type { BotGroupMember, BotSummary, GroupPostInput } from '@varin/application-client';
+import { GroupThinkingControl } from './GroupThinkingControl';
 import type { ComposerEditorHandle } from '@/components/chat/composer/editor/ComposerEditor';
 import { Icon } from '@/components/icon/Icon';
 import { SwapText } from '@/components/motion/SwapText';
@@ -12,15 +13,17 @@ import { springTransition } from '@/lib/motion/tokens';
 import { GroupAvatar, GroupAvatarStack } from './GroupAvatar';
 import { groupLabel as L, groupDraftRecipients, placeGroupMention, type GroupDraft, type GroupDraftFile, type GroupQuote } from './botGroupChatModel';
 
-export function BotGroupComposer({ groupId, editor, draft, onDraft, quote, onClearQuote, members, bots, displayName, files, onFiles, onRemoveFile, busy, onSend, onWake }: {
+export function BotGroupComposer({ groupId, editor, draft, onDraft, quote, onClearQuote, members, bots, displayName, files, onFiles, onRemoveFile, busy, onSend, onWake, thinking, onThinking }: {
   groupId: string; editor: React.RefObject<ComposerEditorHandle | null>; draft: GroupDraft; onDraft(draft: GroupDraft): void;
   quote?: GroupQuote; onClearQuote(): void; members: BotGroupMember[]; bots: BotSummary[]; displayName(id: string): string;
   files: GroupDraftFile[]; onFiles(files: File[]): void; onRemoveFile(id: string): void; busy: boolean; onSend(): void; onWake(bot: BotSummary): void;
+  thinking?: GroupPostInput['thinking']; onThinking(value: GroupPostInput['thinking']): void;
 }) {
   const fileInput = React.useRef<HTMLInputElement>(null);
   const imageInput = React.useRef<HTMLInputElement>(null);
   const reduced = usePrefersReducedMotion();
   const { addressed, replyId, listeners, recipients, gone } = groupDraftRecipients(draft, members, quote);
+  const target = recipients.length === 1 ? members.find(member => member.botId === recipients[0]) : undefined;
   const sleeping = bots.filter(bot => recipients.includes(bot.id) && bot.activity?.state === 'asleep');
   const quoteAuthor = quote?.post.author.kind === 'bot' ? quote.post.author.name : undefined;
   const reply = Boolean(quote && replyId && recipients.includes(replyId));
@@ -88,7 +91,10 @@ export function BotGroupComposer({ groupId, editor, draft, onDraft, quote, onCle
       attachmentDisabled={busy} imageDisabled={busy} sendDisabled={busy || Boolean(gone.length) || !hasInput} pending={busy} active={false} retrying={false}
       onFiles={onFiles} onAttachImages={() => imageInput.current?.click()} onAttachPdfs={() => fileInput.current?.click()}
       hasInput={hasInput} workspaceLabel="" skills={[]} attachmentNames={draftAttachments.map(file => file.filename)}
-      groupDelivery={{ control: deliveryControl, placeholder: listeners.length ? L('write') : L('mentionPlaceholder'), mentionLabel: L('mention'),
+      groupDelivery={{ control: <>{target && <GroupThinkingControl key={target.membership} groupId={groupId} membership={target.membership}
+        name={displayName(target.botId)} revision={bots.find(bot => bot.id === target.botId)?.revision} busy={busy}
+        choice={thinking?.membership === target.membership ? thinking : undefined} onChange={onThinking} />}{deliveryControl}</>,
+        placeholder: listeners.length ? L('write') : L('mentionPlaceholder'), mentionLabel: L('mention'),
         members: members.map(member => ({ id: member.botId, group: L('members'), label: displayName(member.botId),
           description: member.listening ? L('listening') : undefined,
           icon: <GroupAvatar bot={bots.find(bot => bot.id === member.botId)} name={displayName(member.botId)} size={23} /> })),

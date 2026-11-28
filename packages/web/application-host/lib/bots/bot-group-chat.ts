@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { BotGroupMember, BotGroupPost, BotGroupSummary, GroupChange, GroupChatFile, GroupDelivery, GroupPostInput, ThreadIdentity, ThreadModel } from '@varin/application-client';
+import type { BotGroupMember, BotGroupPost, BotGroupSummary, GroupChange, GroupChatFile, GroupDelivery, GroupPostInput, ThreadIdentity, ThreadModel, ThreadModelInfo } from '@varin/application-client';
 import { attachmentMimeType } from '@varin/protocol';
 import type { BotService } from './bot-service.js';
 import type { AgentRuntimeClient } from '../kernel/agent-runtime-client.js';
@@ -17,7 +17,7 @@ const invalid = (message: string) => Object.assign(new Error(message), { status:
 const missing = () => Object.assign(new Error('Group chat not found'), { status: 404 });
 const terminal = new Set(['completed', 'failed', 'cancelled']);
 
-type Delivery = GroupDelivery & { expectedHead?: string | null; model?: ThreadModel; messageId?: string; wakeRequested?: boolean };
+type Delivery = GroupDelivery & { expectedHead?: string | null; model?: ThreadModel; requestedModel?: ThreadModel; messageId?: string; wakeRequested?: boolean };
 type GroupOrigin = { threadId: string; branchId: string; operationId: string };
 type Post = Omit<BotGroupPost, 'delivery'> & { delivery: Delivery[]; origin?: GroupOrigin };
 type StoredFile = { info: GroupChatFile; hash: string; ownerId: string };
@@ -30,7 +30,7 @@ type Options = {
   runtime: AgentRuntimeClient;
   threads: ThreadAdapter;
   attachments: Pick<ThreadAttachmentOwner, 'upload' | 'readChunk'>;
-  model(bot: NonNullable<Awaited<ReturnType<BotService['get']>>>): Promise<ThreadModel | null>;
+  model(bot: NonNullable<Awaited<ReturnType<BotService['get']>>>, catalog?: ThreadModelInfo[]): Promise<ThreadModel | null>;
   pauseCalendar(botId: string, target: ThreadIdentity): Promise<void>;
   changed(): void;
   onError(error: unknown): void;
@@ -259,7 +259,7 @@ export function createBotGroupChats(options: Options) {
               const thread = await runtime.thread(identity.threadId);
               const branch = thread.branches.find(value => value.branch_id === identity.branchId)!;
               if (branch.active_run_id && current.expectedHead === undefined) return;
-              const model = current.model ?? thread.model_preference ?? await options.model(bot);
+              const model = current.model ?? current.requestedModel ?? thread.model_preference ?? await options.model(bot);
               if (!model) throw invalid('This Bot needs a model');
               if (current.expectedHead === undefined) {
                 current.expectedHead = branch.head;
@@ -370,6 +370,17 @@ export function createBotGroupChats(options: Options) {
     }).catch(options.onError);
   }
 
+  async function memberModel(room: Room, member: BotGroupMember): Promise<ThreadModelInfo | null> {
+    const bot = await bots.get(member.botId);
+    if (!bot) return null;
+    const identity = summary(room).members.find(item => item.membership === member.membership)?.conversation;
+    const [thread, catalog] = await Promise.all([identity ? runtime.thread(identity.threadId) : undefined, threads.listModels()]);
+    const effective = thread?.model_preference ?? await options.model(bot, catalog);
+    if (!effective) return null;
+    const info = catalog.find(model => model.providerId === effective.providerId && model.modelId === effective.modelId);
+    return info ? { ...info, ...effective } : null;
+  }
+
   async function post(principal: string | null, id: string, input: GroupPostInput) {
     if (typeof input?.id !== 'string' || !input.id || typeof input.text !== 'string' || (!input.text.trim() && !input.files?.length)
       || !Array.isArray(input.addressed) || input.addressed.some(value => typeof value !== 'string')) throw invalid('A message and its recipients are required');
@@ -388,6 +399,16 @@ export function createBotGroupChats(options: Options) {
         if (!member) throw invalid('An addressed Bot has left this group');
         return member;
       }) : room.members.filter(member => member.listening);
+      let requestedModel: ThreadModel | undefined;
+      if (input.thinking !== undefined) {
+        const target = recipients[0], choice = input.thinking;
+        if (!choice || recipients.length !== 1 || target?.membership !== choice.membership) throw invalid('The thinking level belongs to a different group recipient');
+        const model = await memberModel(room, target);
+        if (!model || model.providerId !== choice.providerId || model.modelId !== choice.modelId || !model.thinkingLevels?.includes(choice.level))
+          throw invalid('The recipient’s available thinking levels changed. Select a level again.');
+        requestedModel = { providerId: model.providerId, modelId: model.modelId, thinkingLevel: choice.level,
+          ...(model.temperature === undefined ? {} : { temperature: model.temperature }) };
+      }
       const files = [...new Set(input.files ?? [])].map(id => {
         const file = room.files?.find(value => value.info.id === id);
         if (!file) throw invalid('A group attachment is unavailable');
@@ -395,7 +416,7 @@ export function createBotGroupChats(options: Options) {
       });
       room.posts.push({ id: postId, author: { kind: 'user' }, text: input.text, at: Date.now(), addressed: explicit,
         ...(quote ? { quoteId: quote.id } : {}), ...(files.length ? { files } : {}),
-        delivery: recipients.map(({ botId, membership }) => ({ botId, membership, state: 'queued' })) });
+        delivery: recipients.map(({ botId, membership }) => ({ botId, membership, state: 'queued', ...(requestedModel ? { requestedModel } : {}) })) });
       room.updatedAt = Date.now();
       await save(room, revision);
     });
@@ -492,6 +513,12 @@ export function createBotGroupChats(options: Options) {
       return (await records()).filter(({ room }) => !room.deleted && room.principal === principal)
         .map(({ room }) => summary(room)).sort((a, b) => b.updatedAt - a.updatedAt);
     },
+    async memberModel(principal: string | null, id: string, membership: string) {
+      const { room } = await read(id, principal);
+      const member = room.members.find(value => value.membership === membership);
+      if (!member) throw missing();
+      return memberModel(room, member);
+    },
     async create(principal: string | null, name: string, ids: string[]) {
       if (typeof name !== 'string' || !name.trim() || !Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string')) throw invalid('A name and at least one Bot are required');
       const room: Room = { principal, id: randomUUID(), name: name.trim(), members: await Promise.all([...new Set(ids)].map(chooseMember)), posts: [], updatedAt: Date.now() };
@@ -514,7 +541,7 @@ export function createBotGroupChats(options: Options) {
           ...post,
           ...(quoted ? { quote: { text: (quoted.text || quoted.files?.map(file => file.filename).join(', ') || '').slice(0, 240),
             ...(quoted.author.kind === 'bot' ? { author: quoted.author.name } : {}) } } : {}),
-          delivery: post.delivery.map(({ expectedHead: _, model: _model, messageId: _message, wakeRequested: _wake, ...delivery }) => delivery),
+          delivery: post.delivery.map(({ expectedHead: _, model: _model, requestedModel: _requested, messageId: _message, wakeRequested: _wake, ...delivery }) => delivery),
         };
       });
       return { ...summary(room), posts, ...(matches.length > posts.length ? { before: posts[0]!.id } : {}) };

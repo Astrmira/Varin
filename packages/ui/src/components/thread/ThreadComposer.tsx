@@ -10,7 +10,7 @@ import type { ComposerMarkerObject } from '@/components/chat/composer/editor/mar
 import type { InteractionRange } from '@/components/chat/composer/editor/interactionRanges';
 import { registerUiComposer } from '@/lib/interactive-ui/compose';
 import { flushSync } from 'react-dom';
-import { getRuntimeEndpointGeneration, type ThreadDraftSkillOptions, type ThreadsAPI, type ThreadIdentity, type ThreadSource, type ThreadModelInfo, type ThreadThinkingLevel } from '@varin/application-client';
+import { getRuntimeEndpointGeneration, remapThinkingLevel, type ThreadDraftSkillOptions, type ThreadsAPI, type ThreadIdentity, type ThreadSource, type ThreadModelInfo, type ThreadThinkingLevel } from '@varin/application-client';
 import { Icon } from '@/components/icon/Icon';
 import { ComposerEditor, type ComposerEditorHandle } from '@/components/chat/composer/editor/ComposerEditor';
 import { ComposerDictation } from '@/components/dictation/ComposerDictation';
@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import { AnimatePresence, motion } from 'motion/react';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 import { SwapIcon } from '@/components/motion/SwapIcon';
-import { SwapText } from '@/components/motion/SwapText';
+import { ThinkingControl, ThinkingSlider } from './ThinkingSlider';
 import { INSTANT_TRANSITION, springTransition, TWEENS } from '@/lib/motion/tokens';
 import { useComposerHeightGlide } from './useComposerHeightGlide';
 import { useComposerExpansion } from './useComposerExpansion';
@@ -182,6 +182,13 @@ export function ThreadComposer({ editorRef, value, onChange, interactions, model
     try { await onModelChange(provider, model, thinking); if (complete && capturedScope === currentIdentity.current) consumeFragment(); }
     catch (cause) { if (capturedScope === currentIdentity.current) setCommandError(cause instanceof Error ? cause.message : String(cause)); }
   };
+  const changeModel = (provider: string, model: string, complete = false) => {
+    const next = models.find(item => item.providerId === provider && item.modelId === model);
+    const level = remapThinkingLevel(thinkingLevel, selected?.thinkingLevels ?? [], next?.thinkingLevels ?? ['off']);
+    return chooseModel(provider, model, level ?? 'off', complete);
+  };
+  const thinking = { label: t('chat.modelControls.thinking'), value: thinkingLevel,
+    stops: (selected?.thinkingLevels ?? []).map(id => ({ id, name: t(`settings.agents.thinking.${id}`) })), budgetTokens: selected?.thinkingBudgetTokens, disabled: modelDisabled };
   const actions: Record<string, ComposerCommandAction | undefined> = {
     settings: { run: () => settings() }, shortcuts: { run: () => settings('shortcuts') },
     skills: nativeControls ? { run: () => settings('skills') } : undefined,
@@ -191,9 +198,9 @@ export function ThreadComposer({ editorRef, value, onChange, interactions, model
     ...(nativeControls ? {
       model: { disabled: modelDisabled ? t('composer.menu.unavailable') : undefined, value: selected?.name ?? modelId,
         content: <div className="space-y-2"><p className="typography-meta text-muted-foreground">{t('composer.model.scope')}</p>{models.map(model => <button type="button" key={`${model.providerId}:${model.modelId}`} className="flex w-full items-center justify-between rounded px-2 py-2 text-left hover:bg-interactive-hover" disabled={modelDisabled}
-          onClick={() => { const levels = model.thinkingLevels ?? ['off']; void chooseModel(model.providerId, model.modelId, levels.includes(thinkingLevel) ? thinkingLevel : levels[0] ?? 'off', true); }}><span>{model.name ?? model.modelId} · {model.providerId}</span>{model.providerId === providerId && model.modelId === modelId && '✓'}</button>)}</div> },
+          onClick={() => void changeModel(model.providerId, model.modelId, true)}><span>{model.name ?? model.modelId} · {model.providerId}</span>{model.providerId === providerId && model.modelId === modelId && '✓'}</button>)}</div> },
       thinking: { disabled: modelDisabled ? t('composer.menu.unavailable') : undefined, value: t(`settings.agents.thinking.${thinkingLevel}`),
-        content: <div className="space-y-2"><p className="typography-meta text-muted-foreground">{t('composer.model.scope')}</p>{(selected?.thinkingLevels?.length ?? 0) > 1 ? selected!.thinkingLevels!.map(level => <button type="button" key={level} disabled={modelDisabled} className="flex w-full justify-between rounded px-2 py-2 hover:bg-interactive-hover" onClick={() => { void chooseModel(providerId, modelId, level, true); }}>{t(`settings.agents.thinking.${level}`)}{thinkingLevel === level && '✓'}</button>) : <p>{t('composer.model.noThinking')}</p>}</div> },
+        content: thinking.stops.length > 1 ? <ThinkingSlider key={JSON.stringify([providerId, modelId, selected?.thinkingLevels])} {...thinking} onSelect={level => chooseModel(providerId, modelId, level, true)} /> : <p>{t('composer.model.noThinking')}</p> },
       permissions: { content: <ThreadPermissionControl workspacePath={permissionWorkspacePath} embedded /> },
     } : {}),
     ...(external ? {
@@ -242,28 +249,11 @@ export function ThreadComposer({ editorRef, value, onChange, interactions, model
     {external && <ExternalModelControls key={backendIdentity} options={external} />}
     {backendControls ?? <>
       <div className={isMobile ? 'flex min-w-0 max-w-full items-center gap-0.5' : 'contents'}>
-        {(selected?.thinkingLevels?.length ?? 0) > 1 && <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button type="button" disabled={modelDisabled} className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 typography-meta text-muted-foreground hover:bg-interactive-hover" aria-label={t('chat.modelControls.thinking')}>
-              <Icon name="brain" className="size-3.5" /><SwapText text={t(`settings.agents.thinking.${thinkingLevel}`)} hold={0} resize />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="top" align="end">
-            {selected!.thinkingLevels!.map(level => <DropdownMenuItem key={level} onSelect={() => void chooseModel(providerId, modelId, level)}>
-              {t(`settings.agents.thinking.${level}`)}{level === thinkingLevel && <Icon name="check" className="ml-auto size-3.5" />}
-            </DropdownMenuItem>)}
-          </DropdownMenuContent>
-        </DropdownMenu>}
-        {selected?.thinkingLevels?.length === 1 && thinkingLevel !== 'off' ? <span className="flex shrink-0 items-center gap-1.5 px-2 typography-meta text-muted-foreground">
-          <Icon name="brain" className="size-3.5" />{t(`settings.agents.thinking.${thinkingLevel}`)}
-        </span> : null}
+        <ThinkingControl key={JSON.stringify([scope, providerId, modelId])} {...thinking} onSelect={level => chooseModel(providerId, modelId, level)} />
         <ModelSelector providerId={providerId} modelId={modelId} variant="composer" disabled={modelDisabled} allowNone={false}
           open={modelPickerOpen} onOpenChange={setModelPickerOpen}
           placeholder={t('chat.modelControls.selectModel')} dropdownPortalToBody
-          onChange={(provider, model) => {
-            const levels = models.find(item => item.providerId === provider && item.modelId === model)?.thinkingLevels ?? ['off'];
-            void chooseModel(provider, model, levels.includes(thinkingLevel) ? thinkingLevel : levels[0] ?? 'off');
-          }} />
+          onChange={(provider, model) => { void changeModel(provider, model); }} />
       </div>
       {agentControls}
     </>}

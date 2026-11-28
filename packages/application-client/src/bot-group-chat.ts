@@ -1,5 +1,5 @@
 import { runtimeFetch } from './transport/runtime-fetch.js';
-import type { ThreadIdentity } from './threads.js';
+import type { ThreadIdentity, ThreadThinkingLevel } from './threads.js';
 
 export interface BotGroupMember {
   botId: string;
@@ -62,6 +62,8 @@ export interface GroupPostInput {
   quoteId?: string;
   reply?: boolean;
   files?: string[];
+  /** One message for one membership, against the model shown when the level was picked. */
+  thinking?: { membership: string; providerId: string; modelId: string; level: ThreadThinkingLevel };
 }
 
 export type GroupChange =
